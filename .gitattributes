@@ -1,0 +1,5 @@
+# The provisioning scripts run on Linux. Never check them out with CRLF:
+# bash fails on the trailing \r with errors that point nowhere useful.
+*.sh                text eol=lf
+autoinstall_user_data text eol=lf
+*.md                text
