@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Install the host's public key for `runner`. Must run BEFORE 50-lockdown.sh,
-# which turns off password authentication -- get the order wrong and you lock
-# yourself out of the runner account.
+# which is what actually lets `runner` log in at all (the base sshd drop-in
+# only allows the maintenance user) -- and which turns password auth off for
+# good measure.
+#
+# The key is a separate one from the maintenance user's: this key exists only
+# so the planner's working clone on Windows can push to /srv/loop/repo.git.
 #
 # Expects the public key at /tmp/loop-provision/loop-runner_ed25519.pub
+# (copied in with scp -- there is no /mnt/c in this distro, see README 2-5)
 set -euo pipefail
 
 PUB=/tmp/loop-provision/loop-runner_ed25519.pub

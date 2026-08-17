@@ -1,8 +1,10 @@
-# loop-runner VM のプロビジョニング
+# loop サンドボックス（WSL2）のプロビジョニング
 
 RUNNER_SPEC.md の実行環境（§1）を再現するための手順とスクリプト。
 
-VM を作り直すときはこの手順をなぞる。**§3 の落とし穴は4つとも実際に踏んだもの**で、
+実行基盤は **WSL2 の `Ubuntu-24.04` ディストロ**。VirtualBox は使わない（理由は §6）。
+
+作り直すときはこの手順をなぞる。**§3 の落とし穴は全部、踏んだか実機で確認したもの**で、
 どれも「一見成功して、後から静かに壊れる」種類なので飛ばさないこと。
 
 ---
@@ -11,124 +13,254 @@ VM を作り直すときはこの手順をなぞる。**§3 の落とし穴は4�
 
 | | |
 |---|---|
-| VM 名 | `loop-runner` |
-| OS | Ubuntu Server 24.04.4 LTS (minimal) |
-| CPU / RAM / Disk | 2 vCPU / 4096 MB / 20 GB（可変・上限） |
-| NIC | NAT 1枚 + ポートフォワード `127.0.0.1:2222` → `22` |
-| Guest Additions | 入れない（共有フォルダを使わないため） |
+| ディストロ | WSL2 `Ubuntu-24.04`（Ubuntu 24.04.1 LTS / systemd 有効） |
+| CPU / RAM | `.wslconfig` で 6 プロセッサ / 8GB / swap 4GB（ホストは 8C8T / 16GB） |
+| ディスク | ext4 on VHDX（`sparseVhd=true`） |
+| ネットワーク | `networkingMode=NAT` + `localhostForwarding=true` |
+| SSH | ディストロ内 sshd が **2222 番で listen**。Windows からは `127.0.0.1:2222` |
+| Windows ドライブ | **マウントしない**（`automount enabled=false`） |
+| Windows 実行ファイル | **起動不可**（`interop enabled=false`） |
+| WSLg | **無効**（`.wslconfig` `guiApplications=false`。2026-08-17 適用・反映確認済み。§3-8） |
 
 アカウント:
 
 | ユーザー | uid | sudo | SSH | 用途 |
 |---|---|---|---|---|
-| `admin` | 1000 | あり | 鍵のみ | プロビジョニングと保守。普段使わない |
-| `runner` | 1001 | **なし** | 鍵のみ | ループの実行主体。VS Code はここに繋ぐ |
-| `solver` | 1002 | **なし** | **不可**（`DenyUsers`） | 実装を書くだけ |
+| `maint` | 1000 | あり | 鍵のみ | プロビジョニングと保守。VS Code Remote-SSH はここに繋ぐ |
+| `runner` | 1001 | **なし** | 鍵のみ | ループの実行主体。ホストからの git push を受ける |
+| `solver` | 1002 | **なし** | **不可**（`AllowUsers` に載せない + `DenyUsers`） | 実装を書くだけ |
+
+`maint` は VirtualBox 構成での `admin` に相当する。WSL2 のディストロには
+既定ユーザーが必ず1人いるので、それを保守用として使い、ループ用の2人を足す形にした。
+
+ホスト側の付属物（詳細と再作成手順は `host/README.md`）:
+
+| もの | 場所 | 役割 |
+|---|---|---|
+| `loop-dev` ランチャ | `C:\Users\yoshi\bin\loop-dev.cmd`（原本は `host/loop-dev.cmd`） | ディストロ起動 → sshd 待機 → VS Code Remote-SSH 起動 |
+| SSH 設定 | `C:\Users\yoshi\.ssh\config` の `Host loop-dev` / `Host loop-runner` | `127.0.0.1:2222` / 鍵のみ |
+| keepalive タスク | タスクスケジューラ `WSL-keepalive-Ubuntu-24-04` | **これが無いと VM がアイドルで落ちる**（§3-1） |
+| リソース設定 | `C:\Users\yoshi\.wslconfig` | メモリ/CPU/NAT/sparseVhd/WSLg |
 
 ---
 
 ## 2. 作り直す手順
 
-ホスト（Windows / PowerShell）で実行する。`$VBM` は `VBoxManage.exe` のパス。
+ホスト側は PowerShell、ディストロ内は bash。**`.ps1` を書き起こさずインライン実行すること**（§3-6）。
 
-### 2-1. 鍵を作る（**Bash で**。理由は §3-4）
+### 2-1. 鍵を作る（**Bash で**。理由は §3-5）
+
+保守用（`maint`）とループ用（`runner`）で鍵を分ける。前者は人が対話で使い、
+後者はホストの作業クローンから git push するためだけに使う。
 
 ```bash
-ssh-keygen -t ed25519 -f /c/Users/<you>/.ssh/loop-runner_ed25519 -N '' -C loop-runner-vm
+ssh-keygen -t ed25519 -f /c/Users/<you>/.ssh/id_ed25519         -N '' -C loop-dev
+ssh-keygen -t ed25519 -f /c/Users/<you>/.ssh/loop-runner_ed25519 -N '' -C loop-runner
 # 必ず検証する。空パスフレーズで復号できなければ失敗している
+ssh-keygen -y -f /c/Users/<you>/.ssh/id_ed25519          -P ''
 ssh-keygen -y -f /c/Users/<you>/.ssh/loop-runner_ed25519 -P ''
 ```
 
-公開鍵を `autoinstall_user_data` の `authorized-keys:` に貼る。
-
-### 2-2. VM の器を作る
+### 2-2. ディストロを用意する
 
 ```powershell
-& $VBM createvm --name loop-runner --ostype Ubuntu24_LTS_64 --register
-# paravirtprovider はホストの仮想化バックエンドで決める（§3-7 を必ず読むこと）
-#   Hyper-V が有効なホスト（VirtualBox が NEM モードで動く）→ none
-#   Hyper-V が無効なホスト（ネイティブ VT-x）        → kvm（性能が上）
-& $VBM modifyvm loop-runner --memory 4096 --cpus 2 --vram 16 `
-    --paravirtprovider none --rtc-use-utc on --graphicscontroller vmsvga
-& $VBM modifyvm loop-runner --nic1 nat --nat-pf1 "ssh,tcp,127.0.0.1,2222,,22"
-& $VBM createmedium disk --filename "$dir\loop-runner.vdi" --size 20480 --format VDI
-& $VBM storagectl loop-runner --name SATA --add sata --controller IntelAhci --portcount 2 --bootable on
-& $VBM storageattach loop-runner --storagectl SATA --port 0 --device 0 --type hdd --medium "$dir\loop-runner.vdi"
-& $VBM storagectl loop-runner --name IDE --add ide
-& $VBM storageattach loop-runner --storagectl IDE --port 0 --device 0 --type dvddrive --medium emptydrive
+wsl --install -d Ubuntu-24.04     # 既定ユーザー(maint)を対話で作る
+wsl -l -v                         # Ubuntu-24.04 / Running / 2 であることを確認
 ```
 
-### 2-3. 無人インストール
+`/etc/wsl.conf` を次の内容にする（`[boot] systemd=true` が無いと `systemctl` が使えず、
+sshd の管理も 50-lockdown.sh の検証も成立しない）:
 
-```powershell
-& $VBM unattended install loop-runner `
-  --iso="<path>\ubuntu-24.04.4-live-server-amd64.iso" `
-  --user=admin --user-password=<PW> --full-user-name="Loop Admin" `
-  --hostname=loop-runner.localdomain `
-  --locale=en_US --country=US --time-zone=Asia/Tokyo `
-  --package-selection-adjustment=minimal `
-  --no-install-additions `
-  --script-template="<repo>\provision\autoinstall_user_data" `
-  --extra-install-kernel-parameters="autoinstall ds=nocloud\;s=file:///cdrom/ --- quiet noprompt noshell" `
-  --start-vm=headless
+```ini
+[boot]
+systemd=true
+
+[user]
+default=maint
+
+[automount]
+enabled=false
+
+[interop]
+enabled=false
+appendWindowsPath=false
 ```
 
-完了判定は **`ssh -i <key> -p 2222 admin@127.0.0.1 hostname` が通ること**。
-SSH ポートが開いたことを判定条件にしてはいけない（§3-3）。
+`C:\Users\yoshi\.wslconfig` はリポジトリ外にあるが、次の3つは隔離の前提:
 
-### 2-4. プロビジョニング
+```ini
+[wsl2]
+localhostForwarding=true    # 127.0.0.1:2222 で sshd に届く
+networkingMode=NAT          # mirrored にしない
+guiApplications=false       # WSLg を切る(§3-8)
+```
+
+残り（`memory` / `processors` / `swap` / `sparseVhd` / `autoMemoryReclaim`）は
+性能配分の話で、隔離には関わらない。`host/README.md` を参照。
+
+`mirrored` だとディストロから Windows の localhost サービスに到達できてしまい、
+隔離が緩くなる。`guiApplications` は既定 true で、切らないと `/mnt/wslg` 経由の
+経路が開いたままになる。
+
+**`/etc/wsl.conf` と `.wslconfig` の変更は `wsl --terminate` では反映されない。**
+`wsl --shutdown` が必要で、それをやったら keepalive タスクを再起動する（§3-2）。
+
+### 2-3. sshd を 2222 で立てる
 
 ```bash
-ssh ... admin@127.0.0.1 'mkdir -p /tmp/loop-provision'
-scp ... provision/*.sh <key>.pub admin@127.0.0.1:/tmp/loop-provision/
-ssh ... admin@127.0.0.1 "cd /tmp/loop-provision && sed -i 's/\r\$//' *.sh && echo '<PW>' | sudo -S -p '' bash provision.sh"
+sudo apt-get update && sudo apt-get install -y openssh-server
+sudo tee /etc/ssh/sshd_config.d/10-loop-dev.conf >/dev/null <<'EOF'
+Port 2222
+ListenAddress 0.0.0.0
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AllowUsers maint
+X11Forwarding no
+EOF
+sudo systemctl enable --now ssh
 ```
 
-`40-perms.sh` が solver 視点の assert を10項目走らせる。1つでも落ちたら異常終了する。
+`maint` の `~/.ssh/authorized_keys` に `id_ed25519.pub` を入れる。
+ここで `AllowUsers maint` だけになるが、`runner` は 50-lockdown.sh が
+`00-loop.conf` 側で足す（**足す順番に意味がある。§3-4**）。
 
-### 2-5. スナップショット
+22 ではなく 2222 を使うのは、Windows 側の 22 と衝突させないためと、
+`localhostForwarding` で `127.0.0.1:2222` にそのまま出るようにするため。
+
+### 2-4. Node と エージェント CLI
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm i -g @anthropic-ai/claude-code @openai/codex   # 導入済みの構成に合わせる
+```
+
+**必ず `sudo npm i -g`（prefix が `/usr`）にすること。** ユーザーローカル prefix に入れて
+`.bashrc` で PATH を足す形にすると、Ubuntu の `.bashrc` が非対話シェルで早期 return する
+ため、SSH 経由の非対話実行やループから見えなくなる。nvm も同じ理由で使えない。
+
+interop を切ると Windows 側の `npm`/`node` が PATH から消えるので、
+ディストロ内にシステムワイドで入れる必要がある。
+
+### 2-5. スクリプトを送り込んでプロビジョニング
+
+`/mnt/c` が無いので、ファイルの受け渡しは **scp** で行う。
+
+```bash
+ssh -p 2222 maint@127.0.0.1 'mkdir -p /tmp/loop-provision'
+scp -P 2222 provision/*.sh /c/Users/<you>/.ssh/loop-runner_ed25519.pub \
+    maint@127.0.0.1:/tmp/loop-provision/
+ssh -p 2222 maint@127.0.0.1 \
+    "cd /tmp/loop-provision && sed -i 's/\r\$//' *.sh && sudo bash provision.sh"
+```
+
+最後の行が非対話で通るのは、WSL の既定ユーザーに `NOPASSWD` の sudoers
+（`/etc/sudoers.d/90-maint`）が入っているから。VirtualBox 構成でパスワードを
+`sudo -S` に流し込んでいたのは不要になった。**`maint` は実質 root** なので、
+ループの三者に含めないこと（RUNNER_SPEC §0-1）。
+
+`05-isolation.sh` が WSL 隔離（Windows パス非マウント、WSLg、systemd、NAT）を、
+`40-perms.sh` が solver 視点の権限モデルを assert する。1つでも落ちたら異常終了する。
+`05-` を最初に走らせるのは、隔離が効いていないディストロには**プロビジョニングする意味が
+無い**（以降の全ステップが成功しつつ何も意味しなくなる）ため。
+
+### 2-6. スナップショット
+
+VirtualBox のスナップショットに相当するのは `wsl --export`。
 
 ```powershell
-& $VBM controlvm loop-runner acpipowerbutton   # 停止してから取る
-& $VBM snapshot loop-runner take base --description "..."
+wsl --shutdown                                                   # export には停止が必要
+wsl --export Ubuntu-24.04 D:\wsl-backup\loop-base.tar
+# 復元: wsl --import Ubuntu-24.04-restore D:\wsl\restore D:\wsl-backup\loop-base.tar
 ```
+
+**`wsl --shutdown` を使ったら keepalive タスクを再起動すること**（§3-2）。
+export は数 GB になるのでリポジトリには入れない（`.gitignore` に `*.tar`）。
 
 ---
 
 ## 3. 落とし穴
 
-### 3-1. VirtualBox 標準テンプレートは SSH サーバを入れない
+### 3-1. keepalive タスクが無いと VM がアイドルで落ちる（最重要）
 
-`UnattendedTemplates/ubuntu_autoinstall_user_data` に `ssh:` セクションがない。
-そのまま使うと**ヘッドレス VM に一切入れなくなる**。
+WSL2 は約60秒アイドルすると **VM ごと停止する**。sshd も一緒に落ちる。
+`WSL-keepalive-Ubuntu-24-04`（ログオン時に `wsl -d Ubuntu-24.04 -u root --exec /usr/bin/sleep infinity`）
+がこれを抑えている。
 
-→ `autoinstall_user_data`（このディレクトリ）を `--script-template` で指定する。
-公開鍵も同時に焼き込むので、初回から鍵認証で入れる。
+実測で確認した事実（2026-08-17）:
 
-### 3-2. `ds=nocloud;s=/cdrom/` では cloud-init が起動しない
+- `.wslconfig` の `vmIdleTimeout` は **`-1` でも大きな正の値でも効かない**
+- **アイドル判定は `wsl.exe` クライアントセッションだけを数える。SSH のトラフィックは数えない。**
+  そのため VS Code Remote-SSH で接続中でも VM は落ちる（接続途中で落ちて
+  「リモートを開いています」で止まる、が実際に起きた）
+- デタッチしたバックグラウンドプロセスも VM を保持しない
 
-VirtualBox 7.1 が生成する GRUB 行は `ds=nocloud\;s=/cdrom/` という古い書き方。
-**Ubuntu 24.04.2 以降の cloud-init 24.x は NoCloud のシード指定にスキーム付き URL を
-要求する**ようになり、素のパスを黙って無視する。結果、インストーラは
-`waiting for cloud-init...` で**永久に停止**する（エラーは出ない）。
+タスクを作り直すとき:
 
-→ `--extra-install-kernel-parameters` で `s=file:///cdrom/` に上書きする。
-なお VirtualBox はこのオプションを **`--dry-run` では grub.cfg に反映しない**ので、
-確認は本番実行後に `Unattended-*-grub.cfg` を読むこと。
+```powershell
+schtasks /create /tn "WSL-keepalive-Ubuntu-24-04" /sc onlogon /rl limited `
+  /tr "C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -u root --exec /usr/bin/sleep infinity"
+schtasks /change /tn "WSL-keepalive-Ubuntu-24-04" /ri 0 /du 0000:00   # 実行時間無制限
+```
 
-### 3-3. インストール完了を SSH ポートで判定してはいけない
+**帰結: この基盤では無人での長時間ループは回せない。** keepalive はログオンセッションに
+紐づくので、ログオフすれば VM は落ちる。無人運用が必要になったら Hyper-V に移す（§5）。
 
-Ubuntu のライブインストーラ自身が sshd を動かしている。**インストール前から
-ポート 2222 は開いており、バナーも返る。** ポート監視は必ず誤検知する。
+### 3-2. `wsl --shutdown` を使うと keepalive が死ぬ
 
-さらに、その時のホスト鍵が `known_hosts` に記録されると、インストール後に
-ホスト鍵が変わって接続が拒否される（`StrictHostKeyChecking=no` はホスト鍵の
-**変更**を素通ししない）。判定用の `known_hosts` は毎回捨てること。
+keepalive プロセスは `wsl --shutdown` で `STATUS_CONTROL_C_EXIT` で落ちる。
+タスクは onlogon なので自動では戻らない。**このサンドボックスを触るとき
+`wsl --shutdown` は使わない。** 使ったら明示的にタスクを再実行する:
 
-→ 判定は **`admin` に鍵でログインして `hostname` が返るか**。ライブ環境には
-`admin` も鍵も存在しないので区別できる。
+```powershell
+schtasks /run /tn "WSL-keepalive-Ubuntu-24-04"
+```
 
-### 3-4. PowerShell から `ssh-keygen -N ''` は空パスフレーズにならない
+`.wslconfig` の変更には `--shutdown` が要るので、そのときは必ずセットで行う。
+
+### 3-3. iptables が入っていない
+
+Ubuntu 24.04 の WSL イメージには `iptables` も `nft` も無い。
+`60-egress.sh` は自分で `apt-get install -y iptables` する（nft バックエンドで動く）。
+
+さらに **WSL2 の VM はアイドルで落ちるので、iptables ルールは頻繁に消える。**
+VirtualBox 構成では「再起動まで持てばよい」で済んだが、ここでは
+`iptables-persistent` による復元が実質必須。`60-egress.sh` の末尾を参照。
+
+### 3-4. sshd の drop-in は「先に読んだ値が勝つ」。ただし `AllowUsers` は例外
+
+sshd は各キーワードについて **最初に見た値**を採用する。`PasswordAuthentication` や
+`Port` のような単一値のキーワードを後から `99-*.conf` で上書きしようとしても**負ける**。
+エラーは出ないので、設定を書いたのに効いていない状態に気づけない。
+
+→ `50-lockdown.sh` は `00-loop.conf` に書く（`10-loop-dev.conf` より先に読まれる）。
+そして `sshd -T` で**実効値を検証する**。効いていなければ異常終了する。
+
+**`AllowUsers` / `DenyUsers` はリスト値で、drop-in をまたいで累積する。**
+`10-loop-dev.conf` の `AllowUsers maint` と `00-loop.conf` の
+`AllowUsers maint runner` は、順序に関係なく合算されて `{maint, runner}` になる。
+帰結として重要なのは逆方向で、**後から書く drop-in は許可を広げることしかできない。**
+誰かを外すには、その名前を書いているファイル自体を直す必要がある。
+
+さらに `sshd -T` の出力形式が罠になる。**1ユーザーにつき1行**で出る:
+
+```
+allowusers maint
+allowusers runner
+allowusers maint      ← 2つの drop-in に書かれているので重複して出る
+denyusers solver
+```
+
+検証スクリプトで「最後の行」や「最初の行」だけを見ると誤判定する
+（2026-08-17、実際に `50-lockdown.sh` がこれで正しい設定を FAIL と判定した）。
+全行を集めて集合として扱うこと。
+
+（VirtualBox 構成では単一値キーワードのほうの罠を cloud-init の
+`50-cloud-init.conf` で踏んだ。書くファイル名は変わっても、原因と対処は同じ。）
+
+### 3-5. PowerShell から `ssh-keygen -N ''` は空パスフレーズにならない
 
 `-N '""'` も `--%` 経由の `-N ""` も、**空文字ではないパスフレーズ**として渡る。
 生成自体は成功するので気づかない。症状は接続時の
@@ -138,139 +270,167 @@ debug1: Server accepts key: ...
 Permission denied (publickey,password).
 ```
 
-サーバ側ログは `Connection reset by authenticating user admin [preauth]`。
+サーバ側ログは `Connection reset by authenticating user runner [preauth]`。
 **サーバは鍵を受理していて、クライアントが署名できずに切っている。**
 `authorized_keys` を疑って時間を溶かす典型。
 
 → 鍵の生成は Bash で行い、`ssh-keygen -y -f <key> -P ''` で必ず検証する。
 
-### 3-5. sshd の drop-in は「先に読んだ値が勝つ」
+### 3-6. `.ps1` に日本語コメントを書くと壊れる
 
-cloud-init が `/etc/ssh/sshd_config.d/50-cloud-init.conf` に
-`PasswordAuthentication yes` を書く（autoinstall の `allow-pw: true` 由来）。
-`99-loop.conf` は**後から読まれるので負ける**。設定を書いても効かない。
+PowerShell 5.1 は BOM 無し UTF-8 を ANSI として読む。日本語文字の末尾バイトが
+バッククォート（行継続）と解釈され、**コメント行が次の行を飲み込み、変数が黙って null になる。**
 
-→ ファイル名を `00-loop.conf` にする。そして `sshd -T` で**実効値を検証する**。
-`50-lockdown.sh` はこの検証を持っており、効いていなければ異常終了する。
+→ `.ps1` / `.cmd` は ASCII のみで書く（`loop-dev.cmd` がそうなっている）か、
+スクリプトを作らずインライン実行する。多段クォート（PowerShell → ssh → リモートシェル）も
+崩れやすいので、複雑なものは base64 化して
+`echo <b64> | base64 -d | bash` で渡すのが確実。
 
-### 3-6. `set -o pipefail` 下の `... | grep -q`
+### 3-7. Git Bash から `wsl.exe` を叩くとパスが変換される
+
+Git Bash 経由で `wsl -d Ubuntu-24.04 --exec /bin/true` を実行すると、
+MSYS が `/bin/true` を Windows パスに変換して失敗する。
+`/usr/bin/true` のように変換されない形を使う（`loop-dev.cmd` がそうしている）。
+
+### 3-8. WSLg が Windows 側への通り道を開けたままにする
+
+`automount` と `interop` を切っても、**WSLg（Linux GUI アプリ対応）は生きている。**
+`/mnt/wslg` に Windows 側で動くコンポジタと PulseAudio サーバへのソケットがあり、
+パーミッションは誰でも読める:
+
+```
+drwxrwxrwx  .X11-unix
+srwxrwxrwx  PulseServer / PulseAudioRDPSink / PulseAudioRDPSource
+```
+
+つまり `solver` からもディスプレイ・音声・クリップボード連携の経路に届く。
+`/etc/wsl.conf` にはこれを切る設定が無く、Windows 側の `.wslconfig` で閉じる:
+
+```ini
+[wsl2]
+guiApplications=false
+```
+
+反映には `wsl --shutdown` が必要（→ keepalive 再起動、§3-2）。
+
+2026-08-17 に適用済み。反映後の状態（確認済み）:
+
+- `/mnt/wslg` 配下のソケットが**全て消える**（`find -type s` が 0 件）
+- `/mnt/wslg/versions.txt` と `/doc` の overlay マウントも消える
+- `/tmp/.X11-unix` は空、ログインシェルの `DISPLAY` / `WAYLAND_DISPLAY` / `PULSE_SERVER` も未設定
+
+**ただし `/mnt/wslg` ディレクトリ自体は残る**（`run/user/<uid>` の空の骨組みだけ）。
+そのためディレクトリの有無で判定すると誤検知する。`05-isolation.sh` は
+**ソケットと `/mnt/wslg` 配下のマウント**を探して FAIL にしている。
+意図して受け入れる場合は `ALLOW_WSLG=1` を付けて実行する
+（この waiver は他のチェックには効かない）。
+
+### 3-9. interop の binfmt ハンドラは切っても残る
+
+`[interop] enabled=false` にしても `/proc/sys/fs/binfmt_misc/WSLInterop` は
+登録されたまま（`enabled` / `interpreter /init` / `magic 4d5a`）。
+**したがってハンドラの有無は隔離の証拠にならない。**
+
+実際に効いていないことは実行して初めて分かる。2026-08-17 に root で `C:` を
+drvfs マウントして `cmd.exe` を叩いた結果:
+
+```
+rc=1  WSL ERROR: UtilAcceptVsock:273: accept4 failed 110
+```
+
+`/init` が Windows 側に繋げず、vsock の accept でタイムアウトしている。
+つまり実行経路は死んでいる。
+
+**ただし root は `mount -t drvfs C: /somewhere` でいつでも C: を持ち込める**
+（実測で成功する）。automount を切ることは root に対する防御ではない。
+効いているのは「`solver` は sudo を持たないのでマウントできない」という点で、
+**隔離の実質は権限モデル（`40-perms.sh`）と同じ土台に乗っている。**
+
+だから `05-isolation.sh` は binfmt の登録を FAIL にせず、
+**Windows パスが1つもマウントされていないこと**を主チェックにしている。
+
+### 3-10. `set -o pipefail` 下の `... | grep -q`
 
 `grep -q` は最初のマッチで即終了する。すると上流が SIGPIPE で死に、
 **pipefail がパイプライン全体を失敗扱いにする。マッチしているのに失敗する。**
 検証スクリプトで踏むと「正しい設定を誤りと判定する」ので厄介。
 
-→ 一度変数に取ってから判定する。`50-lockdown.sh` の末尾を参照。
+→ 一度変数に取ってから判定する。`50-lockdown.sh` の末尾と `05-isolation.sh` の
+`loopback0` チェックを参照。
 
 ---
 
-### 3-7. Hyper-V が有効なホストでは `--paravirtprovider kvm` がカーネルをハングさせる
+## 4. 未適用
 
-Windows で Hyper-V / WSL2 / Virtual Machine Platform / メモリ整合性 のいずれかが
-有効だと、VirtualBox は VT-x を直接使えず **NEM モード（Hyper-V の API 経由）**で動く。
-この状態で Linux ゲストに `--paravirtprovider kvm` を与えると、kvm-clock まわりで
-CPU ロックアップが起きる。
+`60-egress.sh` は**実行していない**。ソルバーの CLI とそのエンドポイントが
+未決のため（RUNNER_SPEC §11-1）。
 
-観測した症状:
+適用するまで、`solver` アカウントは**外部ネットワークに自由に出られる**。
+つまり「詰まったら `pip install` する」経路が開いたままで、
+RUNNER_SPEC §1-3 の環境凍結は成立していない。
+
+ソルバーを決めたら:
+
+```bash
+sudo ./60-egress.sh api.anthropic.com          # Claude Code をソルバーにする場合
+sudo ./60-egress.sh api.openai.com auth.openai.com   # Codex CLI の場合
+```
+
+ディストロ内には Claude Code と Codex CLI が両方入っているが、
+**2026-08-17 時点でどちらも未認証**。ソルバー確定にはまずログインが必要。
+
+---
+
+## 5. Hyper-V へ移す条件
+
+WSL2 でよいのは「人が張り付いている間だけ回す」用途に限られる（§3-1）。
+次のどれかが必要になったら Hyper-V の VM に移す:
+
+- 無人で数時間以上ループを回す（ログオフしても走り続ける）
+- ホストの再起動を挟んで自動復帰する
+- ループ実行中に Windows 側で重い作業をしても影響を受けない
+
+ディストロ内の構成（`provision/` の 10〜60）は**そのまま持っていける**。
+変わるのはホスト側の起動・接続まわりと、スナップショットの取り方だけ。
+
+## 6. なぜ VirtualBox をやめたか
+
+当初は VirtualBox 7.x + Ubuntu Server 24.04 の無人インストールで作っていた
+（`c4374f4` まではその手順がこのファイルにあった）。捨てた理由:
+
+**Hyper-V が有効な Windows ホストでは VirtualBox が使えない。**
+Hyper-V / WSL2 / Virtual Machine Platform / メモリ整合性 のいずれかが有効だと、
+VirtualBox は VT-x を直接使えず NEM モード（Hyper-V の API 経由）で動く。
+この状態で Linux ゲストは起動時に **2回に1回ハングした**:
 
 ```
 nmi_backtrace_stall_check: CPU 1: NMIs are not reaching exc_nmi() handler
 last activity: 4294855847 jiffies ago
 ```
 
-jiffies 値が 32bit ラップした異常値になっているのがタイマー起因のサイン。
-**厄介なのは再現性がないこと** ── インストールと初回起動は正常に通り、
-スナップショット後の再起動で初めてハングした。
-
-ホストの状態は次で判定する:
-
-```powershell
-(Get-CimInstance Win32_ComputerSystem).HypervisorPresent   # True なら NEM モード
-```
-
-| ホスト | 設定 | 備考 |
-|---|---|---|
-| `HypervisorPresent = False` | `--paravirtprovider kvm` | ネイティブ VT-x。**これが唯一まともに動く構成** |
-| `HypervisorPresent = True` | `--paravirtprovider none` | **緩和にしかならない。下記参照** |
-
-#### `none` にしても直らなかった
-
-`kvm` → `none` に変更後、再起動テストを回した結果:
-
-| 周回 | 結果 |
-|---|---|
-| 1 | 正常（クリーン停止 → SSH 復帰 73秒） |
-| 2 | **ハング**（3分経っても早期ブート画面のまま、SSH 応答なし） |
-
-`kvm` のときより頻度は下がったが、**2回に1回ハングする**状態で、
+jiffies が 32bit ラップした異常値になるのはタイマー起因のサイン。
+`--paravirtprovider` を `kvm` → `none` に変えても頻度が下がるだけで解消しなかった。
+再現性が無く（インストールと初回起動は通り、スナップショット後の再起動で初めてハング）、
 数時間ループを回す基盤としては使えない。
 
-**結論: Hyper-V が有効な Windows ホストでは、VirtualBox をこの用途に使わない。**
-取れる手は3つ:
+Hyper-V を無効化すれば VT-x に戻って安定するが、**WSL2 も Docker Desktop も動かなくなる**。
+すでに Hyper-V が動いているなら、そちらがネイティブなので WSL2 に寄せるほうが筋が良い。
 
-1. **Hyper-V が無効な別マシンを使う**（推奨。§4）
-2. **そのマシンで Hyper-V を無効化する** ── VT-x に戻り安定するが、
-   **WSL2 も Docker Desktop も動かなくなる**
-   ```powershell
-   # 管理者権限。要再起動
-   bcdedit /set hypervisorlaunchtype off
-   dism /online /disable-feature /featurename:VirtualMachinePlatform
-   # 戻すとき: bcdedit /set hypervisorlaunchtype auto
-   ```
-3. **VirtualBox をやめて WSL2 側に寄せる** ── 既に Hyper-V が動いているなら、
-   そちらがネイティブ。ただし `/mnt/c` の自動マウントと Windows 実行ファイルの
-   相互運用（`powershell.exe` が呼べてしまう）を `/etc/wsl.conf` で明示的に
-   切らないと隔離が成立しない。**既定では隔離されていない**点に注意
+WSL2 に移して失ったもの・得たもの:
 
----
+| | VirtualBox | WSL2 |
+|---|---|---|
+| 起動の安定性 | 2回に1回ハング | 安定 |
+| 隔離 | 既定で隔離 | **既定では隔離されない**（`/mnt/c` と interop を明示的に切る必要がある） |
+| 無人実行 | できる | **できない**（§3-1） |
+| スナップショット | `VBoxManage snapshot`（差分・軽い） | `wsl --export`（全体・数GB） |
+| ホストからの root | できない | **いつでもできる**（`wsl -u root`） |
 
-## 4. 別のマシンへ移す
+最後の行は重要で、脅威モデルが片方向になったことを意味する。守っているのは
+「サンドボックスから Windows を守る」方向だけで、逆方向は守っていない。
+RUNNER_SPEC §0-1 の「プランナーはサンドボックスに入らない」は機構ではなく規律である
+（VirtualBox 構成でも規律だったが、WSL2 では踏み越えるコストがさらに低い）。
 
-**VM をエクスポートせず、このディレクトリのスクリプトで作り直すことを勧める。**
-`base` スナップショットの状態は §2 の手順で完全に再現でき、4GB の転送が要らない。
-移すのは `provision/` ディレクトリと ISO だけ。
-
-移設先で最初に確認すること:
-
-```powershell
-(Get-CimInstance Win32_ComputerSystem).HypervisorPresent   # → §3-7 で設定を決める
-(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
-[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)
-```
-
-`HypervisorPresent = False` なら:
-
-- `--paravirtprovider kvm` に戻せる（性能が上がる）
-- CPU とメモリに余裕があれば `--cpus 4 --memory 8192` へ引き上げてよい。
-  pytest の実行が速くなるぶん、ループ1周が短くなる
-
-鍵は移設先で**作り直す**こと（§2-1）。秘密鍵を持ち歩かない。
-作り直したら公開鍵を `autoinstall_user_data` に貼り替える。
-
-VM をそのまま持っていく場合は:
-
-```powershell
-& $VBM export loop-runner -o loop-runner.ova
-# 移設先で
-& $VBM import loop-runner.ova
-& $VBM modifyvm loop-runner --paravirtprovider <none|kvm>   # 移設先に合わせて設定し直す
-```
-
-ただし OVA にはホストの公開鍵が焼き込まれた状態が含まれるので、
-**移設先で `authorized_keys` を新しい鍵に差し替えるまで、元のマシンの鍵で入れてしまう。**
-
----
-
-## 5. 未適用
-
-`60-egress.sh` は**実行していない**。ソルバーの CLI とその API エンドポイントが
-未決のため（RUNNER_SPEC §11-1）。
-
-適用するまで、`solver` アカウントは**外部ネットワークに自由に出られる**。
-つまり「詰まったら `pip install` する」経路が開いたままで、
-RUNNER_SPEC 1-3 の環境凍結は成立していない。
-
-ソルバーを決めたら:
-
-```bash
-sudo ./60-egress.sh <api-domain>
-```
+VirtualBox 特有の落とし穴（標準テンプレートに sshd が無い / `ds=nocloud` のスキーム、
+インストール完了をポートで判定してはいけない）と `autoinstall_user_data` は、
+この構成では使わないので削除した。必要なら `c4374f4` から拾える。

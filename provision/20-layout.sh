@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Directory layout and git repositories. Idempotent.
 #
-#   /srv/loop/repo.git   bare repo. The planner (on the host) pushes here
+# Everything lives on the distro's own ext4 filesystem inside the VHDX. Nothing
+# lives on a Windows path: /mnt/c is not mounted (automount is off), and even if
+# it were, DrvFs cannot represent the ownership and mode bits that 40-perms.sh
+# depends on -- the test freeze would stop being enforceable.
+#
+#   /srv/loop/repo.git   bare repo. The planner (on Windows) pushes here
 #                        over SSH as `runner`; the runner pulls from it.
 #   /srv/loop/project    working tree the loop actually runs in
 #   /srv/loop/brief      runner writes the per-step brief here, solver reads it.
@@ -18,7 +23,7 @@ if [ ! -d /srv/loop/repo.git ]; then
 fi
 
 sudo -u runner git config --global user.name  "loop runner"
-sudo -u runner git config --global user.email "runner@loop-runner.localdomain"
+sudo -u runner git config --global user.email "runner@$(hostname)"
 sudo -u runner git config --global init.defaultBranch main
 # The working tree is owned by runner but contains group-writable dirs; keep
 # git from treating that as a dubious-ownership problem.

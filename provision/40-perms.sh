@@ -7,6 +7,7 @@
 # permission model nobody tested is a permission model that does not exist.
 set -euo pipefail
 P=/srv/loop/project
+ADMIN_USER="${ADMIN_USER:-maint}"
 
 chown -R runner:runner "$P"
 chmod 755 "$P"
@@ -43,6 +44,9 @@ chk_cannot ls "$P/plan"
 chk_cannot ls "$P/.runner"
 chk_cannot test -w /srv/loop/brief
 chk_cannot ls /home/runner
+# The maintenance user's home holds the human's ssh keys and the agent CLI
+# credentials. solver reaching it would hand it the git channel and a login.
+chk_cannot ls "/home/$ADMIN_USER"
 
 if [ "$fail" -eq 0 ]; then
   echo "40-perms: ok (all assertions passed)"

@@ -1,9 +1,9 @@
-# HANDOFF.md — 別マシンで再開するための引き継ぎ
+# HANDOFF.md — 再開するための引き継ぎ
 
 このファイルを最初に読むこと。会話の記録は引き継がれないので、状態はこことリポジトリ内の
 ファイルにしかない。
 
-最終更新: 2026-08-13
+最終更新: 2026-08-17
 
 ---
 
@@ -16,9 +16,9 @@
 
 | 主体 | 担当 |
 |---|---|
-| **プランナー**（Claude Code） | 仕様と受け入れ条件を書く。コードは書かない |
+| **プランナー**（Claude Code / Windows 側） | 仕様と受け入れ条件を書く。コードは書かない |
 | **ランナー**（未実装） | 関門を機構として強制する。プランナーとソルバーの間に立つ |
-| **ソルバー**（未定） | 実装を書く。記憶を持たず、1ステップ分の情報しか受け取らない |
+| **ソルバー**（未確定） | 実装を書く。記憶を持たず、1ステップ分の情報しか受け取らない |
 
 ## 2. 読む順番
 
@@ -26,7 +26,8 @@
 |---|---|---|
 | 1 | `BOOTSTRAP.md` | **設計思想**。1-1〜1-7 がこの方式の前提。変更しない |
 | 2 | `RUNNER_SPEC.md` | ランナーの仕様。BOOTSTRAP の原則を機構に落としたもの |
-| 3 | `provision/README.md` | VM 構築手順と**踏んだ罠7つ**。再構築時に必読 |
+| 3 | `provision/README.md` | サンドボックス構築手順と**落とし穴10個**（踏んだか実機確認済み）。再構築時に必読 |
+| 4 | `host/README.md` | Windows 側（起動・keepalive・SSH 設定）。これが無いと上がってこない |
 
 `BOOTSTRAP.md` §2 の「作るもの」（検索エンジン）は**まだ確定していない**。
 題材は未決で、先に基盤を作っている。
@@ -44,64 +45,84 @@
   - REVIEW_GATE（受け入れ条件→テストの翻訳を人間が1回だけ見る）
   - エスカレーション2回目以降は (a) を禁止
   - 結合ステップを終盤だけでなく**最初の3ステップ以内にも**要求（リンタ L9）
-- **`provision/` 一式** → VM のプロビジョニング。**全スクリプト動作確認済み**
+- **実行基盤を VirtualBox から WSL2 に移した** → 下記「4. 基盤の切り替え」
+- **WSL2 サンドボックスの素地** → ディストロ `Ubuntu-24.04` に対して完了しているもの:
+  - `/etc/wsl.conf` で automount / interop を無効化（隔離）
+  - sshd を 2222 で鍵認証のみ、`AllowUsers maint`
+  - `.wslconfig`（8GB / 6 proc / NAT / sparseVhd）と keepalive タスク
+  - ホスト側 `loop-dev` ランチャ（起動 → sshd 待機 → VS Code Remote-SSH）
+  - **WSLg を無効化**（`.wslconfig` `guiApplications=false`）。`automount` / `interop` を
+    切っても閉じない別経路だった。2026-08-17 適用・反映確認済み（`provision/README.md` §3-8）
+  - Node 22 LTS と Codex CLI / Claude Code をシステムワイドに導入
+- **`provision/` 一式を WSL2 向けに書き換え、実走完了**（`05`〜`50`。2026-08-17）。
+  この時点で成立していることを実測で確認:
+  - `runner`(1001) / `solver`(1002) が存在し、どちらも sudo 不可
+  - `/srv/loop/{repo.git, project, brief}` が runner 所有で存在
+  - solver から `plan/` `.git/` `.runner/` `/home/runner` `/home/maint` が**読めない**
+  - solver は `.venv` に**書けない**（pytest の実行だけできる）
+  - FREEZE を模して `chmod -R a-w tests/` すると solver の書き込みが**実際に弾かれる**
+  - ホストから `runner` 鍵で bare リポジトリに到達でき、`solver` は SSH を**拒否される**
+- **`runner` 用 SSH 鍵**（`C:\Users\yoshi\.ssh\loop-runner_ed25519`）を作成。
+  保守用の `id_ed25519` とは別。git 経路専用
 
 ### 未完了
 
 - **ランナー本体の実装**（RUNNER_SPEC §3〜§9）。1行も書いていない
-- **`60-egress.sh` の適用**。ソルバー未定のため（RUNNER_SPEC §11-1）
+- **`60-egress.sh` の適用**。ソルバー未確定のため（RUNNER_SPEC §11-1）
+- **エージェント CLI の認証**。Codex CLI / Claude Code は入っているが**両方未認証**
 - **題材の決定**（BOOTSTRAP.md の Phase 0）
 
-## 4. 直近のブロッカー
+## 4. 基盤の切り替え（旧ブロッカーの解消）
 
-**VM が起動時に 2回に1回ハングする。**
+以前のブロッカーは「VM が起動時に2回に1回ハングする」だった。原因はハイパーバイザ層で、
+ホストの Hyper-V が有効なため VirtualBox が NEM モードに落ちていた。
+`--paravirtprovider` を変えても頻度が下がるだけだった。
 
-原因はハイパーバイザ層。ホストで Hyper-V が有効だと VirtualBox は VT-x を直接使えず
-NEM モードで動き、Linux ゲストのタイマーまわりが壊れる。
-`--paravirtprovider` を `kvm` → `none` に変えても頻度が下がるだけで解消しない。
+**Hyper-V を止めずに VirtualBox を捨てる方を選び、WSL2 に移した。**
+Hyper-V を無効化すれば VirtualBox は安定するが、WSL2 と Docker Desktop が動かなくなる。
+経緯と得失の比較は `provision/README.md` §6。
 
-詳細と対処3案は `provision/README.md` §3-7。
+移して**得たもの**: 起動の安定性、構築時間の短縮（ISO の無人インストールが不要）。
+移して**失ったもの**:
 
-### 移設先で最初にやること
+- **無人実行**。WSL2 の VM は約60秒のアイドルで停止し、SSH のトラフィックはアイドル判定に
+  数えられない。keepalive タスクがログオンセッションに紐づくので、
+  **ログオフを跨いでループは回せない**（RUNNER_SPEC §1-6）
+- **既定の隔離**。WSL2 は既定で `/mnt/c` が見え `.exe` が動く。切ったうえで
+  `05-isolation.sh` が実状態に対して assert する（RUNNER_SPEC §1-4）
+- **軽いスナップショット**。`wsl --export` は差分が取れず数 GB
 
-```powershell
-(Get-CimInstance Win32_ComputerSystem).HypervisorPresent
-```
+## 5. 次にやること（順番）
 
-- **`False`** → `provision/README.md` §2 の手順をそのまま実行。
-  `--paravirtprovider kvm` で構わない。今日の問題は起きない
-- **`True`** → 同じ問題を踏む。§3-7 の3案から選ぶ
-
-**ハイパーバイザより上は全部検証済み**なので、ここさえ通れば残りは手順通りで詰まらない。
-所要 35〜50分、大半はインストーラの待ち時間。
-
-## 5. 移設時の注意
-
-- **SSH 秘密鍵は持ち込まない。** 移設先で作り直す（`provision/README.md` §2-1）。
-  **鍵の生成は必ず Bash で行う** ── PowerShell からだと `-N ''` が空パスフレーズにならず、
-  生成は成功するのに署名できない鍵ができる（§3-4）
-- 作り直した公開鍵を `provision/autoinstall_user_data` の `authorized-keys:` に貼り替える。
-  いま入っているのは旧マシンの鍵で、使わない
-- Ubuntu ISO は `ubuntu-24.04.4-live-server-amd64.iso`（3.17GB）。
-  SHA256 は `e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433`
-
-## 6. 次にやること（順番）
-
-1. 移設先で VM を再構築（`provision/README.md` §2）
-2. **ソルバーを決める** ── これが2つのことを解除する:
+1. **ソルバーを決める** ── これが3つのことを解除する:
    - `60-egress.sh` を適用でき、環境凍結が成立する
    - RUNNER_SPEC §11-1 が閉じる
-   制限下（`--uid-owner solver` の egress 制限）で動くか要検証
-3. **ランナーの実装**。初版は手書きで、捨てる前提（鶏卵を避ける）
-4. 題材を決めて BOOTSTRAP.md の Phase 0 へ
+   - CLI の認証方式が決まる（`solver` は `maint` の home を読めないことを実測済み。
+     対話ログインでは渡らないので、専用 API キーが必要）
+2. **ランナーの実装**。初版は手書きで、捨てる前提（鶏卵を避ける）。
+   **基盤側の残作業は無いので、ここが唯一のボトルネック**
+3. 題材を決めて BOOTSTRAP.md の Phase 0 へ
+
+## 6. 触るときの注意
+
+- **`wsl --shutdown` を使わない。** keepalive プロセスが巻き添えで死に、
+  SSH が使えなくなる。使ったら `schtasks /run /tn "WSL-keepalive-Ubuntu-24-04"`
+  （`provision/README.md` §3-2）
+- **SSH 秘密鍵は持ち込まない。** 移設先で作り直す。**生成は必ず Bash で行う**
+  ── PowerShell からだと `-N ''` が空パスフレーズにならず、生成は成功するのに
+  署名できない鍵ができる（§3-5）
+- **`.ps1` に日本語を書かない。** PowerShell 5.1 が ANSI として読み、コメントが
+  次の行を飲み込んで変数が黙って null になる（§3-6）
+- ディストロには `/mnt/c` が無い。ファイルの受け渡しは scp（§2-5）
 
 ## 7. 未決事項
 
-RUNNER_SPEC §11 に4件。特に重いのは:
+RUNNER_SPEC §11 に5件。特に重いのは:
 
-- **ソルバーの実体**（Codex CLI か別か）。egress 制限下で動くか未検証
+- **ソルバーの実体と、その認証情報の渡し方**（§11-1）
 - **テスト実行のタイムアウト値**。無限ループする実装は普通に出るので必須。
   全体固定 120s から始めるのを提案済み
+- **VM が落ちた場合の再開の粒度**（§11-5）。WSL2 に移して新しく必要になった項目
 
 加えて BOOTSTRAP.md の3ファイル制約について1点未決:
 `templates/tasks.schema.json` が存在しないが、プランナーが書ける3ファイルに含まれない。

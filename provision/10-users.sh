@@ -1,12 +1,23 @@
 #!/usr/bin/env bash
 # Users and groups. Idempotent.
 #
-# runner : owns everything, drives the loop, no sudo
-# solver : writes src/ (and tests/ before freeze) only, no sudo, no ssh
+# maint : the distro's default user (uid 1000). Has sudo. Maintenance and
+#           provisioning only -- it is NOT part of the loop.
+# runner  : owns everything, drives the loop, no sudo
+# solver  : writes src/ (and tests/ before freeze) only, no sudo, no ssh
 #
-# The two accounts must not be able to read each other's home, so the
-# repository lives in /srv/loop rather than under either home directory.
+# The loop accounts must not be able to read each other's home, nor the
+# maintenance account's home, so the repository lives in /srv/loop rather than
+# under any home directory.
 set -euo pipefail
+
+ADMIN_USER="${ADMIN_USER:-maint}"
+
+id -u "$ADMIN_USER" >/dev/null 2>&1 || {
+  echo "FATAL: maintenance user '$ADMIN_USER' does not exist." >&2
+  echo "       This is the distro's default user; set ADMIN_USER if it differs." >&2
+  exit 1
+}
 
 id -u runner >/dev/null 2>&1 || useradd -m -u 1001 -s /bin/bash runner
 id -u solver >/dev/null 2>&1 || useradd -m -u 1002 -s /bin/bash solver
@@ -16,8 +27,8 @@ getent group solverw >/dev/null || groupadd solverw
 usermod -aG solverw solver
 usermod -aG solverw runner   # so runner can write into brief/ with group perms
 
-# Neither account may sudo. Assert rather than assume: a stray sudoers drop-in
-# would silently defeat the whole environment-freeze argument.
+# Neither loop account may sudo. Assert rather than assume: a stray sudoers
+# drop-in would silently defeat the whole environment-freeze argument.
 for u in runner solver; do
   if id -nG "$u" | tr ' ' '\n' | grep -qxE 'sudo|admin'; then
     echo "FATAL: $u is in a sudo-capable group" >&2
@@ -25,8 +36,9 @@ for u in runner solver; do
   fi
 done
 
-# Homes are private to their owner.
+# Homes are private to their owner. The maintenance user's home is where the
+# human keeps ssh keys and agent CLI credentials, so solver must not read it.
 chmod 700 /home/runner /home/solver
-[ -d /home/admin ] && chmod 700 /home/admin
+if [ -d "/home/$ADMIN_USER" ]; then chmod 700 "/home/$ADMIN_USER"; fi
 
 echo "10-users: ok"
