@@ -362,22 +362,29 @@ rc=1  WSL ERROR: UtilAcceptVsock:273: accept4 failed 110
 
 ## 4. 未適用
 
-`60-egress.sh` は**実行していない**。ソルバーの CLI とそのエンドポイントが
-未決のため（RUNNER_SPEC §11-1）。
+`60-egress.sh` は**実行していない**。ソルバーは Codex CLI に確定したが、
+その実際の通信先がまだ分かっていないため。
 
 適用するまで、`solver` アカウントは**外部ネットワークに自由に出られる**。
 つまり「詰まったら `pip install` する」経路が開いたままで、
 RUNNER_SPEC §1-3 の環境凍結は成立していない。
 
-ソルバーを決めたら:
+手順:
 
 ```bash
-sudo ./60-egress.sh api.anthropic.com          # Claude Code をソルバーにする場合
-sudo ./60-egress.sh api.openai.com auth.openai.com   # Codex CLI の場合
+# 1. solver として一度動かし、実際の通信先を観察する
+#    (推測でドメインを並べない。このスクリプトは解決した IP を固定するので、
+#     漏れがあると「動いていたものが静かに止まる」形で壊れる)
+sudo -u solver env OPENAI_API_KEY=... codex ...
+
+# 2. 観察した宛先だけを許可する
+sudo ./60-egress.sh <host> [host ...]
 ```
 
-ディストロ内には Claude Code と Codex CLI が両方入っているが、
-**2026-08-17 時点でどちらも未認証**。ソルバー確定にはまずログインが必要。
+ディストロ内には Claude Code と Codex CLI が両方入っている（Claude Code は
+プランナー側の実体でもあるが、サンドボックス内のものはソルバー候補として入れたもので、
+今回は使わない）。**2026-08-17 時点で Codex CLI は未認証**で、`solver` 用の
+API キーも未発行。
 
 ---
 
