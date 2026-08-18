@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Start the solver agent, non-interactively, on one brief.
+#
+# Invoked by the runner as:
+#     sudo -u solver /srv/loop/bin/solver-run <brief-file>
+#
+# The runner has no sudo (10-users.sh asserts that). The single exception in
+# /etc/sudoers.d/91-runner-to-solver names this script and no other, and is
+# limited to Runas (solver) -- sideways, never up.
+set -euo pipefail
+
+BRIEF="${1:?usage: solver-run <brief-file>}"
+[ -r "$BRIEF" ] || { echo "solver-run: cannot read brief: $BRIEF" >&2; exit 2; }
+
+# sudo's env_reset does not reliably hand HOME to the target user, and codex
+# resolves its credential directory from HOME. Without these two lines it looks
+# in the RUNNER's home, finds nothing, and reports "Not logged in" -- a failure
+# a long way from its cause. Set both explicitly rather than depending on a
+# sudo flag the runner would have to remember to pass.
+export HOME=/home/solver
+export CODEX_HOME=/home/solver/.codex
+
+# The solver authenticates with its OWN ChatGPT login, stored under a home at
+# mode 700. No other account can read it, and -- the point of doing it this way
+# -- the solver cannot read anyone else's either. There is deliberately no
+# shared credential file: `sudo -u solver -H codex login --device-auth`.
+if [ ! -r "$CODEX_HOME/auth.json" ]; then
+  echo "solver-run: solver is not logged in. Run:" >&2
+  echo "    sudo -u solver -H codex login --device-auth" >&2
+  echo "Logging in as any other account does NOT work: /home/<other> is 0700." >&2
+  exit 3
+fi
+
+# Move into the working tree before starting the agent. `--cd` below tells codex
+# which directory to treat as the workspace, but it does NOT change the process's
+# own cwd -- sudo hands that down from the caller, and the caller is the runner,
+# whose home is 0700. The solver cannot even traverse it, so the sandbox fails
+# while setting itself up and reports the error against `src/`, a long way from
+# the actual cause.
+cd /srv/loop/project
+
+# --ignore-user-config  auth still uses CODEX_HOME, but config.toml is not read.
+#                       This is what keeps the brief the solver's ONLY input
+#                       (RUNNER_SPEC section 5); without it the agent picks up
+#                       ambient configuration and "one step's worth of
+#                       information" becomes a claim rather than a fact.
+# --ignore-rules        same argument for user and project .rules files.
+# --ephemeral           no session files on disk, so the solver cannot resume a
+#                       previous step. BOOTSTRAP requires the solver to lose its
+#                       memory between steps; this is that requirement as a
+#                       mechanism instead of a promise.
+# --sandbox workspace-write
+#                       codex's own sandbox, a SECOND fence. The load-bearing
+#                       one is the filesystem (RUNNER_SPEC 1-2): src/ is
+#                       group-writable, plan/ and .runner/ are 700 runner. If
+#                       the two ever disagree the filesystem wins, because it is
+#                       the fence the solver cannot talk its way past.
+#
+# No timeout here: the value is still undecided (RUNNER_SPEC section 11). The
+# runner will impose it from outside, where it can be enforced rather than
+# cooperated with.
+exec codex exec \
+  --cd /srv/loop/project \
+  --sandbox workspace-write \
+  --skip-git-repo-check \
+  --ignore-user-config \
+  --ignore-rules \
+  --ephemeral \
+  --color never \
+  - < "$BRIEF"

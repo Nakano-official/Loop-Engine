@@ -10,7 +10,22 @@ P=/srv/loop/project
 ADMIN_USER="${ADMIN_USER:-maint}"
 
 chown -R runner:runner "$P"
-chmod 755 "$P"
+
+# The working tree root is group-writable, which is not the obvious choice.
+# Codex's apply_patch writes through the workspace root, so a read-only root
+# makes every edit fail -- with an error naming the target file, a long way from
+# the actual cause.
+#
+# Writable alone would be a hole: unlink and rename are governed by the
+# DIRECTORY's write bit, not the file's, so a solver that cannot modify
+# conftest.py could still delete it and put its own there. Test collection is
+# exactly what FREEZE exists to protect, so that would quietly undo it.
+#
+# The sticky bit closes that: with it, only a file's owner may remove or rename
+# it. The solver can create new files at the root (which codex needs) and cannot
+# touch anything runner owns. Asserted at the bottom of this script.
+chgrp solverw "$P"
+chmod 3775 "$P"      # setgid + sticky + rwxrwxr-x
 
 # Private to runner: git history, the plan, and the freeze manifests.
 # solver must not be able to read tasks.json (RUNNER_SPEC 5) or learn which
@@ -26,12 +41,22 @@ chmod 2775 "$P/src" "$P/tests"
 chmod -R go-w "$P/.venv"
 
 chown runner:solverw /srv/loop/brief
-chmod 750 /srv/loop/brief
+chmod 2750 /srv/loop/brief   # setgid: briefs must land in group solverw
 
 # ---- assertions (from solver's perspective) ----------------------------
 fail=0
 chk_can()    { if sudo -u solver "$@" >/dev/null 2>&1; then :;       else echo "FAIL: solver should be able to: $*"; fail=1; fi; }
 chk_cannot() { if sudo -u solver "$@" >/dev/null 2>&1; then echo "FAIL: solver should NOT be able to: $*"; fail=1; fi; }
+
+# The workspace root: solver may add, but may not remove what runner owns.
+# A disposable runner-owned file stands in for conftest.py / pytest.ini.
+sudo -u runner touch "$P/.perm-probe-runner"
+chmod 644 "$P/.perm-probe-runner"
+
+chk_can    touch "$P/.perm-probe-solver"                       # codex apply_patch
+chk_cannot rm -f "$P/.perm-probe-runner"                       # sticky bit
+chk_cannot mv "$P/.perm-probe-runner" "$P/.perm-probe-moved"   # sticky bit
+rm -f "$P/.perm-probe-runner" "$P/.perm-probe-solver" "$P/.perm-probe-moved"
 
 chk_can    test -w "$P/src"
 chk_can    test -w "$P/tests"

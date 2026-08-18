@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "note": "Hand-written for the first end-to-end runs of the runner. Normally the planner produces this file (BOOTSTRAP Phase 3). It is a one-step plan, so `runner validate` correctly reports L9/L10 -- a real plan needs an integration step early and at the end.",
+  "steps": [
+    {
+      "id": "S1",
+      "kind": "unit",
+      "goal": "Implement normalize(text) in src/normalize.py: fold full-width ASCII (U+FF01-U+FF5E) to half-width, fold the ideographic space (U+3000) to a normal space, lowercase ASCII letters only, collapse every run of whitespace to a single space, and strip leading and trailing whitespace. Reject a non-str argument rather than coercing it. Characters outside those rules -- Japanese text in particular -- pass through unchanged.",
+      "depends_on": [],
+      "max_attempts": 3,
+      "review_gate": false,
+      "expected_tests": 6,
+      "contracts": {
+        "provides": [
+          "def normalize(text: str) -> str"
+        ],
+        "invariants": [
+          "idempotent: normalize(normalize(t)) == normalize(t) for every str t",
+          "only ASCII letters are case-folded; characters outside U+FF01-U+FF5E and U+3000 are returned unchanged"
+        ]
+      },
+      "acceptance": [
+        {
+          "case": "normal",
+          "given": "normalize('Ｈｅｌｌｏ　World')",
+          "then": "the result is exactly 'hello world'"
+        },
+        {
+          "case": "normal",
+          "given": "normalize('日本語　テスト')",
+          "then": "the result is exactly '日本語 テスト'"
+        },
+        {
+          "case": "normal",
+          "given": "normalize('  a \\t\\n b  ')",
+          "then": "the result is exactly 'a b'"
+        },
+        {
+          "case": "boundary",
+          "given": "normalize('')",
+          "then": "the result is exactly ''"
+        },
+        {
+          "case": "boundary",
+          "given": "normalize('   ')",
+          "then": "the result is exactly '' rather than a single space"
+        },
+        {
+          "case": "error",
+          "given": "normalize(None)",
+          "then": "TypeError is raised"
+        }
+      ],
+      "files_write": ["src/normalize.py"],
+      "files_test": ["tests/test_normalize.py"]
+    }
+  ]
+}

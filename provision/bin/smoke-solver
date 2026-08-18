@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# The first experiment: can the runner drive the solver at all?
+#
+#     sudo -u runner /srv/loop/bin/smoke-solver
+#
+# Nothing downstream matters until this passes, so it is deliberately the
+# smallest possible round trip: runner writes a brief, solver is started as a
+# separate uid, solver writes one file into src/.
+#
+# What this proves, in order:
+#   1. the sudoers Runas exception works and reaches the launcher
+#   2. the agent authenticates from /etc/loop/solver.env, not from a human login
+#   3. the agent runs to completion with no terminal attached
+#   4. the file it produced is owned by solver -- i.e. it really was the solver
+#      that wrote it, not the runner
+set -euo pipefail
+
+[ "$(id -un)" = "runner" ] || { echo "run as runner: sudo -u runner $0" >&2; exit 1; }
+
+BRIEF=/srv/loop/brief/smoke.md
+TARGET=/srv/loop/project/src/smoke.txt
+MARKER="loop-smoke-ok"
+
+rm -f "$TARGET"
+
+cat > "$BRIEF" <<EOF
+Create the file src/smoke.txt with exactly this single line of content:
+
+$MARKER
+
+Do nothing else. Do not create other files. Do not modify existing files.
+EOF
+
+echo "--- invoking solver ---"
+rc=0
+sudo -u solver /srv/loop/bin/solver-run "$BRIEF" || rc=$?
+echo "--- solver exited rc=$rc ---"
+
+fail=0
+note() { echo "  $1"; }
+bad()  { echo "  FAIL: $1"; fail=1; }
+
+if [ ! -f "$TARGET" ]; then
+  bad "src/smoke.txt was not created"
+else
+  owner="$(stat -c '%U' "$TARGET")"
+  if [ "$owner" = "solver" ]; then
+    note "ok: src/smoke.txt owned by solver"
+  else
+    bad "src/smoke.txt owned by $owner, expected solver"
+  fi
+  if grep -Fqx "$MARKER" "$TARGET"; then
+    note "ok: content matches"
+  else
+    bad "content does not contain the expected line (got: $(head -c 120 "$TARGET"))"
+  fi
+fi
+
+# The solver must still be shut out of the plan. Checked by inspecting the mode
+# rather than by trying it as solver: the sudoers exception names solver-run and
+# nothing else, so `sudo -u solver test ...` would be refused here and prove
+# nothing either way.
+planmode="$(stat -c '%U:%G %a' /srv/loop/project/plan)"
+if [ "$planmode" = "runner:runner 700" ]; then
+  note "ok: plan/ still runner:runner 700"
+else
+  bad "plan/ is '$planmode', expected 'runner:runner 700'"
+fi
+
+rm -f "$TARGET" "$BRIEF"
+
+echo
+if [ "$fail" -eq 0 ]; then
+  echo "smoke-solver: PASS"
+else
+  echo "smoke-solver: FAIL"
+  exit 1
+fi

@@ -1,6 +1,8 @@
 # The provisioning scripts run on Linux. Never check them out with CRLF:
 # bash fails on the trailing \r with errors that point nowhere useful.
 *.sh                text eol=lf
+# Installed into the distro as executables; extensionless, so *.sh misses them.
+provision/bin/*     text eol=lf
 *.md                text
 # Host-side helpers run under cmd.exe / PowerShell 5.1, which needs CRLF and
 # chokes on non-ASCII in a BOM-less file (see provision/README 3-6).

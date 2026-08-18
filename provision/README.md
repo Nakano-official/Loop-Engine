@@ -358,33 +358,99 @@ rc=1  WSL ERROR: UtilAcceptVsock:273: accept4 failed 110
 → 一度変数に取ってから判定する。`50-lockdown.sh` の末尾と `05-isolation.sh` の
 `loopback0` チェックを参照。
 
+### 3-11. runner は自分が所有しないファイルを chmod できない
+
+ソルバーが作ったファイルは `solver` 所有になる。ランナーは書き込みフェンスを
+**開けても閉じられない** ── `chmod` は所有者か root にしか通らず、`chown` には root が要る。
+ランナーに root を渡すのは本末転倒（関門を強制する側が関門を外せてしまう）。
+
+→ ディレクトリが runner 所有なら、中のファイルは**削除できる**。読んで・消して・
+runner として書き直すと所有権が移る（`runner/loop.py` の `adopt()`）。バイト列は同一なので
+git も凍結マニフェストも影響を受けず、特権を1つも増やさない。
+
+### 3-12. `/srv/loop/brief` に setgid が無いとブリーフが読まれない
+
+runner が書いたブリーフのグループが `runner` になり、`solver` から読めなくなる。
+症状は `solver-run` の `exited 2` だけで、原因から遠い。
+
+→ `2750` にする（`20-layout.sh` / `40-perms.sh`）。ランナー側でも書き込み直後に
+明示的に `chgrp solverw` している。ディレクトリのビットに依存しない。
+
+### 3-13. Codex の `apply_patch` はワークスペースのルートを経由して書く
+
+`/srv/loop/project` が `755 runner:runner` だと、`src/` に権限があっても**全ての編集が失敗する**。
+しかもエラーは対象ファイル名で報告されるので `src/` の権限を疑わせる。
+`bubblewrap` が未導入だと、さらに手前の「サンドボックス構築の失敗」として出る。
+
+→ ルートを `3775`（setgid + **スティッキー**）にする。書けるだけでは穴で、
+unlink と rename は親ディレクトリの権限で決まるため `conftest.py` を差し替えられてしまう
+（= FREEZE の無効化）。スティッキーが「削除・改名は所有者のみ」に制限する。
+`40-perms.sh` が「作れること」と「消せないこと」を両方 assert する。
+併せて `apt install bubblewrap` を入れる（バンドル版へのフォールバックは不安定）。
+
+### 3-14. `sudo -u runner` を `~/provision` を cwd にしたまま呼ぶと落ちる
+
+`/home/maint` は 700 なので、runner が cwd を stat できず
+`fatal: failed to stat '/home/maint/provision'` になる。git を呼ぶ行だけが死ぬ。
+
+→ プロビジョニングスクリプトは中立なディレクトリから実行する（`cd /tmp`）。
+
+### 3-15. `.pyc` は実行した uid の所有物になる
+
+`tests/__pycache__` に solver 所有の `.pyc` が残ると、3-11 により
+ランナーが `tests/` のモードを再適用できなくなる。
+
+→ ランナーの pytest は `PYTHONDONTWRITEBYTECODE=1` で走らせ、
+モード変更は `__pycache__` を除外する。
+
 ---
 
 ## 4. 未適用
 
-`60-egress.sh` は**実行していない**。ソルバーは Codex CLI に確定したが、
-その実際の通信先がまだ分かっていないため。
+`60-egress.sh` は**意図的に実行していない**（2026-08-18 判断）。
 
-適用するまで、`solver` アカウントは**外部ネットワークに自由に出られる**。
-つまり「詰まったら `pip install` する」経路が開いたままで、
-RUNNER_SPEC §1-3 の環境凍結は成立していない。
+当初は「これを当てて初めて環境凍結が成立する」と書いていたが、**それは誤りだった**。
+ネットワークを全開にしたまま測ったところ、4経路すべてが既に塞がっている:
 
-手順:
+| 試みたこと | 結果 | 効いている機構 |
+|---|---|---|
+| `.venv/bin/pip install requests` | Permission denied | `.venv` が runner 所有・`go-w` |
+| `pip install --user requests` | externally-managed-environment | PEP 668 |
+| `--user` で入れたものを `.venv/bin/python` から import | 見えない | venv は user site を無視する |
+| `apt-get install` | dpkg lock: are you root? | sudo なし |
+
+3つ目が要。**テストは必ず `.venv/bin/pytest` で走らせること** ── 素の `python3` に変えると
+user site が復活し、この防御だけが崩れる。
+
+そのうえで、egress 制限が買うのは環境凍結ではなく**持ち込みと持ち出し**の遮断であり、
+ループの前提条件ではない。当てるかどうかはその脅威をどう見るかで決める。
+
+**当てるなら IP 固定ではなくプロキシで作ること。** 観測したソルバーの宛先は
+`chatgpt.com` の1つだけだが（`api.openai.com` は使われない ── あれは API キー経路）、
+Cloudflare の後ろにあり複数アドレスに解決される。IP 固定は黙って陳腐化し、
+WSL2 では VM が頻繁に止まるので規則の永続化が要る ──
+**永続化した固定 IP は時限爆弾**（ローテーション後、原因の分かりにくい停止として出る）。
+
+観測の手順（推測でドメインを並べないこと）:
 
 ```bash
-# 1. solver として一度動かし、実際の通信先を観察する
-#    (推測でドメインを並べない。このスクリプトは解決した IP を固定するので、
-#     漏れがあると「動いていたものが静かに止まる」形で壊れる)
-sudo -u solver env OPENAI_API_KEY=... codex ...
-
-# 2. 観察した宛先だけを許可する
-sudo ./60-egress.sh <host> [host ...]
+# DROP ではなく LOG を1本入れて、実際に叩かれた宛先だけを採る
+iptables -I OUTPUT 1 -m owner --uid-owner "$(id -u solver)" \
+  -m conntrack --ctstate NEW -j LOG --log-prefix "LOOPOBS "
+sudo -u runner /srv/loop/bin/smoke-solver
+dmesg | grep LOOPOBS
 ```
 
-ディストロ内には Claude Code と Codex CLI が両方入っている（Claude Code は
-プランナー側の実体でもあるが、サンドボックス内のものはソルバー候補として入れたもので、
-今回は使わない）。**2026-08-17 時点で Codex CLI は未認証**で、`solver` 用の
-API キーも未発行。
+### 認証（2026-08-18 時点）
+
+- **`solver` = Codex CLI + ChatGPT サブスクリプション**。API キーは使わない。
+  `sudo -u solver -H codex login --device-auth`（ブラウザはホスト側でよい）。
+  **必ず `solver` として実行すること** ── 他アカウントでログインしても
+  `/home/<other>` が 700 なので solver からは読めない。認証情報が
+  `/home/solver/.codex` に入ることが、そのまま隔離になっている
+- **`planner` = Claude の API キー**。`/etc/loop/planner.env`（`root:planner 0640`）。
+  ベンダを分けているのは、基準を書く側と満たす側の相関した盲点を避けるためと、
+  片方の枠・認証情報の事故がもう片方を巻き込まないようにするため
 
 ---
 

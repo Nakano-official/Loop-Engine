@@ -27,9 +27,11 @@ fi
 # names them.
 rm -f /etc/ssh/sshd_config.d/99-loop.conf
 cat > /etc/ssh/sshd_config.d/00-loop.conf <<EOF
-# Only these two may log in. solver is absent on purpose and denied twice over.
+# Only these two may log in. The agent accounts are absent on purpose and denied
+# twice over: they are started by the runner via a Runas exception, never by a
+# login, so an inbound SSH session as either of them can only be someone else.
 AllowUsers $ADMIN_USER runner
-DenyUsers solver
+DenyUsers solver planner
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
@@ -64,14 +66,18 @@ case "${allow//,/ }" in
   *" runner "*) ;;
   *) echo "FAIL: sshd allowusers=[${allow# }] does not include runner" >&2; fail=1 ;;
 esac
-case "${allow//,/ }" in
-  *" solver "*) echo "FAIL: sshd allowusers=[${allow# }] includes solver" >&2; fail=1 ;;
-esac
+for u in solver planner; do
+  case "${allow//,/ }" in
+    *" $u "*) echo "FAIL: sshd allowusers=[${allow# }] includes $u" >&2; fail=1 ;;
+  esac
+done
 deny=" $(eff_list denyusers) "
-case "${deny//,/ }" in
-  *" solver "*) ;;
-  *) echo "FAIL: sshd does not deny user solver" >&2; fail=1 ;;
-esac
+for u in solver planner; do
+  case "${deny//,/ }" in
+    *" $u "*) ;;
+    *) echo "FAIL: sshd does not deny user $u" >&2; fail=1 ;;
+  esac
+done
 
 # sshd must stay on 2222: the Windows side reaches it as 127.0.0.1:2222 through
 # localhostForwarding, and ~/.ssh/config's `loop-dev` host hardcodes that port.

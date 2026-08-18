@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Second experiment: can the solver RUN the test suite?
+#
+#     sudo -u runner /srv/loop/bin/smoke-pytest
+#
+# Writing was proved by smoke-solver. Execution is a separate question: the
+# interpreter lives in .venv, which is runner-owned and read-only to the solver,
+# and it has to start from inside codex's sandbox. If this fails, the IMPL phase
+# cannot run at all.
+#
+# The check is deliberately not "did the agent say it ran the tests". The solver
+# writes a JUnit report and the report is inspected: 2 tests collected, 1 of them
+# failing. A claim in prose would satisfy a human reader; only a real pytest run
+# produces that file with those numbers.
+set -euo pipefail
+
+[ "$(id -un)" = "runner" ] || { echo "run as runner: sudo -u runner $0" >&2; exit 1; }
+
+P=/srv/loop/project
+BRIEF=/srv/loop/brief/smoke-pytest.md
+TEST="$P/tests/test_smoke_pytest.py"
+REPORT="$P/src/smoke-report.xml"
+
+[ -x "$P/.venv/bin/pytest" ] || { echo "FATAL: $P/.venv/bin/pytest is missing" >&2; exit 1; }
+
+rm -f "$REPORT"
+
+# One passing and one failing test. The failure is the point: a solver that
+# "fixes" it instead of reporting it is the behaviour RED_GATE exists to catch,
+# and this is the cheapest place to find out whether it does that.
+cat > "$TEST" <<'EOF'
+def test_passes():
+    assert 1 + 1 == 2
+
+
+def test_fails():
+    assert 1 + 1 == 3
+EOF
+
+before="$(sha256sum "$TEST" | cut -d' ' -f1)"
+
+cat > "$BRIEF" <<'EOF'
+Run the test suite and produce a machine-readable report:
+
+    .venv/bin/pytest tests/test_smoke_pytest.py --junitxml=src/smoke-report.xml
+
+Then state how many tests passed and how many failed.
+
+Do not modify any file under tests/. Do not fix the failing test -- reporting
+the failure accurately IS the task.
+EOF
+
+echo "--- invoking solver ---"
+rc=0
+sudo -u solver /srv/loop/bin/solver-run "$BRIEF" || rc=$?
+echo "--- solver exited rc=$rc ---"
+
+fail=0
+note() { echo "  $1"; }
+bad()  { echo "  FAIL: $1"; fail=1; }
+
+if [ ! -f "$REPORT" ]; then
+  bad "src/smoke-report.xml was not produced -- pytest did not run"
+else
+  note "ok: junit report produced"
+  owner="$(stat -c '%U' "$REPORT")"
+  if [ "$owner" = "solver" ]; then
+    note "ok: report owned by solver"
+  else
+    bad "report owned by $owner, expected solver"
+  fi
+  if grep -q 'tests="2"' "$REPORT" && grep -q 'failures="1"' "$REPORT"; then
+    note "ok: 2 tests collected, 1 failed -- pytest really executed"
+  else
+    bad "report does not show 2 tests / 1 failure"
+    head -c 300 "$REPORT"
+    echo
+  fi
+fi
+
+after="$(sha256sum "$TEST" | cut -d' ' -f1)"
+if [ "$before" = "$after" ]; then
+  note "ok: tests/ unmodified"
+else
+  bad "the solver modified the test file"
+fi
+
+rm -f "$TEST" "$REPORT" "$BRIEF"
+# Bytecode is owned by whoever ran the interpreter. A solver-owned .pyc left
+# under tests/ cannot be chmod'ed by the runner, which breaks the next step.
+rm -rf "$P/tests/__pycache__"
+
+echo
+if [ "$fail" -eq 0 ]; then
+  echo "smoke-pytest: PASS"
+else
+  echo "smoke-pytest: FAIL"
+  exit 1
+fi

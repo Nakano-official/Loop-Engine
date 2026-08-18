@@ -5,6 +5,10 @@
 #           provisioning only -- it is NOT part of the loop.
 # runner  : owns everything, drives the loop, no sudo
 # solver  : writes src/ (and tests/ before freeze) only, no sudo, no ssh
+# planner : writes plan/tasks.json only, no sudo, no ssh. Separate from solver so
+#           that the account setting the acceptance criteria and the account
+#           satisfying them are different uids, not just different prompts
+#           (BOOTSTRAP 1-1). Its credentials are separate for the same reason.
 #
 # The loop accounts must not be able to read each other's home, nor the
 # maintenance account's home, so the repository lives in /srv/loop rather than
@@ -21,6 +25,7 @@ id -u "$ADMIN_USER" >/dev/null 2>&1 || {
 
 id -u runner >/dev/null 2>&1 || useradd -m -u 1001 -s /bin/bash runner
 id -u solver >/dev/null 2>&1 || useradd -m -u 1002 -s /bin/bash solver
+id -u planner >/dev/null 2>&1 || useradd -m -u 1003 -s /bin/bash planner
 
 # Group used to grant solver write access to specific directories.
 getent group solverw >/dev/null || groupadd solverw
@@ -29,7 +34,7 @@ usermod -aG solverw runner   # so runner can write into brief/ with group perms
 
 # Neither loop account may sudo. Assert rather than assume: a stray sudoers
 # drop-in would silently defeat the whole environment-freeze argument.
-for u in runner solver; do
+for u in runner solver planner; do
   if id -nG "$u" | tr ' ' '\n' | grep -qxE 'sudo|admin'; then
     echo "FATAL: $u is in a sudo-capable group" >&2
     exit 1
@@ -38,7 +43,7 @@ done
 
 # Homes are private to their owner. The maintenance user's home is where the
 # human keeps ssh keys and agent CLI credentials, so solver must not read it.
-chmod 700 /home/runner /home/solver
+chmod 700 /home/runner /home/solver /home/planner
 if [ -d "/home/$ADMIN_USER" ]; then chmod 700 "/home/$ADMIN_USER"; fi
 
 echo "10-users: ok"

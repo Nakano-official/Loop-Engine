@@ -16,7 +16,9 @@
 set -euo pipefail
 
 install -d -o runner -g runner -m 755 /srv/loop
-install -d -o runner -g solverw -m 750 /srv/loop/brief
+# setgid: briefs written here by runner must land in group solverw, or the
+# solver cannot read the one channel it has.
+install -d -o runner -g solverw -m 2750 /srv/loop/brief
 
 if [ ! -d /srv/loop/repo.git ]; then
   sudo -u runner git init --bare -b main /srv/loop/repo.git
@@ -38,6 +40,15 @@ sudo -u runner install -d -m 755 \
   /srv/loop/project/tests \
   /srv/loop/project/plan \
   /srv/loop/project/.runner
+
+# An empty conftest.py at the root is what puts the project root on sys.path for
+# pytest, so a test can `from src.x import y`. Without it pytest inserts tests/
+# instead, every import of src fails as a collection error, and RED_GATE's R5
+# correctly refuses to call that red -- a confusing way to discover a missing
+# empty file.
+if [ ! -f /srv/loop/project/conftest.py ]; then
+  sudo -u runner touch /srv/loop/project/conftest.py
+fi
 
 # Seed an initial commit so the host has something to clone.
 cd /srv/loop/project
