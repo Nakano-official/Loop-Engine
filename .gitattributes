@@ -3,6 +3,11 @@
 *.sh                text eol=lf
 # Installed into the distro as executables; extensionless, so *.sh misses them.
 provision/bin/*     text eol=lf
+# The runner runs inside the distro, and the plan is copied in verbatim. CRLF
+# would break loop.py's shebang and would ride into every brief the solver reads.
+*.py                text eol=lf
+*.json              text eol=lf
+plan/*.md           text eol=lf
 *.md                text
 # Host-side helpers run under cmd.exe / PowerShell 5.1, which needs CRLF and
 # chokes on non-ASCII in a BOM-less file (see provision/README 3-6).
