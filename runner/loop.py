@@ -108,7 +108,13 @@ TIMEOUTS = {"test": 120, "solver": 960, "planner": 960}
 # and only (b) or (c) remain, both of which are the human's. So the planner
 # answers exactly one escalation per step. Overridable per plan via a top-level
 # "limits" object, for the same reason the timeouts are.
-LIMITS = {"escalations": 1}
+#
+# "revisions" is a different ceiling for a different failure: the planner is
+# handed the linter's verdict and asked to fix it, and an agent that trades one
+# violation for another would otherwise do so forever. Three is enough that a
+# plan which merely misunderstood the layout converges, and few enough that one
+# which cannot satisfy the rules stops costing money.
+LIMITS = {"escalations": 1, "revisions": 3}
 
 
 # --------------------------------------------------------------------------
@@ -948,7 +954,7 @@ def check_proposal(old: dict, new: dict) -> list[str]:
     return problems
 
 
-def brief_plan_revise(step: dict | None, escalation: str) -> str:
+def brief_plan_revise(step: dict | None, escalation: str, feedback: str = "") -> str:
     spec = SYSTEM_SPEC.read_text(encoding="utf-8") if SYSTEM_SPEC.exists() \
         else "(not written yet)"
     context = (PLAN / "CONTEXT.md").read_text(encoding="utf-8")
@@ -1005,6 +1011,7 @@ it is required to do, do not try. Write a single file named `{ESCALATE_NAME}`
 saying which criterion is unreachable and why, and write nothing else. That is a
 correct outcome, and it is the only route to the human.
 
+{feedback_section(feedback)}
 Output nothing but the files. Do not restate the plan in your final message.
 """
 
@@ -1143,7 +1150,7 @@ that "your assumptions are fine" is a complete answer.
 """
 
 
-def brief_plan_bootstrap(requirements: str) -> str:
+def brief_plan_bootstrap(requirements: str, feedback: str = "") -> str:
     return f"""You are the planner. Turn the requirements below into a plan.
 
 You do not write code and you never will. Implementation is done by a separate
@@ -1152,14 +1159,195 @@ receives exactly one step's worth of information at a time. Your output has to
 work as a standalone instruction for someone in that position.
 
 You write files into the current directory. The runner checks them before
-anything is run.
+anything is run, and if they do not pass it will come back to you with the
+reasons -- so the requirements below are about the thing being built, and
+making a plan this machine accepts is your problem, not the author's.
 
 # The requirements, written by the human
 {requirements}
+{environment_facts()}
 {BOOTSTRAP_RULES}
 {BOOTSTRAP_ESCALATE}
-
+{feedback_section(feedback)}
 Output nothing but the files. Do not restate the plan in your final message.
+"""
+
+
+def environment_facts() -> str:
+    """What the project actually looks like, read off the machine.
+
+    The rules in BOOTSTRAP_RULES are a transcription of what the runner
+    enforces, which means they are only as complete as whoever wrote them
+    remembered -- L12 was missing from the first version and a plan was built
+    against the gap. Facts about the tree, the interpreter and the test command
+    have no such failure mode, so they are gathered rather than written down.
+
+    The retry loop below is the real answer to that problem: anything the brief
+    forgets to mention, the linter still catches, and the planner is told.
+    """
+    def version(binary: Path) -> str:
+        try:
+            proc = run([str(binary), "--version"])
+            return (proc.stdout + proc.stderr).strip().splitlines()[0]
+        except (OSError, IndexError):
+            return "(not installed)"
+
+    skip = {".git", ".venv", ".runner", "plan", "__pycache__", ".pytest_cache"}
+    listing = []
+    for child in sorted(PROJECT.rglob("*")):
+        if any(part in skip for part in child.relative_to(PROJECT).parts):
+            continue
+        rel = child.relative_to(PROJECT)
+        listing.append(f"  {rel}/" if child.is_dir() else f"  {rel}")
+    tree = "\n".join(listing) or "  (empty apart from the directories above)"
+
+    conftest = PROJECT / "conftest.py"
+    conftest_text = conftest.read_text(encoding="utf-8") if conftest.exists() else "(none)"
+
+    return f"""# The environment, as it actually is right now
+
+Interpreter: {version(PROJECT / ".venv" / "bin" / "python")}
+Test runner: {version(PYTEST)}
+
+The runner executes the tests itself, as:
+    .venv/bin/pytest {" ".join(PYTEST_ARGS)} <the step's files_test>
+
+Everything under the project root, except plan/, .git/, .venv/ and caches --
+this is the whole of what exists today:
+
+{tree}
+
+conftest.py at the root, which pytest loads automatically:
+
+{conftest_text}
+"""
+
+
+def prune_proposal() -> list[str]:
+    """Delete anything in out/ that is not one of the names a proposal may use.
+
+    Used only between retries. The planner has no way to remove a file it
+    wrote -- it can create and edit, and that is all -- so telling it "delete
+    that" would be advice it cannot follow. The runner owns the directory, so
+    it does the deleting and says so in the feedback.
+    """
+    allowed = set(PROPOSAL_FILES) | {ESCALATE_NAME}
+    removed = []
+    for entry in PLANNER_OUT.iterdir():
+        if entry.name in allowed and entry.is_file() and not entry.is_symlink():
+            continue
+        removed.append(entry.name)
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+    return removed
+
+
+def proposal_problems(proposal: dict[str, str]) -> list[str]:
+    """Everything wrong with this proposal, as the runner will judge it.
+
+    Shared by `plan apply`, `plan show` and the retry loop, so that what the
+    planner is told to fix is exactly what would have rejected it -- not a
+    second implementation of the same rules that can drift from the first.
+    """
+    existing = PLAN / "tasks.json"
+    if existing.exists():
+        old = json.loads(existing.read_text(encoding="utf-8"))
+    else:
+        # With no plan on disk this is a bootstrap: P1..P5 are all about what may
+        # not CHANGE, so they have nothing to compare against. In their place, a
+        # first plan has to be complete -- no project starts with acceptance
+        # criteria and no spec that a human agreed to, nor with a plan whose
+        # solver has no background to work from.
+        incomplete = sorted(set(PROPOSAL_FILES) - set(proposal))
+        if incomplete:
+            return [f"B1: a first plan must include {name}" for name in incomplete]
+        old = {"steps": []}
+
+    if "tasks.json" in proposal:
+        try:
+            new = json.loads(proposal["tasks.json"])
+        except json.JSONDecodeError as bad:
+            return [f"B2: tasks.json is not valid JSON: {bad}"]
+    else:
+        new = old
+
+    return check_proposal(old, new) + validate_plan(new)
+
+
+def plan_with_retry(brief_for, tag: str) -> int:
+    """Call the planner, check what it wrote, and hand back the violations.
+
+    This is what lets the planner meet the environment on its own terms rather
+    than the human having to know the environment in advance. The runner already
+    owns the only authoritative statement of the rules -- it is the code that
+    rejects a plan -- so instead of hoping the brief described them completely,
+    it runs them and says what failed.
+
+    The planner gets no new privilege from this. It does not run the linter and
+    could not; it is told the result. Between attempts its previous files are
+    LEFT IN PLACE, so it edits a plan it can see rather than inventing a fresh
+    one from a prohibition -- which is both cheaper and less likely to trade one
+    violation for another.
+    """
+    limit = LIMITS["revisions"]
+    clear_proposal()
+    feedback = ""
+
+    for attempt in range(1, limit + 2):
+        call_planner(brief_for(feedback))
+        names = sorted(p.name for p in PLANNER_OUT.iterdir())
+        ledger(tag, attempt=attempt, wrote=names)
+        if not names:
+            print("the planner wrote no files", file=sys.stderr)
+            return 2
+
+        removed = prune_proposal()
+        proposal = read_proposal()
+
+        # An escalation is an answer, not a draft. Nothing to check and nothing
+        # to fix: it is addressed to the human and `plan apply` will surface it.
+        if ESCALATE_NAME in proposal:
+            return 0
+
+        problems = proposal_problems(proposal)
+        if removed:
+            problems = [f"B3: {n} is not a filename a proposal may use; the "
+                        f"runner deleted it" for n in removed] + problems
+        if not problems:
+            if attempt > 1:
+                print(f"the plan passed on attempt {attempt}")
+            return 0
+
+        ledger("PLAN_SELFCHECK", attempt=attempt, violations=problems)
+        if attempt > limit:
+            print(f"\nthe planner could not produce an acceptable plan in "
+                  f"{attempt} attempts; {PLANNER_OUT} holds the last one",
+                  file=sys.stderr)
+            for problem in problems:
+                print("  " + problem, file=sys.stderr)
+            return 2
+
+        feedback = "\n".join(problems)
+
+    return 2   # unreachable; the loop always returns
+
+
+def feedback_section(feedback: str) -> str:
+    if not feedback:
+        return ""
+    return f"""
+# Your previous attempt was rejected
+
+The files you wrote are still in the current directory. Read them and FIX them
+in place -- do not start over. The runner checked them and reported exactly
+this:
+
+{feedback}
+
+Every line above is a rule the runner enforces in code. There is no arguing
+with them and no partial credit: fix all of them, then stop.
 """
 
 
@@ -1169,12 +1357,15 @@ def cmd_plan_bootstrap(source: str | None) -> int:
     This is the only path by which a plan comes into existence, and it is
     deliberately the same shape as every other planner call: brief in, proposal
     out, runner decides. The human's authority here is the requirements file --
-    not an ability to write plan/ directly.
+    not an ability to write plan/ directly, and not a duty to know how the
+    runner works. Requirements are about the thing being built; making a plan
+    that this machine will accept is the planner's job, and the retry loop is
+    what makes that true rather than aspirational.
     """
     path = Path(source) if source else REQUIREMENTS
     if not path.is_file():
         print(f"no requirements at {path}", file=sys.stderr)
-        print(f"write them there, or pass --from <path>", file=sys.stderr)
+        print("write them there, or pass --from <path>", file=sys.stderr)
         return 1
 
     # A bootstrap replaces the whole plan. If steps are already green, that
@@ -1188,16 +1379,10 @@ def cmd_plan_bootstrap(source: str | None) -> int:
         return 1
 
     requirements = path.read_text(encoding="utf-8")
-    clear_proposal()
-    out = call_planner(brief_plan_bootstrap(requirements))
-    names = sorted(p.name for p in PLANNER_OUT.iterdir())
-    ledger("PLAN_BOOTSTRAP", source=str(path), wrote=names)
-    if not names:
-        print("the planner wrote no files", file=sys.stderr)
-        print(out[-2000:], file=sys.stderr)
-        return 2
-    return 0
-
+    ledger("PLAN_BOOTSTRAP", source=str(path))
+    return plan_with_retry(
+        lambda feedback: brief_plan_bootstrap(requirements, feedback),
+        "PLAN_BOOTSTRAP_DRAFT")
 
 
 def cmd_plan_propose(step_id: str | None) -> int:
@@ -1208,15 +1393,11 @@ def cmd_plan_propose(step_id: str | None) -> int:
     step = None
     if step_id:
         step, _ = load_plan(step_id)
-    clear_proposal()
-    out = call_planner(brief_plan_revise(step, ESCALATION.read_text(encoding="utf-8")))
-    names = sorted(p.name for p in PLANNER_OUT.iterdir())
-    ledger("PLAN_PROPOSE", step=step_id or "-", wrote=names)
-    if not names:
-        print("the planner wrote no files", file=sys.stderr)
-        print(out[-2000:], file=sys.stderr)
-        return 2
-    return 0
+    escalation = ESCALATION.read_text(encoding="utf-8")
+    ledger("PLAN_PROPOSE", step=step_id or "-")
+    return plan_with_retry(
+        lambda feedback: brief_plan_revise(step, escalation, feedback),
+        "PLAN_PROPOSE_DRAFT")
 
 
 def cmd_plan_show() -> int:
@@ -1225,6 +1406,13 @@ def cmd_plan_show() -> int:
         body = proposal[name]
         print(f"--- {name} ({len(body.splitlines())} lines) ---")
         print(body)
+    if ESCALATE_NAME in proposal:
+        return 0
+    problems = proposal_problems(proposal)
+    print("--- would it be accepted? ---")
+    for problem in problems:
+        print("  " + problem)
+    print("  yes" if not problems else f"  no: {len(problems)} violation(s)")
     return 0
 
 
@@ -1239,26 +1427,7 @@ def cmd_plan_apply() -> int:
         print(proposal[ESCALATE_NAME])
         return 3
 
-    # With no plan on disk this is a bootstrap, and there is nothing for P1..P5
-    # to compare against -- they are all about what may not change. The linter
-    # still applies in full, and a FIRST plan has to be complete: a project
-    # cannot start with acceptance criteria but no spec for the human to have
-    # agreed to, nor with a plan whose solver has no background to work from.
-    existing = PLAN / "tasks.json"
-    if existing.exists():
-        old = json.loads(existing.read_text(encoding="utf-8"))
-    else:
-        incomplete = sorted(set(PROPOSAL_FILES) - set(proposal))
-        if incomplete:
-            for name in incomplete:
-                print(f"B1: a first plan must include {name}", file=sys.stderr)
-            ledger("PLAN_REJECT", files=sorted(proposal), violations=incomplete)
-            return 2
-        old = {"steps": []}
-
-    new = json.loads(proposal["tasks.json"]) if "tasks.json" in proposal else old
-
-    problems = check_proposal(old, new) + validate_plan(new)
+    problems = proposal_problems(proposal)
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
@@ -1293,12 +1462,18 @@ def cmd_plan_apply() -> int:
     paths = applied + [str(LEDGER.relative_to(PROJECT))]
     if escalation_tracked:
         paths.append(str(ESCALATION.relative_to(PROJECT)))
+    # `git commit -- <paths>` stages tracked paths only, so on a first plan --
+    # where all three files are new -- it commits nothing and exits 1. Add them
+    # explicitly first. (Missed until the first bootstrap, because in the
+    # fixture project these files had always existed.)
+    run(["git", "add", "--"] + paths, check=True)
     run(["git", "commit", "-q", "-m", "plan: apply planner proposal", "--"] + paths,
         check=True)
     for entry in PLANNER_OUT.iterdir():
         entry.unlink()
     print("applied: " + ", ".join(applied))
     return 0
+
 
 
 def load_settings(tasks: dict) -> None:
