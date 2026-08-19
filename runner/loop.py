@@ -1469,6 +1469,7 @@ def cmd_plan_apply() -> int:
     run(["git", "add", "--"] + paths, check=True)
     run(["git", "commit", "-q", "-m", "plan: apply planner proposal", "--"] + paths,
         check=True)
+    publish("the plan")
     for entry in PLANNER_OUT.iterdir():
         entry.unlink()
     print("applied: " + ", ".join(applied))
@@ -1483,6 +1484,47 @@ def load_settings(tasks: dict) -> None:
                      if k in TIMEOUTS})
     LIMITS.update({k: int(v) for k, v in (tasks.get("limits") or {}).items()
                    if k in LIMITS})
+
+
+def publish(what: str) -> None:
+    """Mirror the repository to the bare origin. Never fatal.
+
+    What this buys is narrow but real. `reset` and `clean` act on the working
+    tree, and a commit that has reached the bare repo is out of their reach --
+    so a green step stops depending on nothing going wrong afterwards.
+
+    What it does NOT buy is a backup: repo.git sits in the same VHDX as
+    everything else. Copying it off the machine is the host's job, pulling over
+    SSH, and it is the host's job on purpose -- nothing inside the sandbox
+    should hold a credential that reaches the outside, because the sandbox is
+    where generated code runs.
+
+    A failure here is reported and stepped over. The step is green because the
+    tests passed, not because a mirror accepted the commit; halting the loop
+    over an unreachable mirror would discard work that actually succeeded.
+    """
+    failures = []
+    # The branch is pushed WITHOUT --force. Nothing in the runner rewrites
+    # history -- `reset` returns to HEAD, which is the last green -- so a
+    # non-fast-forward means something happened that this code does not know
+    # about, and clobbering it is the wrong answer.
+    branch = run(["git", "push", "--quiet", "origin", "HEAD"])
+    if branch.returncode != 0:
+        failures.append((branch.stdout + branch.stderr).strip()[-400:])
+    # Tags do move: `git tag -f step-<id>` re-points one when a step is reset
+    # and run again. So they are forced, and only they.
+    tags = run(["git", "push", "--quiet", "--force", "origin", "--tags"])
+    if tags.returncode != 0:
+        failures.append((tags.stdout + tags.stderr).strip()[-400:])
+
+    if not failures:
+        ledger("PUBLISH", what=what)
+        return
+    ledger("PUBLISH_FAILED", what=what, detail="\n".join(failures))
+    print(f"warning: could not push {what} to origin; the commit is local to "
+          f"the working repository only", file=sys.stderr)
+    for line in failures:
+        print("  " + line.replace("\n", "\n  "), file=sys.stderr)
 
 
 def run_step(step_id: str, unvalidated: bool = False) -> int:
@@ -1596,6 +1638,7 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
         run(["git", "commit", "-q", "-m", f"{step_id}: {step['goal'][:60]}"], check=True)
         run(["git", "tag", "-f", f"step-{step_id}"], check=True)
         ledger("GREEN", step=step_id, attempts=attempt)
+        publish(f"step {step_id}")
         print(f"\nstep {step_id}: GREEN in {attempt} attempt(s)")
         return 0
 

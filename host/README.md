@@ -10,6 +10,7 @@ WSL2 では起動と生存管理がホスト側の責務になった（`RUNNER_S
 |---|---|---|
 | `loop-dev.cmd` | `C:\Users\<you>\bin\loop-dev.cmd`（PATH の通った場所） | ディストロ起動 → sshd 待機 → VS Code Remote-SSH 起動 |
 | `wsl-keepalive.vbs` | このリポジトリのまま（タスクが絶対パスで参照する） | VM を**窓を出さずに**生かし続ける。下の keepalive タスクの実体 |
+| `loop-pull.cmd` | このリポジトリのまま | `repo.git` をホスト側のミラーに引く。**VHDX を失っても残る唯一の複製** |
 
 **ASCII のみで書くこと。** PowerShell 5.1 と cmd.exe は BOM 無し UTF-8 を ANSI として
 読むため、日本語コメントを入れると行継続として誤解釈され、変数が黙って null になる
@@ -96,11 +97,26 @@ Host loop-runner
     IdentitiesOnly yes
 ```
 
-プランナーの作業クローンはこれを使う:
+### ホスト側のミラー（バックアップ）
+
+ループの成果物は3段で外に出る。**段が上がるほど失いにくくなる:**
+
+| 段 | どこへ | 何から守るか |
+|---|---|---|
+| 1 | `project` → `/srv/loop/repo.git` | `reset` / `clean`。**同じ VHDX の中**なので、それ以上は守らない |
+| 2 | `repo.git` → `C:\dev\roop-engin\project` | **VHDX の消失**。ここで初めて別のディスクに乗る |
+| 3 | ミラー → GitHub など | ホストの故障。やるなら**鍵はホストだけが持つ** |
+
+段1 はランナーが自動でやる（`loop.py` の `publish()`、GREEN と `plan apply` の直後）。
+段2 が `loop-pull.cmd`。最初の1回だけクローンを作る:
 
 ```
-git clone ssh://loop-runner/srv/loop/repo.git
+git clone ssh://loop-runner/srv/loop/repo.git C:\dev\roop-engin\project
 ```
+
+**押すのではなく引くのは意図的**。サンドボックスは生成されたコードを実行する場所なので、
+外に届く認証情報をその中に置かない。段3 をやる場合も同じで、GitHub の鍵は
+**VM に入れず**、ホストのミラーから押す。
 
 ### `.wslconfig`
 

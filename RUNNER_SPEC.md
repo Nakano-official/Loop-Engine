@@ -415,6 +415,19 @@ git tag step/<id>
 `contracts.provides` を `.runner/contracts/<id>.json` に確定保存。以降のステップは
 **この確定済み contracts のみ**を参照する（tasks.json の記述ではなく）。
 
+続けて `origin`（`/srv/loop/repo.git`）へ push する（`publish()`。`plan apply` の直後にも
+同じことをする）。狙いは、緑になったステップを `reset` / `clean` の射程から外すこと。
+
+**push の失敗はステップを落とさない。** 緑の根拠はテストが通ったことであって、
+ミラーが受理したことではない。台帳に `PUBLISH_FAILED` を残して先へ進む。
+ブランチは `--force` を付けずに押す ── ランナーは履歴を書き換えないので、
+non-fast-forward は**この仕様が知らない何かが起きた印**であり、上書きは誤り。
+タグだけは `tag -f` で動きうるので force で押す。
+
+`repo.git` は同じ VHDX の中にあるので、**これはバックアップではない**。
+ディスクごと失う場合に備える複製はホストが SSH で引く（`host/loop-pull.cmd`）。
+**押すのではなく引く**のは、外に届く認証情報をサンドボックス内に置かないため。
+
 ---
 
 ## 5. ブリーフの組み立て（BOOTSTRAP 1-5 の実装）
