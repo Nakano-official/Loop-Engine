@@ -27,6 +27,16 @@ ESC=/srv/loop/project/plan/ESCALATION.md
 LOOP="sudo -u runner python3 /srv/loop/runner/loop.py"
 cd /tmp   # /home/<anyone> is 0700, and sudo -u runner cannot cd into it
 
+# This smoke checks the guard on CHANGES to a plan, so it needs a plan to
+# change. On a fresh project there is none, and every case below would fail
+# while reading it -- which looks like the guard is broken when it is only
+# absent.
+if ! sudo -u runner test -f "$TASKS"; then
+  echo "smoke-plan: cannot run -- there is no plan at $TASKS" >&2
+  echo '            run: plan bootstrap -- then re-run this.' >&2
+  exit 1
+fi
+
 BEFORE="$(sudo -u runner sha256sum "$TASKS" | cut -d' ' -f1)"
 fail=0
 

@@ -35,6 +35,17 @@ install -d -o root  -g root     -m 755  /srv/loop/planner
 install -d -o runner -g plannerw -m 2750 /srv/loop/planner/brief
 install -d -o runner -g plannerw -m 3770 /srv/loop/planner/out
 
+# The human's inbox. Mirror of the planner's out/: someone else writes, the
+# runner reads and decides. Sticky for the same reason -- the runner owns the
+# directory, so it can clear a consumed input without being able to be
+# surprised by one it did not put there.
+#
+# Not readable by solver or planner. The requirements describe the whole system,
+# and handing that to the solver would put a second input channel beside the
+# brief (the same reason SYSTEM_SPEC.md lives under plan/).
+install -d -o root   -g root   -m 755  /srv/loop/human
+install -d -o runner -g humanw -m 3770 /srv/loop/human/in
+
 install -d -o root -g root -m 755 /etc/loop
 
 # There is deliberately NO credential file for the solver. It authenticates with

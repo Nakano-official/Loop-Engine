@@ -49,6 +49,13 @@ PLANNER_RUN = LOOP / "bin" / "planner-run"
 PLANNER_BRIEF = LOOP / "planner" / "brief"
 PLANNER_OUT = LOOP / "planner" / "out"
 
+# The human's own channel, and the one the planner cannot write. The
+# requirements that start a project arrive here, and later so will the answers
+# to escalations -- both are things only a person may say. It is the mirror of
+# /srv/loop/planner/out: same shape, opposite direction, different group.
+HUMAN_IN = LOOP / "human" / "in"
+REQUIREMENTS = HUMAN_IN / "REQUIREMENTS.md"
+
 # The three files the planner may write (BOOTSTRAP, "書いてよいのは次の3つだけ"),
 # as a map from the name it writes in out/ to where that file lives in the
 # project. This mapping is the allowlist: a proposal cannot name a fourth file
@@ -623,7 +630,11 @@ def escalate(step: dict, halt: Halt, attempt: int, run_: TestRun | None) -> None
 # the plan linter (RUNNER_SPEC section 8)
 # --------------------------------------------------------------------------
 
-PROVIDES_NAME = re.compile(r"def\s+([A-Za-z_]\w*)")
+# The name a contract line declares. Both keywords matter: a step that
+# introduces the data model provides `class GameState(...)`, and matching only
+# `def` made every later step's `requires` fail L3 against a name the linter
+# could not see. Found the first time a real plan had a data-model step.
+PROVIDES_NAME = re.compile(r"(?:def|class)\s+([A-Za-z_]\w*)")
 # "concrete" for L8: a number, a quoted literal, or an exception type. An
 # acceptance criterion made only of adjectives cannot be turned into a test that
 # two people would write the same way.
@@ -695,6 +706,27 @@ def validate_plan(tasks: dict) -> list[str]:
         overlap = set(s["files_write"]) & set(s["files_test"])
         if overlap:
             problems.append(f"L5: step {sid} lists {sorted(overlap)} in both files_write and files_test")
+
+        # L12 -- the write fence only covers src/ and tests/
+        #
+        # set_writable() chmods exactly those two directories, and adopt() walks
+        # exactly those two. A step that writes anywhere else is not fenced at
+        # all: the workspace root is group-writable (the solver's patch tool
+        # needs it), so the solver could create a package beside src/ and write
+        # to it during the phase where writing code is supposed to be
+        # impossible. assert_touched would still catch it afterwards, but that
+        # turns the primary mechanism into a tripwire, and files created there
+        # stay solver-owned -- which the runner can neither chmod nor clean up.
+        #
+        # A first plan gets this wrong by default, because "put the package at
+        # the repository root" is ordinary Python layout. So it is a rule the
+        # linter holds, not advice in a brief.
+        for f in s["files_write"]:
+            if not f.startswith("src/"):
+                problems.append(f"L12: step {sid} writes {f}, which is outside src/")
+        for f in s["files_test"]:
+            if not f.startswith("tests/"):
+                problems.append(f"L12: step {sid} tests {f}, which is outside tests/")
 
         # L6 -- normal, boundary and error are all covered
         missing = CASES - {a["case"] for a in s["acceptance"]}
@@ -976,6 +1008,197 @@ correct outcome, and it is the only route to the human.
 Output nothing but the files. Do not restate the plan in your final message.
 """
 
+# --------------------------------------------------------------------------
+# bootstrapping a plan from the human's requirements (BOOTSTRAP Phase 0..3)
+# --------------------------------------------------------------------------
+
+
+# Everything the planner needs to produce a plan this runner will accept. It is
+# a plain string rather than an f-string because it contains JSON braces, and
+# every rule in it is one the runner enforces anyway -- stating them here only
+# saves a round trip, it does not make them true.
+BOOTSTRAP_RULES = """
+# What to write, into the current directory
+
+- `SYSTEM_SPEC.md`  the design, as agreed with the human. Short. The data model,
+                    the module boundaries, ONE OR TWO decisions that would be
+                    expensive to reverse, and a list of what v1 will not do.
+- `CONTEXT.md`      the only background the solver ever receives. It gets the
+                    same text on every step and has no memory between steps, so
+                    it must be self-contained: language and version, the exact
+                    test command, project conventions, domain vocabulary. Under
+                    100 lines.
+- `tasks.json`      the plan. Format below.
+- `ESCALATE.md`     INSTEAD of all of the above, if you cannot plan yet. See the
+                    last section.
+
+Write no other file. A fifth filename is rejected without being read.
+
+# tasks.json
+
+Top level:
+
+    "version": 1
+    "timeouts": {"test": 120, "solver": 960, "planner": 960}   (optional)
+    "limits":   {"escalations": 1}                             (optional)
+    "steps":    [ ... ]
+
+Each step:
+
+    "id"              short and stable, e.g. "S1"
+    "kind"            "unit" or "integration"
+    "goal"            what to build, addressed to the solver. It sees this only
+                      while implementing, never while writing the tests.
+    "depends_on"      ids of earlier steps; [] for the first
+    "contracts"       {"requires": [...], "provides": [...], "invariants": [...]}
+    "acceptance"      [{"case": "normal|boundary|error",
+                        "given": "...", "then": "..."}, ...]
+    "files_write"     exact paths the solver may create or modify
+    "files_test"      exact paths for the tests; never overlaps files_write
+    "expected_tests"  how many tests this step must produce
+    "max_attempts"    3 is normal
+    "review_gate"     false unless a human must read the tests before freezing
+
+Aim for 10 to 15 steps. One step is ONE behaviour that can fail on its own. If
+an implementation would run past roughly 150 lines, split it.
+
+# Where the code goes -- not negotiable
+
+Every path in `files_write` starts with `src/`, and every path in `files_test`
+starts with `tests/`. Those two directories are the only ones the runner can
+open and close for writing, so a plan that puts code anywhere else cannot be
+enforced and is rejected.
+
+Put the package inside src/, e.g. `src/yourpkg/models.py`, and import it as
+`from yourpkg.models import Thing` -- `src` is on sys.path, so the `src.`
+prefix does not appear in imports. Say this in CONTEXT.md; the solver has no
+other way to learn it.
+
+# Rules the runner checks before it will run the plan
+
+A plan that breaks any of these is rejected without being run, so check them
+yourself first.
+
+    L2   a step may depend only on steps listed BEFORE it
+    L3   everything in contracts.requires is provided by something it depends on
+    L4   no file appears in files_write of two different steps
+    L5   files_write and files_test never overlap
+    L6   every step has at least one "normal", one "boundary" and one "error"
+         acceptance case
+    L7   expected_tests is at least the number of acceptance criteria
+    L8   with review_gate false, every criterion states a concrete value: a
+         number, a quoted literal, or an exception type
+    L9   at least one of the FIRST THREE steps is kind "integration"
+    L10  the LAST step is kind "integration"
+    L11  a "unit" step may not provide something that no later step requires
+    L12  files_write is under src/, files_test is under tests/
+
+# Three things that are not obvious
+
+These were each learned by watching a run fail on them.
+
+1. **contracts.provides holds signature strings and nothing else.**
+   The solver is asked for a stub before it is asked for an implementation, and
+   `provides` is what it is given. Anything in there that carries MEANING rather
+   than SHAPE gets faithfully implemented in the stub -- and a criterion that
+   the stub already satisfies has never been observed to fail, which stops the
+   step. Write `def parse(s: str) -> Config`. Do not write "raises ValueError on
+   bad input" here; that belongs in acceptance.
+
+2. **contracts.invariants must be observable through the public contract.**
+   Invariants go into the brief for writing the TESTS. An invariant about
+   internal structure ("must call normalize() rather than reimplement it")
+   makes the solver write a test that reaches inside the module, which then
+   errors instead of failing, and the runner rejects the step. State invariants
+   as facts about inputs and outputs. Put implementation requirements in `goal`,
+   which only the implementation phase sees.
+
+3. **The acceptance criteria are the specification.**
+   Write each as an exact input and an exact expected output, concrete enough
+   that two engineers who never spoke would write the same test. Prefer values
+   you can compute by hand. "the result is correct" is not a criterion;
+   "the result is exactly 2011.357" is.
+
+Also: the stub returns a conspicuously wrong value of the right type, so a
+criterion whose expected answer is an empty string, zero, an empty list, or the
+argument unchanged will PASS against the stub and stop the step. Where a
+boundary case genuinely has such an answer, keep it -- but make sure the step
+has other criteria that cannot.
+"""
+
+BOOTSTRAP_ESCALATE = """
+# If you cannot plan yet
+
+BOOTSTRAP Phase 0: do not start designing while an important question is still
+open. If the requirements leave something undecided that would change the SHAPE
+of the plan -- a representation that is expensive to reverse, a scope boundary,
+a format, a rule with no stated behaviour at its edges -- do not guess.
+
+Write a single file named ESCALATE.md containing your questions, and write
+nothing else.
+
+Ask as few questions as will do; the human wants to answer once. For each
+question, state the assumption you would proceed on if they said nothing, so
+that "your assumptions are fine" is a complete answer.
+"""
+
+
+def brief_plan_bootstrap(requirements: str) -> str:
+    return f"""You are the planner. Turn the requirements below into a plan.
+
+You do not write code and you never will. Implementation is done by a separate
+agent that cannot see this conversation, has no memory between steps, and
+receives exactly one step's worth of information at a time. Your output has to
+work as a standalone instruction for someone in that position.
+
+You write files into the current directory. The runner checks them before
+anything is run.
+
+# The requirements, written by the human
+{requirements}
+{BOOTSTRAP_RULES}
+{BOOTSTRAP_ESCALATE}
+
+Output nothing but the files. Do not restate the plan in your final message.
+"""
+
+
+def cmd_plan_bootstrap(source: str | None) -> int:
+    """Ask the planner for a first plan, from a requirements file the human wrote.
+
+    This is the only path by which a plan comes into existence, and it is
+    deliberately the same shape as every other planner call: brief in, proposal
+    out, runner decides. The human's authority here is the requirements file --
+    not an ability to write plan/ directly.
+    """
+    path = Path(source) if source else REQUIREMENTS
+    if not path.is_file():
+        print(f"no requirements at {path}", file=sys.stderr)
+        print(f"write them there, or pass --from <path>", file=sys.stderr)
+        return 1
+
+    # A bootstrap replaces the whole plan. If steps are already green, that
+    # would leave the ledger describing work against criteria that no longer
+    # exist -- the same reason the guard refuses to edit a green step (P5).
+    done = green_steps()
+    if done:
+        print(f"refusing: {', '.join(sorted(done))} already green", file=sys.stderr)
+        print("a bootstrap replaces the plan, which would orphan them. Start a "
+              "fresh project directory instead.", file=sys.stderr)
+        return 1
+
+    requirements = path.read_text(encoding="utf-8")
+    clear_proposal()
+    out = call_planner(brief_plan_bootstrap(requirements))
+    names = sorted(p.name for p in PLANNER_OUT.iterdir())
+    ledger("PLAN_BOOTSTRAP", source=str(path), wrote=names)
+    if not names:
+        print("the planner wrote no files", file=sys.stderr)
+        print(out[-2000:], file=sys.stderr)
+        return 2
+    return 0
+
+
 
 def cmd_plan_propose(step_id: str | None) -> int:
     if not ESCALATION.exists():
@@ -1016,7 +1239,23 @@ def cmd_plan_apply() -> int:
         print(proposal[ESCALATE_NAME])
         return 3
 
-    old = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
+    # With no plan on disk this is a bootstrap, and there is nothing for P1..P5
+    # to compare against -- they are all about what may not change. The linter
+    # still applies in full, and a FIRST plan has to be complete: a project
+    # cannot start with acceptance criteria but no spec for the human to have
+    # agreed to, nor with a plan whose solver has no background to work from.
+    existing = PLAN / "tasks.json"
+    if existing.exists():
+        old = json.loads(existing.read_text(encoding="utf-8"))
+    else:
+        incomplete = sorted(set(PROPOSAL_FILES) - set(proposal))
+        if incomplete:
+            for name in incomplete:
+                print(f"B1: a first plan must include {name}", file=sys.stderr)
+            ledger("PLAN_REJECT", files=sorted(proposal), violations=incomplete)
+            return 2
+        old = {"steps": []}
+
     new = json.loads(proposal["tasks.json"]) if "tasks.json" in proposal else old
 
     problems = check_proposal(old, new) + validate_plan(new)
@@ -1355,6 +1594,10 @@ def main() -> int:
     # able to do that without either happening.
     plan_cmd = sub.add_parser("plan", help="the planner channel")
     plan_sub = plan_cmd.add_subparsers(dest="plan_cmd", required=True)
+    boot_cmd = plan_sub.add_parser(
+        "bootstrap", help="ask the planner for a first plan, from the requirements")
+    boot_cmd.add_argument("--from", dest="source", default=None, metavar="PATH",
+                          help=f"the requirements file (default: {REQUIREMENTS})")
     propose_cmd = plan_sub.add_parser(
         "propose", help="ask the planner to revise the plan in answer to ESCALATION.md")
     propose_cmd.add_argument("--step", default=None,
@@ -1374,6 +1617,8 @@ def main() -> int:
         if args.cmd == "reset":
             return cmd_reset(args.step_id)
         if args.cmd == "plan":
+            if args.plan_cmd == "bootstrap":
+                return cmd_plan_bootstrap(args.source)
             if args.plan_cmd == "propose":
                 return cmd_plan_propose(args.step)
             if args.plan_cmd == "show":
@@ -1392,6 +1637,14 @@ def main() -> int:
     except Halt as halt:
         print(f"HALT [{halt.phase}] {halt.reason}\n{halt.detail}", file=sys.stderr)
         return 2
+    except FileNotFoundError as missing:
+        # Almost always one thing: a fresh project with no plan in it yet. Say
+        # so, rather than printing a traceback about tasks.json.
+        print(f"missing: {missing.filename}", file=sys.stderr)
+        if str(missing.filename or "").endswith("tasks.json"):
+            print(f"there is no plan yet. Write the requirements to "
+                  f"{REQUIREMENTS} and run: plan bootstrap", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

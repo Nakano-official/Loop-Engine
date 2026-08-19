@@ -40,6 +40,19 @@ getent group plannerw >/dev/null || groupadd plannerw
 usermod -aG plannerw planner
 usermod -aG plannerw runner
 
+# The human's own group. `maint` is in it so that a person can drop a file
+# into /srv/loop/human/in without sudo, and runner is in it so it can read what
+# was dropped. Neither solver nor planner is in it, and that is the point: the
+# requirements that start a project, and later the answers to escalations, are
+# the two things only a person may say.
+#
+# This is not a privilege increase for maint, which already has sudo. It is
+# there so that the same directory works unchanged when a web front end, running
+# as its own uid, takes over the writing.
+getent group humanw >/dev/null || groupadd humanw
+usermod -aG humanw runner
+usermod -aG humanw "$ADMIN_USER"
+
 # Neither loop account may sudo. Assert rather than assume: a stray sudoers
 # drop-in would silently defeat the whole environment-freeze argument.
 for u in runner solver planner; do

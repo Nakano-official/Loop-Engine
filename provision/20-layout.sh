@@ -41,14 +41,26 @@ sudo -u runner install -d -m 755 \
   /srv/loop/project/plan \
   /srv/loop/project/.runner
 
-# An empty conftest.py at the root is what puts the project root on sys.path for
-# pytest, so a test can `from src.x import y`. Without it pytest inserts tests/
-# instead, every import of src fails as a collection error, and RED_GATE's R5
-# correctly refuses to call that red -- a confusing way to discover a missing
-# empty file.
-if [ ! -f /srv/loop/project/conftest.py ]; then
-  sudo -u runner touch /srv/loop/project/conftest.py
-fi
+# conftest.py at the root does two jobs, and pytest picks it up automatically.
+#
+#   1. Its mere existence puts the repository root on sys.path. Without it
+#      pytest inserts tests/ instead, every import of the code under test fails
+#      as a collection error, and RED_GATE's R5 correctly refuses to call that
+#      red -- a confusing way to discover a missing empty file.
+#   2. It adds src/ as well, which is what makes the standard src-layout work:
+#      code lives in src/yourpkg/ and tests import `from yourpkg...` with no
+#      `src.` prefix. src/ is one of the two directories the write fence can
+#      open and close (linter rule L12), so the code has to live there anyway;
+#      this only keeps the imports from being ugly about it.
+#
+# Written unconditionally rather than only when absent: an earlier version of
+# this script created the file empty, and an empty one silently skips job 2.
+sudo -u runner tee /srv/loop/project/conftest.py >/dev/null <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+PYEOF
 
 # Seed an initial commit so the host has something to clone.
 cd /srv/loop/project
