@@ -32,6 +32,14 @@ getent group solverw >/dev/null || groupadd solverw
 usermod -aG solverw solver
 usermod -aG solverw runner   # so runner can write into brief/ with group perms
 
+# The planner gets its own group rather than sharing solverw. Sharing one would
+# put the planner in reach of tests/ and src/, which is the exact separation
+# BOOTSTRAP 1-1 is about: whoever sets the acceptance criteria must not be able
+# to touch the code that satisfies them.
+getent group plannerw >/dev/null || groupadd plannerw
+usermod -aG plannerw planner
+usermod -aG plannerw runner
+
 # Neither loop account may sudo. Assert rather than assume: a stray sudoers
 # drop-in would silently defeat the whole environment-freeze argument.
 for u in runner solver planner; do

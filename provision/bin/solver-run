@@ -10,6 +10,12 @@
 set -euo pipefail
 
 BRIEF="${1:?usage: solver-run <brief-file>}"
+
+# Seconds before the agent is stopped. Enforced HERE rather than in the runner:
+# the runner belongs to a different uid and cannot signal this process at all,
+# so a ceiling applied only on that side would leave a hung agent running with
+# nothing able to end it. `timeout` exits 124 when it fires.
+LIMIT="${2:-900}"
 [ -r "$BRIEF" ] || { echo "solver-run: cannot read brief: $BRIEF" >&2; exit 2; }
 
 # sudo's env_reset does not reliably hand HOME to the target user, and codex
@@ -56,10 +62,8 @@ cd /srv/loop/project
 #                       the two ever disagree the filesystem wins, because it is
 #                       the fence the solver cannot talk its way past.
 #
-# No timeout here: the value is still undecided (RUNNER_SPEC section 11). The
-# runner will impose it from outside, where it can be enforced rather than
-# cooperated with.
-exec codex exec \
+# The ceiling is applied here, not by the runner: see LIMIT at the top.
+exec timeout --kill-after=30 "$LIMIT" codex exec \
   --cd /srv/loop/project \
   --sandbox workspace-write \
   --skip-git-repo-check \
