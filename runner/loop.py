@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 LOOP = Path("/srv/loop")
@@ -305,6 +305,10 @@ class TestRun:
     failure_kinds: list[str]
     passed_names: list[str]
     output: str
+    # Which test files the failures are in, as pytest reports them
+    # ("tests.test_models"). VERIFY runs the whole suite, so it needs to say
+    # whether what broke belongs to this step or to one that was already green.
+    failed_files: list[str] = field(default_factory=list)
 
     @property
     def green(self) -> bool:
@@ -361,8 +365,14 @@ def failure_kind(failure: ET.Element) -> str:
 
 def pytest_run(tag: str, files_test: list[str]) -> TestRun:
     """RUNNER_SPEC section 4: the verdict is read from the junit XML, never from
-    the exit code. Only the step's own test files are run, so an unrelated test
-    elsewhere in the tree can neither rescue nor sink this step's gate."""
+    the exit code.
+
+    What is passed in differs by gate, and deliberately. RED_GATE is handed only
+    this step's test files: its job is to establish that these tests fail for
+    want of this implementation, and a count that included the rest of the suite
+    would make R1 meaningless. VERIFY is handed the whole of tests/, because its
+    job is the other half -- these now pass AND nothing that already passed
+    stopped passing."""
     STATE.mkdir(parents=True, exist_ok=True)
     xml_path = STATE / f"pytest-{tag}.xml"
     # No bytecode: a .pyc is owned by whoever wrote it, and a solver-owned one
@@ -390,11 +400,15 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
 
     kinds: list[str] = []
     passed: list[str] = []
+    broken: list[str] = []
     for case in suite.iter("testcase"):
         failures = case.findall("failure")
-        problems = failures + case.findall("error") + case.findall("skipped")
+        errors = case.findall("error")
+        problems = failures + errors + case.findall("skipped")
         if not problems:
             passed.append(case.get("name") or "<unnamed>")
+        if failures or errors:
+            broken.append(case.get("classname") or "<unknown>")
         for failure in failures:
             kinds.append(failure_kind(failure))
 
@@ -406,6 +420,7 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
         failure_kinds=kinds,
         passed_names=passed,
         output=output,
+        failed_files=sorted(set(broken)),
     )
 
 
@@ -1641,6 +1656,11 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
         last_failure = "\n".join(red.failure_kinds)
         max_attempts = step.get("max_attempts", 3)
 
+        # pytest names a test's home as a dotted module path, so this is what
+        # "tests/test_models.py" looks like in the report it writes.
+        own_tests = {Path(p).with_suffix("").as_posix().replace("/", ".")
+                     for p in step["files_test"]}
+
         while attempt < max_attempts:
             attempt += 1
             set_writable(tests=None, src=True)   # tests/ stays frozen; see set_writable
@@ -1654,16 +1674,48 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
 
             assert_touched("VERIFY", step["files_test"] + step["files_write"])
 
-            green = pytest_run(f"verify-{attempt}", step["files_test"])
+            # The WHOLE suite, not just this step's tests. A step is done when
+            # its own tests pass and every test that already passed still does
+            # -- the two halves that benchmarks call FAIL_TO_PASS and
+            # PASS_TO_PASS. Only the first half was ever checked here, so a step
+            # could break an earlier one and the loop would call it green and
+            # move on. Nothing detected that; the whole suite simply happened
+            # not to break.
+            #
+            # This adds no judgement to the gate. "Did anything that passed stop
+            # passing" is a measurement, which is the only kind of question a
+            # gate in this design is allowed to ask.
+            green = pytest_run(f"verify-{attempt}", [TESTS.relative_to(PROJECT).as_posix()])
             last_run = green
+            regressions = [f for f in green.failed_files if f not in own_tests]
             ledger("VERIFY", step=step_id, attempt=attempt, tests=green.tests,
-                   failures=green.failures, errors=green.errors, green=green.green)
+                   failures=green.failures, errors=green.errors,
+                   green=green.green, regressions=regressions)
             if green.green:
                 break
             last_failure = green.output[-3000:]
+            if regressions:
+                # Worth saying outright, because the obvious repair is one the
+                # solver cannot make: tests/ is frozen, so the earlier tests are
+                # not editable and the implementation is the only thing left.
+                last_failure = (
+                    "Tests that passed before this step are now failing:\n  "
+                    + "\n  ".join(regressions)
+                    + "\n\nThey are frozen and cannot be edited. Your "
+                      "implementation has to stop breaking them, while still "
+                      "satisfying this step.\n\n" + last_failure)
         else:
-            raise Halt("IMPL", f"still failing after {max_attempts} attempts",
-                       last_run.output[-4000:] if last_run else "")
+            broke = [f for f in last_run.failed_files if f not in own_tests] if last_run else []
+            reason = f"still failing after {max_attempts} attempts"
+            if broke:
+                # Named separately in the reason because it reaches the planner
+                # through ESCALATION.md, and "this step cannot be built without
+                # breaking an earlier one" is a different problem from "this
+                # step is not built yet" -- possibly a contradiction between two
+                # sets of acceptance criteria, which is not the solver's to
+                # resolve.
+                reason += "; and it now breaks " + ", ".join(broke)
+            raise Halt("IMPL", reason, last_run.output[-4000:] if last_run else "")
 
         # --- GREEN ------------------------------------------------------
         contracts_dir = STATE / "contracts"
