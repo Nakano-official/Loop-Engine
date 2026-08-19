@@ -13,3 +13,4 @@ plan/*.md           text eol=lf
 # chokes on non-ASCII in a BOM-less file (see provision/README 3-6).
 *.cmd               text eol=crlf
 *.ps1               text eol=crlf
+*.vbs               text eol=crlf
