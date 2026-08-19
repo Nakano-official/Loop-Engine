@@ -37,7 +37,16 @@ fi
 
 sudo -u runner install -d -m 755 \
   /srv/loop/project/src \
-  /srv/loop/project/tests \
+  /srv/loop/project/tests
+
+# Private from the moment they exist, rather than created open and tightened by
+# 40-perms.sh afterwards. Depending on a second script to close the fence is how
+# it came to be standing open: this file was re-run on its own when the project
+# was rebuilt for a new subject, 40-perms.sh was not, and ten steps then ran
+# with every acceptance criterion readable by the solver. 40-perms.sh still sets
+# these, and loop.py now refuses to start when they are wrong -- the runner is
+# the only one of the three that runs every time.
+sudo -u runner install -d -m 700 \
   /srv/loop/project/plan \
   /srv/loop/project/.runner
 

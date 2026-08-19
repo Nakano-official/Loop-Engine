@@ -1824,6 +1824,49 @@ def cmd_reset(step_id: str) -> int:
     return 0
 
 
+# The directories the solver must not be able to read: the plan (every step's
+# acceptance criteria, the spec, the ledger), the freeze manifests and the
+# contracts, and git history. BOOTSTRAP 1-5 -- the solver receives one step's
+# worth of information and no more -- is a claim about these three modes.
+PRIVATE_DIRS = (PLAN, STATE, PROJECT / ".git")
+
+
+def fence_is_open() -> bool:
+    """Refuse to run if anyone but runner can read the private directories.
+
+    This exists because the fence was found standing open. `20-layout.sh`
+    created plan/ and .runner/ at 0755 and `40-perms.sh` tightened them to
+    0700 afterwards, so the mode was correct only if both ran, in order. The
+    project was rebuilt for a new subject without the second one, and ten steps
+    then ran with every acceptance criterion, the whole spec and every frozen
+    contract readable by the solver.
+
+    A provisioning script runs once, at build time, and cannot notice that. The
+    runner runs every time, so the check belongs here.
+
+    It refuses rather than repairing. The runner owns these directories and
+    could chmod them itself, but a wrong mode means the information may already
+    have been readable during earlier runs -- which is a fact about what those
+    runs are worth, and it should stop a human rather than be tidied away.
+    """
+    open_dirs = []
+    for path in PRIVATE_DIRS:
+        if not path.exists():
+            continue
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            open_dirs.append(f"  {path} is {mode:04o}, expected 0700")
+    if not open_dirs:
+        return False
+
+    print("refusing to run: the solver can read what it must not.", file=sys.stderr)
+    print("\n".join(open_dirs), file=sys.stderr)
+    print("\nFix with:  chmod 700 " + " ".join(str(p) for p in PRIVATE_DIRS),
+          file=sys.stderr)
+    print("Then consider what earlier runs were measured under.", file=sys.stderr)
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="loop runner v1")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1864,6 +1907,9 @@ def main() -> int:
 
     if os.geteuid() == 0:
         print("refusing to run as root: this must run as `runner`", file=sys.stderr)
+        return 1
+
+    if fence_is_open():
         return 1
 
     try:
