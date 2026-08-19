@@ -317,6 +317,47 @@ class TestRun:
 # had a working test.
 RED_KINDS = re.compile(r"^(AssertionError|Failed)\b")
 
+# pytest ends every failure body with "<file>:<line>: <ExceptionName>". That
+# last line is where the exception class is actually legible; see failure_kind.
+FAILURE_TAIL = re.compile(r":\s*([A-Za-z_][\w.]*)\s*$")
+
+
+def failure_kind(failure: ET.Element) -> str:
+    """The exception class that ended one test.
+
+    pytest never sets the `type` attribute on <failure>, so this has to be read
+    out of the report. The obvious place -- the `message` attribute -- is the
+    wrong one, and wrong in a way that took a real step to expose:
+
+        assert float("nan") == 5.0     -> "AssertionError: assert nan == 5.0"
+        assert state.resources == 5.0  -> "assert nan == 5.0"
+
+    Both are ordinary assertions. The second loses the class name because its
+    explanation spans two lines ("+ where nan = <GameState>.resources"), and
+    pytest drops the prefix when it does. So matching the message on
+    "AssertionError" accepted assertions about values and rejected assertions
+    about attributes -- and a data-model step, which is how most plans begin,
+    asserts about attributes. RED_GATE would have refused a perfectly good red.
+
+    The body's last line carries the class uniformly, whatever the explanation
+    looked like:
+
+        tests/test_models.py:16: AssertionError
+        tests/test_models.py:21: Failed              (pytest.raises saw nothing)
+        tests/test_models.py:25: AttributeError      (the call itself is broken)
+
+    which is exactly the distinction R5 exists to make.
+    """
+    body = (failure.text or "").strip()
+    if body:
+        match = FAILURE_TAIL.search(body.splitlines()[-1])
+        if match:
+            return match.group(1)
+    # Only for a junit writer that omits the body. Kept deliberately dumb: if
+    # the class cannot be read, R5 should refuse rather than guess generously.
+    message = (failure.get("message") or "").strip()
+    return message.splitlines()[0] if message else "<no type>"
+
 
 def pytest_run(tag: str, files_test: list[str]) -> TestRun:
     """RUNNER_SPEC section 4: the verdict is read from the junit XML, never from
@@ -355,11 +396,7 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
         if not problems:
             passed.append(case.get("name") or "<unnamed>")
         for failure in failures:
-            # R5 keys off the exception type. The message is a fallback for
-            # junit writers that omit the attribute.
-            kinds.append(failure.get("type")
-                         or (failure.get("message") or "").strip().splitlines()[0]
-                         or "<no type>")
+            kinds.append(failure_kind(failure))
 
     return TestRun(
         tests=int(suite.get("tests", 0)),
