@@ -107,7 +107,11 @@ restore_tasks() {
 trap restore_tasks EXIT
 
 sudo -u runner cp "$TASKS" "$BACKUP"
-edit_tasks '
+# Read from the backup, not from $TASKS. `cat $TASKS | ... | tee $TASKS` is a
+# race: the shell sets up the whole pipeline at once, so tee can truncate the
+# file before cat has read it. It works most of the time, which is the worst
+# way for it to be wrong.
+sudo -u runner cat "$BACKUP" | python3 -c '
 import json,sys
 t=json.load(sys.stdin)
 t["steps"][-1]["review_gate"]=True

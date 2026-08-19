@@ -92,6 +92,17 @@ PYTEST_ARGS = ["-q", "-p", "no:cacheprovider", "--strict-markers"]
 # backstop and is deliberately longer than the one solver-run applies.
 TIMEOUTS = {"test": 120, "solver": 960, "planner": 960}
 
+# RUNNER_SPEC 6-2. BOOTSTRAP 1-4 caps the ATTEMPTS inside a step but says nothing
+# about the loop outside it, so a planner answering (a) over and over is
+# unbounded -- and (a) is the answer a planner will keep reaching for, because it
+# is the only one it is allowed to give.
+#
+# The spec's rule is: from the second escalation on a step, (a) is off the table
+# and only (b) or (c) remain, both of which are the human's. So the planner
+# answers exactly one escalation per step. Overridable per plan via a top-level
+# "limits" object, for the same reason the timeouts are.
+LIMITS = {"escalations": 1}
+
 
 # --------------------------------------------------------------------------
 # small helpers
@@ -533,8 +544,49 @@ def frozen_tests_text(step: dict) -> str:
 # --------------------------------------------------------------------------
 
 
+def escalation_count(step_id: str) -> int:
+    """How many times this step has already escalated, read from the ledger.
+
+    From the ledger and not from a counter in memory, because the point of the
+    cap is to survive the things that end the process: the VM stopping, a reset,
+    a run resumed tomorrow. This is also why `reset` had to stop rolling the
+    ledger back -- a cap counted from records that reset destroys is not a cap.
+    """
+    if not LEDGER.exists():
+        return 0
+    n = 0
+    for line in LEDGER.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("event") == "ESCALATED" and rec.get("step") == step_id:
+            n += 1
+    return n
+
+
 def escalate(step: dict, halt: Halt, attempt: int, run_: TestRun | None) -> None:
     failed = "\n".join(f"- {k}" for k in (run_.failure_kinds if run_ else [])) or "(none recorded)"
+    n = escalation_count(step["id"]) + 1          # including this one
+    cap = LIMITS["escalations"]
+
+    # RUNNER_SPEC 6-2 requires this constraint to be stated in the file itself,
+    # so that it holds even if whoever reads it has forgotten the rule. It is
+    # also enforced in cmd_run_all, which does not ask.
+    if n > cap:
+        constraint = f"""- This is escalation {n} of at most {cap} for this step, so **(a) is no
+  longer available**. Only (b) rewriting the acceptance criteria, or (c)
+  rebuilding from further upstream -- and both of those are the human's
+  decision, not the planner's (RUNNER_SPEC 6-2).
+- If (c) is chosen, name every green step that has to be discarded."""
+    else:
+        constraint = f"""- The acceptance criteria for this step must NOT be weakened.
+- This is escalation {n} of at most {cap} for this step. Permitted responses are
+  (a) tighten the goal, or escalate. Rewriting the acceptance criteria is case
+  (b) and is a decision for the human, not the planner (RUNNER_SPEC 6-2)."""
+
     ESCALATION.write_text(
         f"""# ESCALATION: step {step["id"]}
 
@@ -542,6 +594,7 @@ def escalate(step: dict, halt: Halt, attempt: int, run_: TestRun | None) -> None
 - phase: {halt.phase}
 - reason: {halt.reason}
 - attempt: {attempt} of {step.get("max_attempts", 3)}
+- escalation: {n} of {cap}
 
 ## Failing tests
 {failed}
@@ -552,14 +605,12 @@ def escalate(step: dict, halt: Halt, attempt: int, run_: TestRun | None) -> None
 ```
 
 ## Constraints on the planner
-- The acceptance criteria for this step must NOT be weakened.
-- Permitted responses are (a) tighten the goal, or escalate. Rewriting the
-  acceptance criteria is case (b) and is a decision for the human, not the
-  planner (HANDOFF, 2026-08-18).
+{constraint}
 """,
         encoding="utf-8",
     )
-    ledger("ESCALATED", step=step["id"], phase=halt.phase, reason=halt.reason)
+    ledger("ESCALATED", step=step["id"], phase=halt.phase, reason=halt.reason,
+           escalation_no=n)
     print(f"\nESCALATION written to {ESCALATION}", file=sys.stderr)
 
 
@@ -930,7 +981,7 @@ def cmd_plan_propose(step_id: str | None) -> int:
     if not ESCALATION.exists():
         print(f"nothing to revise: {ESCALATION} does not exist", file=sys.stderr)
         return 1
-    load_timeouts(json.loads((PLAN / "tasks.json").read_text(encoding="utf-8")))
+    load_settings(json.loads((PLAN / "tasks.json").read_text(encoding="utf-8")))
     step = None
     if step_id:
         step, _ = load_plan(step_id)
@@ -1011,16 +1062,18 @@ def cmd_plan_apply() -> int:
     return 0
 
 
-def load_timeouts(tasks: dict) -> None:
+def load_settings(tasks: dict) -> None:
     """Let the plan raise or lower the ceilings, for the keys that exist and no
     others. An unknown key here would be a silently ignored setting."""
     TIMEOUTS.update({k: int(v) for k, v in (tasks.get("timeouts") or {}).items()
                      if k in TIMEOUTS})
+    LIMITS.update({k: int(v) for k, v in (tasks.get("limits") or {}).items()
+                   if k in LIMITS})
 
 
 def run_step(step_id: str, unvalidated: bool = False) -> int:
     tasks = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
-    load_timeouts(tasks)
+    load_settings(tasks)
     problems = validate_plan(tasks)
     if problems:
         if not unvalidated:
@@ -1137,6 +1190,99 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
         return 2
 
 
+# --------------------------------------------------------------------------
+# the outer loop (RUNNER_SPEC section 9, `run --all`)
+# --------------------------------------------------------------------------
+
+
+# What stops the outer loop. Every one of these is an objective fact about the
+# repository or the ledger; none of them is a judgement about whether things are
+# going well. BOOTSTRAP 1-6: the stopping conditions are fixed in advance,
+# because "ask when unsure" delegates the frequency to the model and ends in
+# approving everything out of habit.
+ALL_GREEN = "every step in the plan is green"
+CAP_REACHED = "the escalation cap for this step is spent (RUNNER_SPEC 6-2)"
+PLAN_REFUSED = "the planner's proposal was refused"
+PLANNER_ASKED = "the planner handed the decision to you"
+BUDGET_SPENT = "the wall-clock budget is spent"
+
+
+def cmd_run_all(unvalidated: bool = False, budget_minutes: int = 0) -> int:
+    """Run steps in plan order until something in the list above stops it.
+
+    The loop is: run a step; if it goes green, move on; if it escalates, let the
+    planner answer once and try again; if it escalates past its cap, stop.
+
+    Nothing here decides whether a proposal was reasonable -- `plan apply` does
+    that, mechanically, and this only reads its exit code. That separation is the
+    reason the outer loop can be allowed to run unattended at all.
+    """
+    deadline = time.monotonic() + budget_minutes * 60 if budget_minutes else None
+
+    def out_of_budget() -> bool:
+        return deadline is not None and time.monotonic() > deadline
+
+    def stop(reason: str, code: int) -> int:
+        ledger("RUN_ALL_STOP", reason=reason)
+        print(f"\nstopped: {reason}", file=sys.stderr)
+        return code
+
+    # Load the plan's settings before announcing them. Reporting the built-in
+    # defaults here while the loop below runs on the plan's values would make the
+    # ledger disagree with what actually happened.
+    load_settings(json.loads((PLAN / "tasks.json").read_text(encoding="utf-8")))
+    ledger("RUN_ALL_START", budget_minutes=budget_minutes or "none",
+           escalation_cap=LIMITS["escalations"])
+
+    while True:
+        # Re-read the plan every time round: a proposal applied in the previous
+        # iteration may have rewritten the step that is about to run, and may
+        # have added steps after it.
+        tasks = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
+        load_settings(tasks)
+        problems = validate_plan(tasks)
+        if problems and not unvalidated:
+            raise Halt("PLAN_LOAD", f"plan has {len(problems)} lint violation(s)",
+                       "\n".join(problems))
+
+        done = green_steps()
+        remaining = [s for s in tasks["steps"] if s["id"] not in done]
+        if not remaining:
+            ledger("ALL_GREEN", steps=sorted(done))
+            print(f"\nall {len(done)} step(s) green")
+            return 0
+
+        step_id = remaining[0]["id"]
+        if out_of_budget():
+            return stop(f"{BUDGET_SPENT}; {len(remaining)} step(s) left, next is {step_id}", 2)
+
+        print(f"\n=== {step_id} ({len(done)} done, {len(remaining)} to go) ===")
+        if run_step(step_id, unvalidated=unvalidated) == 0:
+            continue
+
+        # The step escalated. run_step has already written ESCALATION.md.
+        spent = escalation_count(step_id)
+        if spent > LIMITS["escalations"]:
+            return stop(f"{CAP_REACHED}: {step_id} escalated {spent} time(s); "
+                        f"read {ESCALATION}", 2)
+        if out_of_budget():
+            return stop(f"{BUDGET_SPENT}; {step_id} is escalated and unanswered", 2)
+
+        if cmd_plan_propose(step_id) != 0:
+            return stop(f"the planner produced nothing for {step_id}", 2)
+
+        applied = cmd_plan_apply()
+        if applied == 3:
+            return stop(f"{PLANNER_ASKED} on {step_id}", 3)
+        if applied != 0:
+            return stop(f"{PLAN_REFUSED} for {step_id}; {PLANNER_OUT} has it", 2)
+
+        # Back to the last green before retrying, so the next attempt starts from
+        # a clean tree rather than inheriting the files that failed. The revised
+        # plan survives this: `plan apply` committed it, so it is part of HEAD.
+        cmd_reset(step_id)
+
+
 def cmd_validate() -> int:
     tasks = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
     problems = validate_plan(tasks)
@@ -1188,8 +1334,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="loop runner v1")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate", help="lint plan/tasks.json (RUNNER_SPEC section 8)")
-    run_cmd = sub.add_parser("run", help="run one step end to end")
-    run_cmd.add_argument("step_id")
+    run_cmd = sub.add_parser("run", help="run one step, or the whole plan with --all")
+    run_cmd.add_argument("step_id", nargs="?",
+                         help="the step to run; omit it and pass --all instead")
+    run_cmd.add_argument("--all", action="store_true",
+                         help="run every step that is not green yet, answering "
+                              "escalations through the planner until one of the "
+                              "stopping conditions is met")
+    run_cmd.add_argument("--budget", type=int, default=0, metavar="MINUTES",
+                         help="with --all: stop between steps once this much wall "
+                              "clock has passed (default: no limit)")
     run_cmd.add_argument("--unvalidated", action="store_true",
                          help="run despite lint violations; they are written to the ledger")
     reset_cmd = sub.add_parser("reset", help="discard a halted step and return to the last green")
@@ -1225,6 +1379,15 @@ def main() -> int:
             if args.plan_cmd == "show":
                 return cmd_plan_show()
             return cmd_plan_apply()
+        if args.all:
+            if args.step_id:
+                print("run takes a step id or --all, not both", file=sys.stderr)
+                return 1
+            return cmd_run_all(unvalidated=args.unvalidated,
+                               budget_minutes=args.budget)
+        if not args.step_id:
+            print("run needs a step id, or --all", file=sys.stderr)
+            return 1
         return run_step(args.step_id, unvalidated=args.unvalidated)
     except Halt as halt:
         print(f"HALT [{halt.phase}] {halt.reason}\n{halt.detail}", file=sys.stderr)

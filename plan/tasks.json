@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Fixture plan for exercising the runner, not the real project (BOOTSTRAP Phase 3 is still to come). S1 and S2 were hand-written and are green. S3 was added by hand and its goal was then rewritten by the planner through `plan propose` on 2026-08-19, which is what makes it a fixture for the planner channel as well.",
+  "note": "Fixture plan for exercising the runner, not the real project (BOOTSTRAP Phase 3 is still to come). S1 and S2 were hand-written; S3 was added by hand and its goal was then rewritten by the planner through `plan propose`. All three are green. A fourth step with deliberately contradictory acceptance criteria was used on 2026-08-19 to exercise the escalation cap and the planner escalation path, then removed -- its two ESCALATED records are still in the ledger, which is why re-adding an S4 would start with the cap already spent.",
   "timeouts": {
     "test": 120,
     "solver": 960,
@@ -172,5 +172,8 @@
         "tests/test_counts.py"
       ]
     }
-  ]
+  ],
+  "limits": {
+    "escalations": 1
+  }
 }
