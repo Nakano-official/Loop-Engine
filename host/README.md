@@ -9,6 +9,7 @@ WSL2 では起動と生存管理がホスト側の責務になった（`RUNNER_S
 | ファイル | 置き場所 | 役割 |
 |---|---|---|
 | `loop-dev.cmd` | `C:\Users\<you>\bin\loop-dev.cmd`（PATH の通った場所） | ディストロ起動 → sshd 待機 → VS Code Remote-SSH 起動 |
+| `wsl-keepalive.vbs` | このリポジトリのまま（タスクが絶対パスで参照する） | VM を**窓を出さずに**生かし続ける。下の keepalive タスクの実体 |
 
 **ASCII のみで書くこと。** PowerShell 5.1 と cmd.exe は BOM 無し UTF-8 を ANSI として
 読むため、日本語コメントを入れると行継続として誤解釈され、変数が黙って null になる
@@ -21,16 +22,53 @@ WSL2 では起動と生存管理がホスト側の責務になった（`RUNNER_S
 ### keepalive スケジュールタスク（必須）
 
 これが無いと VM が約60秒のアイドルで停止し、SSH が使えなくなる
-（`provision/README.md` §3-1）。
+（`provision/README.md` §3-1）。**タスクは `wsl.exe` を直接起動せず、
+`wsl-keepalive.vbs` 越しに起動する**（理由は下の「窓を出さない」）。
 
 ```powershell
-schtasks /create /tn "WSL-keepalive-Ubuntu-24-04" /sc onlogon /rl limited `
-  /tr "C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -u root --exec /usr/bin/sleep infinity"
-schtasks /change /tn "WSL-keepalive-Ubuntu-24-04" /ri 0 /du 0000:00
+$user = "$env:USERDOMAIN\$env:USERNAME"
+$action = New-ScheduledTaskAction -Execute "C:\Windows\System32\wscript.exe" `
+  -Argument '"C:\dev\roop-engin\roop\host\wsl-keepalive.vbs"'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
+  -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+  -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName "WSL-keepalive-Ubuntu-24-04" `
+  -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
 ```
 
-`wsl --shutdown` を打つと巻き添えで死ぬので、そのあとは
-`schtasks /run /tn "WSL-keepalive-Ubuntu-24-04"` で戻す。
+`schtasks /create` ではなく `ScheduledTasks` モジュールを使うのは、
+**`ExecutionTimeLimit` を無制限（`PT0S`）にできるのがこちらだけ**だから。
+`schtasks` の既定は72時間で、越えるとタスクスケジューラが keepalive を止める。
+
+`-RestartCount 3` により、keepalive が異常終了しても1分後に自動で戻る
+（`.vbs` が `wsl.exe` の終了コードをそのまま返すのはこのため）。ただし
+**ログオフで落ちた場合は戻らない** ── トリガが onlogon なので次のログオンまで待つ。
+
+`wsl --shutdown` を打つと巻き添えで死ぬ。自動復帰を待たずに戻すなら
+`schtasks /run /tn "WSL-keepalive-Ubuntu-24-04"`。
+
+#### 窓を出さない
+
+以前はタスクが `wsl.exe` を直接起動していた。`/rl limited` の対話タスクなので
+**コンソール窓が開き、タスクバーに残る**。中身は `sleep infinity` なので何も表示されず、
+見た目はただの空のターミナルで、**それを閉じると VM が落ちる。**
+しかも onlogon なので自動では戻らない。1〜2時間ループを流している最中に、
+誤クリック1回で全部止まるという壊れ方をする。
+
+`WScript.Shell.Run(..., 0, True)` なら、同じ wsl.exe クライアントセッションを
+窓なしで保持できる。アイドル判定が数えているのは窓ではなく**クライアントセッション**なので、
+生存条件は変わらない（切り替え中も VM は落ちなかった。実測 2026-08-19）。
+
+生きているかは窓ではなくプロセスで見る:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='wsl.exe' or Name='wscript.exe'" |
+  Select-Object ProcessId, ParentProcessId, Name
+```
+
+`wscript.exe` の親が `svchost.exe`（タスクスケジューラ）になっていれば正しい。
 
 ### `~/.ssh/config`
 

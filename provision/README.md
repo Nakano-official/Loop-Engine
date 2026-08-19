@@ -187,7 +187,8 @@ export は数 GB になるのでリポジトリには入れない（`.gitignore`
 
 WSL2 は約60秒アイドルすると **VM ごと停止する**。sshd も一緒に落ちる。
 `WSL-keepalive-Ubuntu-24-04`（ログオン時に `wsl -d Ubuntu-24.04 -u root --exec /usr/bin/sleep infinity`）
-がこれを抑えている。
+がこれを抑えている。**起動は `host/wsl-keepalive.vbs` 経由**で、窓を出さない
+（2026-08-19 に変更。定義と理由は `host/README.md`）。
 
 実測で確認した事実（2026-08-17）:
 
@@ -197,22 +198,25 @@ WSL2 は約60秒アイドルすると **VM ごと停止する**。sshd も一緒
   「リモートを開いています」で止まる、が実際に起きた）
 - デタッチしたバックグラウンドプロセスも VM を保持しない
 
-タスクを作り直すとき:
+タスクを作り直す手順は `host/README.md` に移した。**`schtasks /create` では作らないこと**
+── `/ri 0 /du 0000:00` は繰り返し間隔を消すだけで、以前ここに書いてあった
+「実行時間無制限」は**誤り**だった。`ExecutionTimeLimit` の既定は72時間で、
+それを外せるのは `Register-ScheduledTask` の側だけ。
 
-```powershell
-schtasks /create /tn "WSL-keepalive-Ubuntu-24-04" /sc onlogon /rl limited `
-  /tr "C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -u root --exec /usr/bin/sleep infinity"
-schtasks /change /tn "WSL-keepalive-Ubuntu-24-04" /ri 0 /du 0000:00   # 実行時間無制限
-```
+さらに、**タスクから `wsl.exe` を直接起動すると窓が出る**。中身は `sleep infinity` で
+何も映らないので空のターミナルに見え、閉じると VM ごと落ちる。`.vbs` 越しに起動して
+窓を消してある。
 
 **帰結: この基盤では無人での長時間ループは回せない。** keepalive はログオンセッションに
 紐づくので、ログオフすれば VM は落ちる。無人運用が必要になったら Hyper-V に移す（§5）。
+窓を消しても、スリープ・再起動・ログオフで落ちることは変わらない。
 
 ### 3-2. `wsl --shutdown` を使うと keepalive が死ぬ
 
 keepalive プロセスは `wsl --shutdown` で `STATUS_CONTROL_C_EXIT` で落ちる。
-タスクは onlogon なので自動では戻らない。**このサンドボックスを触るとき
-`wsl --shutdown` は使わない。** 使ったら明示的にタスクを再実行する:
+タスクは onlogon なので、以前は自動では戻らなかった。いまは `RestartCount 3` を
+付けてあるので**1分後に自力で戻る**が、待たずに戻すなら明示的に再実行する。
+いずれにせよ **`wsl --shutdown` は使わない**（VM が落ちれば走行中のステップは死ぬ）:
 
 ```powershell
 schtasks /run /tn "WSL-keepalive-Ubuntu-24-04"
