@@ -19,7 +19,12 @@ if not exist "%MIRROR%\.git" (
   exit /b 1
 )
 
-git -C "%MIRROR%" fetch --prune --tags origin
+REM --prune-tags --force, because this is a mirror and not a working copy: it
+REM should say what repo.git says. Without them a step-<id> tag that has moved
+REM -- a step re-run after a reset, or a repository rebuilt from scratch -- is
+REM refused as "would clobber existing tag" and the whole fetch fails, which is
+REM how a backup quietly stops being one.
+git -C "%MIRROR%" fetch --prune --prune-tags --tags --force origin
 if errorlevel 1 exit /b 1
 git -C "%MIRROR%" merge --ff-only origin/main
 if errorlevel 1 exit /b 1
