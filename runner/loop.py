@@ -723,8 +723,8 @@ def validate_plan(tasks: dict) -> list[str]:
                 problems.append(f"L1: {where} is missing `{key}`")
             elif not isinstance(s[key], typ) or (typ is int and isinstance(s[key], bool)):
                 problems.append(f"L1: {where}.{key} must be {typ.__name__}")
-        if s.get("kind") not in ("unit", "integration"):
-            problems.append(f"L1: {where}.kind must be 'unit' or 'integration'")
+        if s.get("kind") not in ("skeleton", "unit", "integration"):
+            problems.append(f"L1: {where}.kind must be 'skeleton', 'unit' or 'integration'")
         for a in s.get("acceptance", []):
             if not isinstance(a, dict) or {"case", "given", "then"} - a.keys():
                 problems.append(f"L1: {where} has an acceptance entry without case/given/then")
@@ -813,21 +813,61 @@ def validate_plan(tasks: dict) -> list[str]:
                 problems.append(f"L4: {f} is written by both {owners[f]} and {s['id']}")
             owners[f] = s["id"]
 
-    # L9 / L10 -- a walking skeleton early, and a join at the end
+    # L9 / L10 -- something joined-up early, and a join at the end
     kinds = [s["kind"] for s in steps]
-    if "integration" not in kinds[:3]:
+    if not ({"skeleton", "integration"} & set(kinds[:3])):
         problems.append("L9: no integration step within the first three steps")
     if kinds[-1] != "integration":
         problems.append("L10: the final step is not an integration step")
 
-    # L11 -- nothing is built that nothing uses. Integration steps are exempt:
-    # tying the pieces together is the deliverable, not an input to a later step.
+    # L13 -- the plan begins with a walking skeleton
+    #
+    # L9 asked for an integration step early and its comment claimed that was a
+    # walking skeleton. It was not. "Integration" here only means a step that
+    # ties modules together, and a plan can satisfy it -- can satisfy every rule
+    # above, go green on all ten steps, and pass its whole suite -- while the
+    # thing it built cannot be reached from the state it starts in. That is what
+    # the first real plan did: an incremental game whose only source of
+    # resources was production, whose production required generators, and whose
+    # generators had to be bought with resources. Nothing was wrong with any
+    # step. There was no step about starting.
+    #
+    # A skeleton step is the thin end-to-end slice: from the system's initial
+    # state, through the public API, to something a person would recognise as
+    # the product working. Built first, and thin -- later steps deepen it.
+    #
+    # What this rule can enforce is structural: a plan begins with one, and has
+    # exactly one. It cannot check that the criteria inside it are honest. What
+    # it does buy is that the criteria have to be WRITTEN, at the point where the
+    # plan is being made -- and "given a new game, when ..., then the player
+    # has ..." cannot be written without deciding how the first resource is
+    # earned. The omission stops being something a human notices afterwards and
+    # becomes something the planner walks into while planning.
+    #
+    # Once green, the skeleton stays green: PASS_TO_PASS runs its tests at every
+    # later VERIFY. That is the standing end-to-end test of double-loop TDD,
+    # arrived at from the other side -- green from the first step rather than red
+    # until the last, which is the shape this runner can actually enforce.
+    skeletons = [s["id"] for s in steps if s["kind"] == "skeleton"]
+    if kinds[0] != "skeleton":
+        problems.append(
+            f"L13: the first step is kind '{kinds[0]}'; a plan starts with a "
+            f"'skeleton' step -- the thin end-to-end slice from the system's "
+            f"initial state to something a person would call the product working")
+    if len(skeletons) != 1:
+        problems.append(
+            f"L13: a plan has exactly one skeleton step, not {len(skeletons)}"
+            + (f" ({', '.join(skeletons)})" if skeletons else ""))
+
+    # L11 -- nothing is built that nothing uses. Integration and skeleton steps
+    # are exempt: tying the pieces together is the deliverable there, not an
+    # input to a later step.
     used = set().union(*[
         {m.group(1) if (m := PROVIDES_NAME.search(r)) else r for r in s["contracts"].get("requires", [])}
         for s in steps
     ]) if steps else set()
     for s in steps:
-        if s["kind"] == "integration":
+        if s["kind"] in ("integration", "skeleton"):
             continue
         for name in provides_by_step[s["id"]] - used:
             problems.append(f"L11: step {s['id']} provides `{name}`, which no step requires")
@@ -1105,7 +1145,8 @@ Top level:
 Each step:
 
     "id"              short and stable, e.g. "S1"
-    "kind"            "unit" or "integration"
+    "kind"            "skeleton", "unit" or "integration". Exactly one skeleton,
+                      and it is the first step -- see "Start with a skeleton".
     "goal"            what to build, addressed to the solver. It sees this only
                       while implementing, never while writing the tests.
     "depends_on"      ids of earlier steps; [] for the first
@@ -1120,6 +1161,31 @@ Each step:
 
 Aim for 10 to 15 steps. One step is ONE behaviour that can fail on its own. If
 an implementation would run past roughly 150 lines, split it.
+
+# Start with a skeleton
+
+The first step is `"kind": "skeleton"`, and it is the only one. It is the thin
+end-to-end slice: starting from the state the system is in when it is brand new,
+going through the public API, arriving somewhere a person would recognise as the
+product doing its job.
+
+Thin is the point. Hardcode. Support one case, not the general one. Later steps
+deepen it, and its tests stay in the suite -- every later step is checked against
+them, so once this slice works it keeps working.
+
+Why this rule exists, plainly. A plan can decompose a system into ten clean
+layers, satisfy every rule here, go green on all ten, pass its whole suite, and
+still have built something that cannot be reached from where it starts. That is
+not hypothetical: it is what the previous plan for this project did. Every step
+was correct. There was no step about starting, so nothing ever asked whether
+starting was possible, and it was not.
+
+You cannot write this step's acceptance criteria without settling how the thing
+begins -- what a new instance holds, what the user's first action is, what it
+produces. If settling that turns out to need a decision the requirements did not
+make, that is worth knowing now, while it is still a sentence, rather than after
+ten steps of work. Decide it yourself if the requirements leave room; escalate
+only if the requirements rule out every answer.
 
 # Where the code goes -- not negotiable
 
@@ -1147,10 +1213,11 @@ yourself first.
     L7   expected_tests is at least the number of acceptance criteria
     L8   with review_gate false, every criterion states a concrete value: a
          number, a quoted literal, or an exception type
-    L9   at least one of the FIRST THREE steps is kind "integration"
+    L9   one of the FIRST THREE steps is kind "integration" or "skeleton"
     L10  the LAST step is kind "integration"
     L11  a "unit" step may not provide something that no later step requires
     L12  files_write is under src/, files_test is under tests/
+    L13  the FIRST step is kind "skeleton", and it is the only one
 
 # Three things that are not obvious
 
