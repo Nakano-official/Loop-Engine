@@ -403,6 +403,29 @@ unlink と rename は親ディレクトリの権限で決まるため `conftest.
 → ランナーの pytest は `PYTHONDONTWRITEBYTECODE=1` で走らせ、
 モード変更は `__pycache__` を除外する。
 
+### 3-16. sticky ビットは「ディレクトリの所有者」も例外にする
+
+`/srv/loop/planner/out` は 3770 `runner:plannerw`。sticky を付けた目的は
+「planner が runner 所有のファイルを消せないようにする」ことだが、
+**逆向きは塞がらない** ── sticky の削除条件は「ファイルの所有者**または**
+ディレクトリの所有者」なので、runner は planner が書いたファイルを消せる。
+
+これは事故ではなく必要な性質。`plan propose` は前回の提案を消してから
+プランナーを呼ぶ（残っていると、書かれなかった古い提案が今回の提案として
+適用されてしまう）。root を使わずにそれができるのはこの規則のおかげ。
+
+**ディレクトリを書かれた場合は別。**`out/` に planner 所有のディレクトリがあると、
+中身を消す権限は runner に無い。`clear_proposal()` は再帰せず、人間に投げて止まる。
+
+### 3-17. `git reset --hard` は台帳も巻き戻す
+
+`plan/ledger.jsonl` は GREEN のときに `git add -A` で commit されるため git 管理下にある。
+`reset` の `git reset --hard HEAD` は台帳を**最後の緑まで戻し**、
+破棄しようとしている試行の記録（ESCALATED を含む）を消してしまう。
+
+→ `cmd_reset` は reset の前に台帳を読み、後で書き戻す。
+追記専用の台帳が、よりによって失敗の記録だけを失うのは無いより悪い。
+
 ---
 
 ## 4. 未適用

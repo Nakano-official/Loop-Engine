@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Start the planner agent, non-interactively, on one brief.
+#
+# Invoked by the runner as:
+#     sudo -u planner /srv/loop/bin/planner-run <brief-file> [seconds]
+#
+# Same shape as solver-run, and for the same reason: the runner has no sudo, and
+# the single exception in /etc/sudoers.d/92-runner-to-planner names this script
+# and no other, limited to Runas (planner) -- sideways, never up.
+#
+# What the planner may touch is decided by the filesystem, not by this script.
+# `plan/` is 0700 runner, so the planner cannot read tasks.json and cannot write
+# it. It writes a PROPOSAL into /srv/loop/planner/out and the runner applies it
+# only after checking what changed. "The planner may not weaken the acceptance
+# criteria" is therefore not a rule anyone has to keep.
+set -euo pipefail
+
+BRIEF="${1:?usage: planner-run <brief-file> [seconds]}"
+LIMIT="${2:-900}"
+[ -r "$BRIEF" ] || { echo "planner-run: cannot read brief: $BRIEF" >&2; exit 2; }
+
+OUT=/srv/loop/planner/out
+
+# Credentials. CLAUDE_CODE_OAUTH_TOKEN is a subscription token from
+# `claude setup-token`; ANTHROPIC_API_KEY_CONSOLE is metered Console credit kept
+# as a fallback. Exactly one is exported, so which one paid for a run is never
+# ambiguous -- and an exhausted subscription window degrades to billing rather
+# than to a confusing auth error.
+if [ -r /etc/loop/planner.env ]; then
+  set -a
+  . /etc/loop/planner.env
+  set +a
+fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  if [ -n "${ANTHROPIC_API_KEY_CONSOLE:-}" ]; then
+    export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_CONSOLE"
+    echo "planner-run: no subscription token; falling back to Console credit" >&2
+  else
+    echo "planner-run: no credentials in /etc/loop/planner.env" >&2
+    echo "    subscription (preferred): sudo -u planner -H claude setup-token" >&2
+    exit 3
+  fi
+fi
+unset ANTHROPIC_API_KEY_CONSOLE
+
+# A throwaway HOME for every invocation. Claude Code writes config, policy and
+# backup state into HOME, and with a fresh one each time nothing can carry from
+# one planning call to the next. `--bare` would have covered this in one flag,
+# but --bare refuses OAuth -- and OAuth is exactly what a subscription token is
+# (measured 2026-08-18). Auditing what gets left behind would work; having
+# nowhere for it to be left behind is better.
+HOME="$(mktemp -d)"
+export HOME
+trap 'rm -rf "$HOME"' EXIT
+
+cd "$OUT"
+
+# --safe-mode            CLAUDE.md, skills, plugins, hooks, MCP servers and
+#                        custom commands are all off, while auth, model and the
+#                        built-in tools keep working. This is what keeps the
+#                        brief the planner's only input (RUNNER_SPEC section 5).
+# --setting-sources ""   and no user/project/local settings files either.
+# --no-session-persistence
+#                        no transcript to resume from, so a planning call cannot
+#                        continue a previous one.
+# --allowedTools         it reads its brief on stdin and writes one proposal
+#                        here; nothing else is pre-approved.
+#
+# The ceiling is applied here rather than by the runner, which belongs to a
+# different uid and cannot signal this process at all. `timeout` exits 124.
+set +e
+timeout --kill-after=30 "$LIMIT" claude -p \
+  --safe-mode \
+  --setting-sources "" \
+  --no-session-persistence \
+  --allowedTools "Read Write Edit" \
+  < "$BRIEF"
+rc=$?
+set -e
+exit "$rc"

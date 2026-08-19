@@ -264,8 +264,10 @@ WSL2 の VM は **約60秒アイドルすると VM ごと停止する**。しか
 - bare リポジトリはディストロ内に置き、ホストからは SSH で push/pull（`runner` 鍵）
 - **`solver` は SSH 鍵を持たず、`AllowUsers` にも載っていないので、この経路に触れられない**
 - `runner` 鍵は保守用（`maint`）の鍵とは別に作る。前者は git 経路専用
-- プランナーが書き込んでよいのは `SYSTEM_SPEC.md` / `plan/CONTEXT.md` / `plan/tasks.json` のみ。
-  ランナーは pull 時にそれ以外の差分を検出したら停止する（プランナー側の暴走検知）
+- プランナーが書き込んでよいのは `plan/SYSTEM_SPEC.md` / `plan/CONTEXT.md` / `plan/tasks.json` のみ。
+  当初はこれを「pull 時に差分を検出したら停止する」検知として書いていたが、
+  **検知ではなく剥奪で実装した**（§6-5）。プランナーは `plan/` にそもそも書けず、
+  提案を `/srv/loop/planner/out` に置くだけで、そこに置ける名前は3つしかない
 
 ---
 
@@ -445,6 +447,13 @@ STUB のブリーフには**シグネチャ以外を一切載せない**。意�
 ソルバーはそれを忠実に実装し、その受け入れ条件は RED_GATE で通ってしまう
 （`contracts` に `raises` を書いて実際にそうなった。2026-08-18）。`invariants` も渡さない。
 
+
+`invariants` は **TEST_WRITE のブリーフに載る**。したがって不変条件は
+**公開契約を通して観測できるもの**でなければならない。実装構造を述べた不変条件
+（例:「`normalize()` に委譲し自前では正規化しない」）を書くと、ソルバーは
+モジュール内部を覗くテストを書き、シグネチャだけのスタブに対して `AttributeError` で
+落ちる ── R5 が「assertion ではない」として正しく弾く（S2 で実際に踏んだ。2026-08-18）。
+委譲のような実装上の要求は `goal` に書く。`goal` は IMPL にしか渡らない。
 同じブリーフで**目立つ番兵値**を明示的に要求すること（§4-1）。「型が合っていて間違った値」
 だけでは、ソルバーが `""` や `0` を選んだ瞬間に境界条件が正解してしまい R4 で止まる。
 併せて「検証・型チェック・分岐を一切書かない」ことも指示する。
@@ -515,6 +524,63 @@ git checkout <last green> && git reset --hard
 - **いかなる場合も acceptance を緩める形で応じないこと。**
 ```
 
+### 6-5. プランナーの提案経路（2026-08-19 実装）
+
+BOOTSTRAP 1-4 の (a) をプランナーが自走で行うための経路。**(b) と (c) は人間に戻す**という
+区別を、指示ではなく機構で成立させる。
+
+```
+ ESCALATION.md（ランナーが書く）
+     │
+     ▼
+ loop.py plan propose --step <id>
+     │  ブリーフ = SYSTEM_SPEC.md + CONTEXT.md + tasks.json + ESCALATION.md
+     │  planner-run（uid planner・使い捨て HOME・timeout）
+     ▼
+ /srv/loop/planner/out/     プランナーが書く。tasks.json / CONTEXT.md /
+     │                      SYSTEM_SPEC.md / ESCALATE.md のみ
+     ▼
+ loop.py plan apply
+     │  ファイル名の許可リスト → P1..P5 → リンタ L1..L11
+     ├── 不合格 → exit 2。out/ はそのまま残る（人間が読めるように）
+     ├── ESCALATE.md → exit 3。適用せず人間へ
+     ▼
+ plan/ に反映 → git commit → out/ を空にする → ESCALATION.md を消す
+```
+
+**「差分が3ファイルに収まっているか」はファイル名の許可リストで実装する。**
+差分の検査ではない。4つ目のファイルを書いた提案が現れてから是非を論じる、という状態が
+そもそも発生しない ── 送り先が3つしか定義されていないため。`ESCALATE.md` は4つ目の
+名前だが、**どこにも適用されない**ので性質は変わらない。
+
+既存ステップについて拒否する変更（`check_proposal`）:
+
+| # | 拒否する内容 | 理由 |
+|---|---|---|
+| P1 | ステップの削除 | 受け入れ条件の削除にあたる。(c) は人間の判断 |
+| P2 | `acceptance` の変更 | (b) は人間の判断 |
+| P3 | `expected_tests` の引き下げ | RED_GATE R1 が数える値。同じ条件に対してテストを減らす |
+| P4 | `review_gate` を true → false | 人間の目を機械的に外す変更 |
+| P5 | **green 済みステップの定義変更** | 何を検証したかの記録。書き換えると台帳が事実と食い違う |
+
+**ステップの追加は許可する。**計画が伸びるのはそれ以外にないため。
+`goal` / `contracts` / `files_write` / `files_test` / `depends_on` / `max_attempts` は
+自由に書き換えてよい ── これが (a)「実装が悪いので goal を締める」の中身。
+
+比較は `json.dumps(..., sort_keys=True)` の一致で行う。インデントの付け直しやキーの
+並べ替えを変更と読まないため。
+
+補足2点:
+
+- **ブリーフには acceptance を含む計画全体を渡す。**これは漏洩ではない。プランナーは
+  受け入れ条件の**著者**であり、BOOTSTRAP 1-1 が分けているのは
+  「条件を書く主体」と「コードを書く主体」。`plan/` の 0700 が買っているのは
+  「プランナーが `tasks.json` を**書けない**」ことだけで、読めないことではない
+- **`SYSTEM_SPEC.md` は `plan/` の下に置く**（BOOTSTRAP のファイル表からの逸脱）。
+  リポジトリ直下はソルバーから読める ── 読めないと作業できない ── ので、
+  そこに仕様を置くとブリーフと並ぶ第二の入力経路になり、1ステップ分の契約しか
+  渡していないはずのソルバーが全体設計を読めてしまう。`plan/` は 0700 runner
+
 ---
 
 ## 7. tasks.json に必要な追加フィールド
@@ -581,6 +647,8 @@ L9 は BOOTSTRAP.md §3 ルール6 への修正を機構化したもの。結合
 
 ## 9. CLI
 
+当初の設計（未実装分を含む）:
+
 ```
 runner validate                    # §8。それ以外の全コマンドの前提
 runner run --step <id>             # 1ステップだけ回す
@@ -590,6 +658,22 @@ runner reject  --step <id> [--note] # REVIEW_GATE の却下
 runner status                      # 台帳から各ステップの位相を表示
 runner replan                      # ESCALATION.md 適用後、tasks.json を再検証して再開
 ```
+
+**v1 で実際に存在するもの**（`sudo -u runner python3 /srv/loop/runner/loop.py …`）:
+
+```
+validate                     # §8
+run <id> [--unvalidated]     # 1ステップ。--unvalidated はリンタ違反を台帳に書いて続行
+reset <id>                   # 止まったステップを捨て、最後の green に戻す
+plan propose [--step <id>]   # ESCALATION.md に対する改訂をプランナーに書かせる
+plan show                    # 保留中の提案を、適用せずに表示する
+plan apply                   # 提案を検査し、通れば plan/ に反映して commit
+```
+
+`plan` を3つの動詞に分けてあるのは意図的。`propose` は課金が発生し、`apply` は
+ループが何に対して測られるかを書き換える。どちらも起こさずに提案を読めることが要る。
+
+`approve` / `reject` / `status` / `run --all` / `replan` は未実装（§10）。
 
 ### 終了コード
 
@@ -602,6 +686,17 @@ runner replan                      # ESCALATION.md 適用後、tasks.json を再
 | 40 | 環境異常（venv 不在、権限設定の不備、プロキシ不通など） |
 
 **exit 0 以外はすべて人間に戻る。** 自動で先に進む経路を作らないこと。
+
+v1 の実装はこの表をまだ使っておらず、`0 / 1 / 2 / 3` の4値で返す
+（0 成功、1 前提不足、2 停止・拒否、3 プランナーが人間に差し戻した）。
+上の表に寄せるのは `run --all` を書くときでよい。
+
+**なお 2026-08-19 の設計変更で、「exit 0 以外はすべて人間に戻る」は文字どおりではなくなった。**
+エスカレーションのうち BOOTSTRAP 1-4 の (a) は `plan propose` → `plan apply` で
+プランナーに戻る（§6-5）。人間に戻るのは (b) と (c)、すなわち `plan apply` が
+拒否した場合（exit 2）とプランナー自身が `ESCALATE.md` を書いた場合（exit 3）。
+**自動で先に進む経路は依然として存在しない** ── 進めるのは、受け入れ条件が
+一字も変わっていないことを機械が確かめた提案だけ。
 
 ---
 

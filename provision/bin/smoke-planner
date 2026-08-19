@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Can the runner drive the planner, and is the planner actually fenced in?
+#
+#     sudo -u runner /srv/loop/bin/smoke-planner
+#
+# The second half matters more than the first. A planner that runs is easy; a
+# planner that cannot write the plan directly, and cannot touch the code that has
+# to satisfy it, is the point (BOOTSTRAP 1-1). Those are checked as facts about
+# the filesystem, not as promises.
+#
+# What it may CHANGE about the plan is a separate question, checked by
+# smoke-plan: the guard in `loop.py plan apply`.
+set -euo pipefail
+
+[ "$(id -un)" = "runner" ] || { echo "run as runner: sudo -u runner $0" >&2; exit 1; }
+
+BRIEF=/srv/loop/planner/brief/smoke.md
+OUT=/srv/loop/planner/out
+TARGET="$OUT/smoke-proposal.txt"
+MARKER="planner-smoke-ok"
+
+rm -f "$TARGET"
+
+cat > "$BRIEF" <<EOF
+Write a file named smoke-proposal.txt in the current directory containing
+exactly this single line:
+
+$MARKER
+
+Do nothing else. Then reply with exactly: DONE
+EOF
+
+echo "--- invoking planner ---"
+rc=0
+sudo -u planner /srv/loop/bin/planner-run "$BRIEF" 180 || rc=$?
+echo "--- planner exited rc=$rc ---"
+
+fail=0
+note() { echo "  $1"; }
+bad()  { echo "  FAIL: $1"; fail=1; }
+
+if [ ! -f "$TARGET" ]; then
+  bad "the proposal file was not written"
+else
+  note "ok: proposal written"
+  owner="$(stat -c '%U' "$TARGET")"
+  if [ "$owner" = "planner" ]; then
+    note "ok: proposal owned by planner"
+  else
+    bad "proposal owned by $owner, expected planner"
+  fi
+  if grep -Fqx "$MARKER" "$TARGET"; then
+    note "ok: content matches"
+  else
+    bad "content does not match"
+  fi
+fi
+
+# The fence, checked as permissions rather than by attempting the access.
+#
+# The obvious way to write this -- `sudo -u planner test -r ...` -- does not
+# work from here and is worse than useless: this script runs as runner, whose
+# only sudo grant is the launcher, so sudo refuses the command and the failure
+# reads exactly like a denied file. Every such check would "pass" even with the
+# fence wide open. Inspect the modes instead; runner can stat all of them.
+# What 0700 on plan/ buys is that the planner cannot WRITE tasks.json. It is not
+# hiding the acceptance criteria from it -- the planner is their author, and the
+# runner hands it the whole plan in the brief when it asks for a revision. The
+# separation in BOOTSTRAP 1-1 is between the account that writes the criteria and
+# the account that writes the code, and that is the next two checks.
+planmode="$(stat -c '%U:%G %a' /srv/loop/project/plan)"
+if [ "$planmode" = "runner:runner 700" ]; then
+  note "ok: plan/ is runner:runner 700 -- every change goes through the runner"
+else
+  bad "plan/ is '$planmode', expected 'runner:runner 700'"
+fi
+
+planner_groups=" $(id -nG planner) "
+for d in src tests; do
+  grp="$(stat -c '%G' "/srv/loop/project/$d")"
+  case "$planner_groups" in
+    *" $grp "*) bad "planner is in group $grp, which owns $d/ -- it could write there" ;;
+    *)          note "ok: planner is not in $grp, so $d/ is closed to it" ;;
+  esac
+done
+
+homemode="$(stat -c '%U %a' /home/planner)"
+if [ "$homemode" = "planner 700" ]; then
+  note "ok: /home/planner is 700 -- its credentials are its own"
+else
+  bad "/home/planner is '$homemode', expected 'planner 700'"
+fi
+
+rm -f "$TARGET" "$BRIEF"
+
+echo
+if [ "$fail" -eq 0 ]; then
+  echo "smoke-planner: PASS"
+else
+  echo "smoke-planner: FAIL"
+  exit 1
+fi

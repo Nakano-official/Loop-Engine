@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Does the guard on planner proposals actually hold?
+#
+#     sudo /srv/loop/bin/smoke-plan
+#
+# Run as root, unlike the other smoke scripts, and for a reason worth stating:
+# to test the guard you have to write files into out/ AS THE PLANNER, and the
+# runner cannot do that -- its only sudo grant is the launcher. If this script
+# ran as runner it would be writing runner-owned files and testing a situation
+# that never occurs.
+#
+# What is being checked is the one claim the whole planning side rests on: a
+# planner cannot weaken the acceptance criteria it is supposed to be held to.
+# Not "is instructed not to" -- cannot. Every case below is a way of trying.
+#
+# Non-destructive: the one proposal that is meant to pass is byte-identical to
+# the plan already in place, so the plan never changes. It does leave a commit
+# behind, which contains the ledger entry and nothing else. That is accurate --
+# the apply really did happen.
+set -uo pipefail
+
+[ "$(id -u)" = "0" ] || { echo "run as root: sudo $0" >&2; exit 1; }
+
+OUT=/srv/loop/planner/out
+TASKS=/srv/loop/project/plan/tasks.json
+ESC=/srv/loop/project/plan/ESCALATION.md
+LOOP="sudo -u runner python3 /srv/loop/runner/loop.py"
+cd /tmp   # /home/<anyone> is 0700, and sudo -u runner cannot cd into it
+
+BEFORE="$(sudo -u runner sha256sum "$TASKS" | cut -d' ' -f1)"
+fail=0
+
+clear_out()   { find "$OUT" -mindepth 1 -delete; }
+as_planner()  { sudo -u planner tee "$OUT/$1" >/dev/null; }
+edit_tasks()  { sudo -u runner cat "$TASKS" | python3 -c "$1"; }
+
+# Every case states the exit code it expects. 0 applied, 2 refused, 3 the
+# planner handed the decision back to the human.
+expect() {
+  local want="$1" name="$2"
+  shift 2
+  local got=0
+  "$@" >/tmp/smoke-plan.log 2>&1 || got=$?
+  if [ "$got" = "$want" ]; then
+    echo "  ok: $name (rc=$got)"
+  else
+    echo "  FAIL: $name -- expected rc=$want, got rc=$got"
+    sed 's/^/       /' /tmp/smoke-plan.log
+    fail=1
+  fi
+}
+
+echo "--- the proposal is confined to three filenames ---"
+
+clear_out
+echo hi | as_planner notes.md
+expect 2 "a fourth filename is refused" $LOOP plan apply
+
+clear_out
+sudo -u planner ln -s /etc/passwd "$OUT/tasks.json"
+expect 2 "a symlink is refused" $LOOP plan apply
+
+clear_out
+expect 2 "an empty proposal is refused" $LOOP plan apply
+
+echo "--- the acceptance criteria cannot be weakened ---"
+
+clear_out
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"][0]["acceptance"][0]["then"]="anything at all"
+print(json.dumps(t,ensure_ascii=False,indent=2))' | as_planner tasks.json
+expect 2 "rewriting an acceptance entry is refused (P2)" $LOOP plan apply
+
+clear_out
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"]=t["steps"][:1]
+print(json.dumps(t,ensure_ascii=False,indent=2))' | as_planner tasks.json
+expect 2 "deleting a step is refused (P1)" $LOOP plan apply
+
+clear_out
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"][0]["expected_tests"]=1
+print(json.dumps(t,ensure_ascii=False,indent=2))' | as_planner tasks.json
+expect 2 "lowering expected_tests is refused (P3)" $LOOP plan apply
+
+# P4 can only be exercised against a plan that has review_gate on somewhere, and
+# the fixture plan has it off everywhere. So turn it on for the duration -- in
+# the plan on disk, which the guard reads as "old" -- and put it back.
+#
+# The backup stays inside plan/ rather than /tmp on purpose: plan/ is 0700
+# runner, and /tmp is readable by the solver. A smoke script that copies the
+# acceptance criteria somewhere the solver can read them would defeat the thing
+# it is testing.
+BACKUP="$TASKS.smoke-backup"
+restore_tasks() {
+  if [ -e "$BACKUP" ]; then
+    sudo -u runner cp "$BACKUP" "$TASKS"
+    sudo -u runner rm -f "$BACKUP"
+  fi
+}
+trap restore_tasks EXIT
+
+sudo -u runner cp "$TASKS" "$BACKUP"
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"][-1]["review_gate"]=True
+print(json.dumps(t,ensure_ascii=False,indent=2))' | sudo -u runner tee "$TASKS" >/dev/null
+clear_out
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"][-1]["review_gate"]=False
+print(json.dumps(t,ensure_ascii=False,indent=2))' | as_planner tasks.json
+expect 2 "turning review_gate off is refused (P4)" $LOOP plan apply
+restore_tasks
+trap - EXIT
+
+clear_out
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"][0]["goal"]="reworded"
+print(json.dumps(t,ensure_ascii=False,indent=2))' | as_planner tasks.json
+expect 2 "editing a step that is already green is refused (P5)" $LOOP plan apply
+
+clear_out
+edit_tasks '
+import json,sys
+t=json.load(sys.stdin)
+t["steps"][-1]["acceptance"]=[]
+print(json.dumps(t,ensure_ascii=False,indent=2))' | as_planner tasks.json
+expect 2 "a plan that fails the linter is refused" $LOOP plan apply
+
+echo "--- the planner can hand the decision back ---"
+
+clear_out
+echo "The boundary criterion cannot be reached with this contract." | as_planner ESCALATE.md
+expect 3 "an escalation is passed to the human, not applied" $LOOP plan apply
+
+clear_out
+echo "unreachable" | as_planner ESCALATE.md
+sudo -u runner cat "$TASKS" | as_planner tasks.json
+expect 2 "escalating and proposing at once is refused" $LOOP plan apply
+
+echo "--- and a proposal within the remit is applied ---"
+
+clear_out
+# Byte-identical on purpose: this exercises the accept path -- write, commit,
+# clear out/ -- without changing what the loop is measured against.
+sudo -u runner cat "$TASKS" | as_planner tasks.json
+sudo install -o runner -g runner -m 600 /dev/null "$ESC"
+echo "smoke" | sudo -u runner tee -a "$ESC" >/dev/null
+expect 0 "an unchanged plan is applied" $LOOP plan apply
+
+if [ -n "$(find "$OUT" -mindepth 1 -print -quit)" ]; then
+  echo "  FAIL: out/ was not cleared after a successful apply"; fail=1
+else
+  echo "  ok: out/ is cleared after a successful apply"
+fi
+
+if [ -e "$ESC" ]; then
+  echo "  FAIL: ESCALATION.md survived the apply that answered it"; fail=1
+else
+  echo "  ok: ESCALATION.md is gone, so a second propose cannot re-answer it"
+fi
+
+AFTER="$(sudo -u runner sha256sum "$TASKS" | cut -d' ' -f1)"
+if [ "$BEFORE" = "$AFTER" ]; then
+  echo "  ok: the plan is byte-identical to what it was before this ran"
+else
+  echo "  FAIL: this smoke changed plan/tasks.json"; fail=1
+fi
+
+clear_out
+rm -f /tmp/smoke-plan.log
+
+echo
+if [ "$fail" -eq 0 ]; then
+  echo "smoke-plan: PASS"
+else
+  echo "smoke-plan: FAIL"
+  exit 1
+fi

@@ -45,6 +45,30 @@ STATE = PROJECT / ".runner"
 BRIEF_DIR = LOOP / "brief"
 PYTEST = PROJECT / ".venv" / "bin" / "pytest"
 SOLVER_RUN = LOOP / "bin" / "solver-run"
+PLANNER_RUN = LOOP / "bin" / "planner-run"
+PLANNER_BRIEF = LOOP / "planner" / "brief"
+PLANNER_OUT = LOOP / "planner" / "out"
+
+# The three files the planner may write (BOOTSTRAP, "書いてよいのは次の3つだけ"),
+# as a map from the name it writes in out/ to where that file lives in the
+# project. This mapping is the allowlist: a proposal cannot name a fourth file
+# because there is no fourth entry to send it to.
+#
+# SYSTEM_SPEC.md lives under plan/ rather than at the repository root, which is
+# a deviation from BOOTSTRAP's file table and a deliberate one. The root is
+# readable by the solver -- it has to be, it works there -- so a spec sitting in
+# it would be a second input channel next to the brief, and the whole design of
+# the system would be readable from inside a step that was handed one contract.
+# plan/ is 0700 runner, so putting it there costs nothing and closes that.
+SYSTEM_SPEC = PLAN / "SYSTEM_SPEC.md"
+PROPOSAL_FILES = {
+    "SYSTEM_SPEC.md": SYSTEM_SPEC,
+    "CONTEXT.md": PLAN / "CONTEXT.md",
+    "tasks.json": PLAN / "tasks.json",
+}
+# ...and the one thing the planner may write that is never applied anywhere: its
+# way of saying "this is case (b) or (c), so it is not mine to decide".
+ESCALATE_NAME = "ESCALATE.md"
 
 LEDGER = PLAN / "ledger.jsonl"
 ESCALATION = PLAN / "ESCALATION.md"
@@ -54,6 +78,19 @@ ESCALATION = PLAN / "ESCALATION.md"
 # sys.path, and that is the single mechanism keeping "when stuck, pip install"
 # from working (RUNNER_SPEC 1-3).
 PYTEST_ARGS = ["-q", "-p", "no:cacheprovider", "--strict-markers"]
+
+# RUNNER_SPEC section 11 leaves these open. Fixed values to start from, both
+# overridable per plan via a top-level "timeouts" object in tasks.json.
+#
+# A test run that never returns is the expected failure here: an implementation
+# with an infinite loop is an ordinary thing for a solver to write, and without a
+# ceiling the runner waits for it forever.
+#
+# The solver's own ceiling lives in solver-run, not here. The runner cannot kill
+# a process belonging to another uid, so a timeout enforced only on this side
+# would leave the agent running with nothing able to stop it. This value is a
+# backstop and is deliberately longer than the one solver-run applies.
+TIMEOUTS = {"test": 120, "solver": 960, "planner": 960}
 
 
 # --------------------------------------------------------------------------
@@ -72,7 +109,8 @@ class Halt(Exception):
 
 
 def run(cmd: list[str], cwd: Path = PROJECT, check: bool = False,
-        env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        env: dict[str, str] | None = None,
+        timeout: int | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(c) for c in cmd],
         cwd=str(cwd),
@@ -80,6 +118,7 @@ def run(cmd: list[str], cwd: Path = PROJECT, check: bool = False,
         capture_output=True,
         text=True,
         env=({**os.environ, **env} if env else None),
+        timeout=timeout,
     )
 
 
@@ -263,8 +302,18 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
     xml_path = STATE / f"pytest-{tag}.xml"
     # No bytecode: a .pyc is owned by whoever wrote it, and a solver-owned one
     # under tests/ makes the runner unable to re-apply modes there at all.
-    proc = run([PYTEST, *files_test, *PYTEST_ARGS, "--junitxml", str(xml_path)],
-               env={"PYTHONDONTWRITEBYTECODE": "1"})
+    try:
+        proc = run([PYTEST, *files_test, *PYTEST_ARGS, "--junitxml", str(xml_path)],
+                   env={"PYTHONDONTWRITEBYTECODE": "1"},
+                   timeout=TIMEOUTS["test"])
+    except subprocess.TimeoutExpired:
+        # Reported as an error rather than a failure, which is what it is: the
+        # suite produced no verdict at all. R2 rejects it outright at RED_GATE,
+        # and VERIFY counts it as a failed attempt and tells the solver why.
+        seconds = TIMEOUTS["test"]
+        return TestRun(0, 0, 1, 0, [f"<timeout: no verdict after {seconds}s>"], [],
+                       f"The test run did not terminate within {seconds}s. The most "
+                       f"likely cause is a loop in the implementation that never exits.")
     output = proc.stdout + proc.stderr
 
     if not xml_path.exists():
@@ -321,8 +370,20 @@ def call_solver(phase: str, brief: str) -> str:
     shutil.chown(brief_path, group="solverw")
     brief_path.chmod(0o640)
 
-    proc = run(["sudo", "-u", "solver", str(SOLVER_RUN), str(brief_path)])
+    try:
+        proc = run(["sudo", "-u", "solver", str(SOLVER_RUN), str(brief_path)],
+                   timeout=TIMEOUTS["solver"])
+    except subprocess.TimeoutExpired:
+        # Reaching this means solver-run's own, shorter ceiling did not fire.
+        # Killing the agent from here is not possible -- it belongs to another
+        # uid and the runner has no sudo for that -- so say so plainly instead of
+        # implying the process is gone.
+        raise Halt(phase, f"solver still running after {TIMEOUTS['solver']}s",
+                   "solver-run's internal timeout did not fire; a solver process "
+                   "may still be alive. Check with: pgrep -a -u solver")
     out = proc.stdout + proc.stderr
+    if proc.returncode == 124:
+        raise Halt(phase, "solver hit its own timeout in solver-run", out[-4000:])
     if proc.returncode != 0:
         raise Halt(phase, f"solver exited {proc.returncode}", out[-4000:])
 
@@ -642,8 +703,325 @@ def load_plan(step_id: str) -> tuple[dict, str]:
     return steps[step_id], context
 
 
+# --------------------------------------------------------------------------
+# the planner channel (BOOTSTRAP 1-4, RUNNER_SPEC section 2)
+# --------------------------------------------------------------------------
+
+
+def canon(obj) -> str:
+    """Order-independent comparison key. Reindenting tasks.json must not read as
+    a change, and reordering the keys of a step must not read as one either."""
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+
+def green_steps() -> set[str]:
+    """Step ids that have already gone green, read from the ledger."""
+    done: set[str] = set()
+    if not LEDGER.exists():
+        return done
+    for line in LEDGER.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if rec.get("event") == "GREEN" and rec.get("step"):
+            done.add(rec["step"])
+    return done
+
+
+def clear_proposal() -> None:
+    """Empty out/ before asking for a new proposal.
+
+    A leftover file from a previous call would otherwise be applied as if the
+    planner had just written it. The runner can do this despite the files
+    belonging to `planner`: out/ is sticky, and sticky permits deletion by the
+    owner of the file OR the owner of the directory, which is the runner.
+    """
+    PLANNER_OUT.mkdir(parents=True, exist_ok=True)
+    for entry in PLANNER_OUT.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            raise Halt("PLAN_PROPOSE",
+                       f"a directory is in the way in {PLANNER_OUT}: {entry.name}",
+                       "Remove it by hand; the runner will not recurse into a "
+                       "tree written by another uid.")
+        entry.unlink()
+
+
+def call_planner(brief: str) -> str:
+    """Hand the planner one brief. Same shape as call_solver, same reasons.
+
+    Note what the brief contains: the whole current plan, acceptance criteria
+    included. That is not a leak. The planner is the AUTHOR of the criteria --
+    BOOTSTRAP 1-1 separates the account that writes them from the account that
+    writes the code, and the planner is in neither `solverw` nor `runner`. What
+    the 0700 on plan/ buys is that the planner cannot WRITE tasks.json: every
+    change it wants has to come back through check_proposal below.
+    """
+    PLANNER_BRIEF.mkdir(parents=True, exist_ok=True)
+    brief_path = PLANNER_BRIEF / "plan.md"
+    brief_path.write_text(brief, encoding="utf-8")
+    shutil.chown(brief_path, group="plannerw")
+    brief_path.chmod(0o640)
+
+    try:
+        proc = run(["sudo", "-u", "planner", str(PLANNER_RUN), str(brief_path)],
+                   timeout=TIMEOUTS["planner"])
+    except subprocess.TimeoutExpired:
+        raise Halt("PLAN_PROPOSE", f"planner still running after {TIMEOUTS['planner']}s",
+                   "planner-run's internal timeout did not fire; check with: "
+                   "pgrep -a -u planner")
+    out = proc.stdout + proc.stderr
+    if proc.returncode == 124:
+        raise Halt("PLAN_PROPOSE", "planner hit its own timeout in planner-run", out[-4000:])
+    if proc.returncode != 0:
+        raise Halt("PLAN_PROPOSE", f"planner exited {proc.returncode}", out[-4000:])
+    return out
+
+
+def read_proposal() -> dict[str, str]:
+    """Whatever is in out/, checked as a set of filenames before it is read.
+
+    This is the "the change is confined to three files" rule, and it is a
+    filename allowlist rather than a diff inspection on purpose: there is no
+    proposal that touches a fourth file and then has to be argued about, because
+    there is nowhere for a fourth file to go.
+    """
+    if not PLANNER_OUT.is_dir():
+        raise Halt("PLAN_APPLY", f"no proposal directory at {PLANNER_OUT}")
+    entries = sorted(PLANNER_OUT.iterdir(), key=lambda p: p.name)
+    if not entries:
+        raise Halt("PLAN_APPLY", "the planner wrote nothing")
+
+    allowed = set(PROPOSAL_FILES) | {ESCALATE_NAME}
+    stray = sorted(e.name for e in entries if e.name not in allowed)
+    if stray:
+        raise Halt("PLAN_APPLY", "the proposal contains files the planner may not write",
+                   "wrote: " + ", ".join(stray) + "\nallowed: " + ", ".join(sorted(allowed)))
+
+    proposal = {}
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file():
+            raise Halt("PLAN_APPLY", f"{entry.name} is not a regular file",
+                       "A symlink here would apply content from outside the "
+                       "proposal directory.")
+        proposal[entry.name] = entry.read_text(encoding="utf-8")
+
+    if ESCALATE_NAME in proposal and len(proposal) > 1:
+        raise Halt("PLAN_APPLY",
+                   f"{ESCALATE_NAME} was written alongside a proposal",
+                   "Escalating and proposing at the same time is ambiguous: "
+                   "either the planner can fix this within its remit or it cannot.")
+    return proposal
+
+
+def check_proposal(old: dict, new: dict) -> list[str]:
+    """Everything the planner may not change about a step that already exists.
+
+    BOOTSTRAP 1-4 lets the planner answer an escalation with case (a) -- tighten
+    the goal, re-plan the approach -- and reserves (b) and (c), which rewrite or
+    discard acceptance criteria, for the human. That distinction is enforced
+    here, mechanically, because "do not weaken the criteria to make the tests
+    pass" is exactly the instruction a stuck agent has the most reason to
+    reinterpret.
+
+    Adding steps is allowed; that is how a plan grows.
+    """
+    problems: list[str] = []
+    done = green_steps()
+    old_steps = {s["id"]: s for s in old.get("steps", [])}
+    new_steps = {s["id"]: s for s in new.get("steps", [])}
+
+    for sid, o in old_steps.items():
+        n = new_steps.get(sid)
+        if n is None:
+            problems.append(
+                f"P1: step {sid} was removed. Deleting a step deletes its acceptance "
+                f"criteria, which is case (c) and belongs to the human")
+            continue
+        if canon(o.get("acceptance")) != canon(n.get("acceptance")):
+            problems.append(
+                f"P2: step {sid} has different acceptance criteria. That is case (b) "
+                f"and belongs to the human")
+        # expected_tests is what RED_GATE R1 counts against, so lowering it asks
+        # for fewer tests over the same criteria. The linter's L7 already forbids
+        # dropping below the number of criteria; this forbids drifting down at all.
+        if int(n.get("expected_tests", 0)) < int(o.get("expected_tests", 0)):
+            problems.append(
+                f"P3: step {sid} lowers expected_tests from {o.get('expected_tests')} "
+                f"to {n.get('expected_tests')}")
+        if o.get("review_gate") and not n.get("review_gate"):
+            problems.append(f"P4: step {sid} turns review_gate off")
+        # A step that is already green was measured against a definition that is
+        # now history. Rewriting it does not change the code -- the runner will
+        # not re-run it -- it only makes the ledger describe something that never
+        # happened.
+        if sid in done and canon(o) != canon(n):
+            problems.append(
+                f"P5: step {sid} is already green; its definition is a record of what "
+                f"was checked and cannot be edited")
+
+    return problems
+
+
+def brief_plan_revise(step: dict | None, escalation: str) -> str:
+    spec = SYSTEM_SPEC.read_text(encoding="utf-8") if SYSTEM_SPEC.exists() \
+        else "(not written yet)"
+    context = (PLAN / "CONTEXT.md").read_text(encoding="utf-8")
+    tasks = (PLAN / "tasks.json").read_text(encoding="utf-8")
+    done = sorted(green_steps())
+    focus = f"step {step['id']}" if step else "the plan"
+    return f"""You are the planner. Revise the plan so that {focus} can succeed.
+
+You do not write code and you cannot reach the repository. You write files into
+the current directory and the runner decides whether to apply them.
+
+# SYSTEM_SPEC.md
+{spec}
+
+# plan/CONTEXT.md
+{context}
+
+# plan/tasks.json
+{tasks}
+
+# Why the runner stopped
+{escalation}
+
+# Steps that are already green
+{", ".join(done) if done else "(none)"}
+
+# What you may write, into the current directory
+- `tasks.json`      the full revised plan, not a diff
+- `CONTEXT.md`      optional, only if the background the solver receives is what
+                    was wrong
+- `SYSTEM_SPEC.md`  optional, only if an agreed decision has to change
+- `{ESCALATE_NAME}`   instead of all of the above; see below
+
+Write no other file. A fourth filename is rejected without being read.
+
+# What you may change about a step that already exists
+The goal, the contracts, files_write, files_test, depends_on, max_attempts.
+That is: how the step is approached, and how it is described to the solver.
+
+# What is rejected mechanically
+- changing any `acceptance` entry of a step that already exists
+- removing a step
+- lowering `expected_tests`, or turning `review_gate` off
+- any change at all to a step that is already green
+- a plan that fails the linter (RUNNER_SPEC section 8)
+
+This is BOOTSTRAP 1-4. Case (a) -- the implementation is what is wrong, so
+tighten the goal -- is yours. Case (b) -- the acceptance criteria themselves are
+wrong or unreachable -- and case (c) -- the upstream design is wrong -- are
+decisions for the human, not for you.
+
+So if you conclude that this step cannot be made to pass without changing what
+it is required to do, do not try. Write a single file named `{ESCALATE_NAME}`
+saying which criterion is unreachable and why, and write nothing else. That is a
+correct outcome, and it is the only route to the human.
+
+Output nothing but the files. Do not restate the plan in your final message.
+"""
+
+
+def cmd_plan_propose(step_id: str | None) -> int:
+    if not ESCALATION.exists():
+        print(f"nothing to revise: {ESCALATION} does not exist", file=sys.stderr)
+        return 1
+    load_timeouts(json.loads((PLAN / "tasks.json").read_text(encoding="utf-8")))
+    step = None
+    if step_id:
+        step, _ = load_plan(step_id)
+    clear_proposal()
+    out = call_planner(brief_plan_revise(step, ESCALATION.read_text(encoding="utf-8")))
+    names = sorted(p.name for p in PLANNER_OUT.iterdir())
+    ledger("PLAN_PROPOSE", step=step_id or "-", wrote=names)
+    if not names:
+        print("the planner wrote no files", file=sys.stderr)
+        print(out[-2000:], file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_plan_show() -> int:
+    proposal = read_proposal()
+    for name in sorted(proposal):
+        body = proposal[name]
+        print(f"--- {name} ({len(body.splitlines())} lines) ---")
+        print(body)
+    return 0
+
+
+def cmd_plan_apply() -> int:
+    """Check the proposal, then apply it. A rejection leaves out/ exactly as it
+    was, so the human can read what was refused."""
+    proposal = read_proposal()
+
+    if ESCALATE_NAME in proposal:
+        ledger("PLAN_ESCALATE", note="the planner declined; this is case (b) or (c)")
+        print("The planner escalated to you rather than proposing a change:\n")
+        print(proposal[ESCALATE_NAME])
+        return 3
+
+    old = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
+    new = json.loads(proposal["tasks.json"]) if "tasks.json" in proposal else old
+
+    problems = check_proposal(old, new) + validate_plan(new)
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        ledger("PLAN_REJECT", files=sorted(proposal), violations=problems)
+        print(f"\nproposal rejected: {len(problems)} violation(s); "
+              f"{PLANNER_OUT} left as it is", file=sys.stderr)
+        return 2
+
+    applied = []
+    for name, dest in PROPOSAL_FILES.items():
+        if name not in proposal:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(proposal[name], encoding="utf-8")
+        dest.chmod(0o644)
+        applied.append(str(dest.relative_to(PROJECT)))
+
+    # The escalation has been answered, so it stops existing. This is what makes
+    # the state readable at a glance and safe to drive from a script:
+    # ESCALATION.md is present exactly when there is an open escalation, and
+    # `plan propose` refuses to run without one. Leaving it behind would let a
+    # second propose answer a question that was already answered.
+    escalation_tracked = bool(
+        run(["git", "ls-files", "--", str(ESCALATION.relative_to(PROJECT))]).stdout.strip())
+    ESCALATION.unlink(missing_ok=True)
+
+    ledger("PLAN_APPLY", files=applied)
+
+    # Commit exactly the plan and nothing else. A proposal normally arrives with
+    # a halted step still dirty in the working tree, and sweeping that into the
+    # same commit would record an abandoned attempt as part of the plan change.
+    paths = applied + [str(LEDGER.relative_to(PROJECT))]
+    if escalation_tracked:
+        paths.append(str(ESCALATION.relative_to(PROJECT)))
+    run(["git", "commit", "-q", "-m", "plan: apply planner proposal", "--"] + paths,
+        check=True)
+    for entry in PLANNER_OUT.iterdir():
+        entry.unlink()
+    print("applied: " + ", ".join(applied))
+    return 0
+
+
+def load_timeouts(tasks: dict) -> None:
+    """Let the plan raise or lower the ceilings, for the keys that exist and no
+    others. An unknown key here would be a silently ignored setting."""
+    TIMEOUTS.update({k: int(v) for k, v in (tasks.get("timeouts") or {}).items()
+                     if k in TIMEOUTS})
+
+
 def run_step(step_id: str, unvalidated: bool = False) -> int:
-    problems = validate_plan(json.loads((PLAN / "tasks.json").read_text(encoding="utf-8")))
+    tasks = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
+    load_timeouts(tasks)
+    problems = validate_plan(tasks)
     if problems:
         if not unvalidated:
             raise Halt("PLAN_LOAD", f"plan has {len(problems)} lint violation(s)",
@@ -768,6 +1146,44 @@ def cmd_validate() -> int:
     return 1 if problems else 0
 
 
+def cmd_reset(step_id: str) -> int:
+    """Put the tree back to the last green so a halted step can be re-run.
+
+    A step that stops at RED_GATE leaves tests/ frozen and the working tree
+    dirty, and the next attempt refuses to start. Undoing that by hand means
+    chmod, git reset and git clean in the right order -- easy to get wrong, and
+    wrong in a way that silently carries the previous attempt's files into the
+    next one.
+
+    Order matters here: adopt before chmod (the runner cannot chmod what it does
+    not own), and chmod before git (FREEZE leaves tests/ read-only, and git
+    cannot delete a file it cannot write through).
+    """
+    adopt(TESTS, SRC)
+    set_writable(tests=True, src=True)
+
+    # The ledger is tracked by git (GREEN commits it), so `reset --hard` would
+    # roll it back to the last green and take with it every record of the
+    # attempt being discarded -- including the ESCALATED entry that says why.
+    # An append-only ledger that loses exactly the failures is worse than none.
+    kept = LEDGER.read_bytes() if LEDGER.exists() else b""
+
+    run(["git", "reset", "--hard", "HEAD"], check=True)
+    run(["git", "clean", "-fdq"], check=True)   # no -x: .venv and .runner stay
+
+    if kept:
+        LEDGER.write_bytes(kept)
+
+    manifest = STATE / "freeze" / f"{step_id}.json"
+    manifest.unlink(missing_ok=True)
+    ESCALATION.unlink(missing_ok=True)
+
+    ledger("RESET", step=step_id, note="tree restored to HEAD; freeze manifest and "
+                                       "ESCALATION.md discarded")
+    print(f"step {step_id}: reset to {run(['git', 'log', '--oneline', '-1']).stdout.strip()}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="loop runner v1")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -776,16 +1192,39 @@ def main() -> int:
     run_cmd.add_argument("step_id")
     run_cmd.add_argument("--unvalidated", action="store_true",
                          help="run despite lint violations; they are written to the ledger")
+    reset_cmd = sub.add_parser("reset", help="discard a halted step and return to the last green")
+    reset_cmd.add_argument("step_id")
+
+    # The planner channel. Deliberately three separate verbs rather than one:
+    # `propose` spends money and `apply` changes what the loop is measured
+    # against, and a human who wants to read a proposal before it lands must be
+    # able to do that without either happening.
+    plan_cmd = sub.add_parser("plan", help="the planner channel")
+    plan_sub = plan_cmd.add_subparsers(dest="plan_cmd", required=True)
+    propose_cmd = plan_sub.add_parser(
+        "propose", help="ask the planner to revise the plan in answer to ESCALATION.md")
+    propose_cmd.add_argument("--step", default=None,
+                             help="the step that halted; named in the brief")
+    plan_sub.add_parser("show", help="print the pending proposal without applying it")
+    plan_sub.add_parser("apply", help="check the pending proposal and apply it if it passes")
+
     args = parser.parse_args()
 
     if os.geteuid() == 0:
         print("refusing to run as root: this must run as `runner`", file=sys.stderr)
         return 1
 
-    if args.cmd == "validate":
-        return cmd_validate()
-
     try:
+        if args.cmd == "validate":
+            return cmd_validate()
+        if args.cmd == "reset":
+            return cmd_reset(args.step_id)
+        if args.cmd == "plan":
+            if args.plan_cmd == "propose":
+                return cmd_plan_propose(args.step)
+            if args.plan_cmd == "show":
+                return cmd_plan_show()
+            return cmd_plan_apply()
         return run_step(args.step_id, unvalidated=args.unvalidated)
     except Halt as halt:
         print(f"HALT [{halt.phase}] {halt.reason}\n{halt.detail}", file=sys.stderr)
