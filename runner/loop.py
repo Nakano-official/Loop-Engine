@@ -93,18 +93,26 @@ PYTEST_ARGS = ["-q", "-p", "no:cacheprovider", "--strict-markers"]
 # with an infinite loop is an ordinary thing for a solver to write, and without a
 # ceiling the runner waits for it forever.
 #
-# The solver's own ceiling lives in solver-run, not here. The runner cannot kill
-# a process belonging to another uid, so a timeout enforced only on this side
-# would leave the agent running with nothing able to stop it. This value is a
-# backstop and is deliberately longer than the one solver-run applies.
+# The agent's own ceiling lives in solver-run and planner-run, not here. The
+# runner cannot kill a process belonging to another uid, so a timeout enforced
+# only on this side would leave the agent running with nothing able to stop it.
+# These values are therefore PASSED to those scripts, and the runner's own
+# subprocess timeout is set above them as a backstop for the case where the
+# script's `timeout` does not fire. Not passing them was a real bug: the scripts
+# default to 900s, so raising the number here moved nothing and run 5 was killed
+# at 900 twice while the value in this file read 1800.
+#
 # Measured, not guessed. Planning has taken 8m (run 4), 12m (run 3) and more
-# than 16 (run 5, killed at the old 960s ceiling with nothing written at all).
+# than 15 (run 5, killed at planner-run's 900s default with nothing written).
 # The spread grows with the rules: every one of them is something the plan has to
 # satisfy before the planner will write it out. A ceiling that fires is pure
 # waste here -- Claude Code writes the files at the end, so a killed planning
 # call yields no partial plan to salvage -- which makes the cost of setting this
 # too low much higher than the cost of setting it too high.
 TIMEOUTS = {"test": 120, "solver": 960, "planner": 1800}
+# How far above an agent's own ceiling the runner's backstop sits. It only has to
+# cover solver-run/planner-run's `--kill-after=30` plus the time to write output.
+BACKSTOP_MARGIN = 120
 
 # RUNNER_SPEC 6-2. BOOTSTRAP 1-4 caps the ATTEMPTS inside a step but says nothing
 # about the loop outside it, so a planner answering (a) over and over is
@@ -479,6 +487,18 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
 # --------------------------------------------------------------------------
 
 
+def agent_command(user: str, script: Path, brief_path: Path, limit: int) -> list[str]:
+    """The argv for one agent call.
+
+    Separate from the callers so that "the limit is handed over" is a fact a test
+    can check. solver-run and planner-run both default to 900s when the second
+    argument is missing, so a ceiling raised in TIMEOUTS and not passed here is
+    not a ceiling at all -- which is exactly what happened to run 5, killed twice
+    at 900 while this file said 1800.
+    """
+    return ["sudo", "-u", user, str(script), str(brief_path), str(limit)]
+
+
 def call_solver(phase: str, brief: str) -> str:
     """Hand the solver one brief and nothing else.
 
@@ -496,15 +516,16 @@ def call_solver(phase: str, brief: str) -> str:
     shutil.chown(brief_path, group="solverw")
     brief_path.chmod(0o640)
 
+    limit = TIMEOUTS["solver"]
     try:
-        proc = run(["sudo", "-u", "solver", str(SOLVER_RUN), str(brief_path)],
-                   timeout=TIMEOUTS["solver"])
+        proc = run(agent_command("solver", SOLVER_RUN, brief_path, limit),
+                   timeout=limit + BACKSTOP_MARGIN)
     except subprocess.TimeoutExpired:
         # Reaching this means solver-run's own, shorter ceiling did not fire.
         # Killing the agent from here is not possible -- it belongs to another
         # uid and the runner has no sudo for that -- so say so plainly instead of
         # implying the process is gone.
-        raise Halt(phase, f"solver still running after {TIMEOUTS['solver']}s",
+        raise Halt(phase, f"solver still running after {limit + BACKSTOP_MARGIN}s",
                    "solver-run's internal timeout did not fire; a solver process "
                    "may still be alive. Check with: pgrep -a -u solver")
     out = proc.stdout + proc.stderr
@@ -1113,11 +1134,14 @@ def call_planner(brief: str) -> str:
     shutil.chown(brief_path, group="plannerw")
     brief_path.chmod(0o640)
 
+    limit = TIMEOUTS["planner"]
     try:
-        proc = run(["sudo", "-u", "planner", str(PLANNER_RUN), str(brief_path)],
-                   timeout=TIMEOUTS["planner"])
+        # The limit is passed, not assumed: planner-run defaults to 900s, so a
+        # value set here and not handed over is a ceiling that never applies.
+        proc = run(agent_command("planner", PLANNER_RUN, brief_path, limit),
+                   timeout=limit + BACKSTOP_MARGIN)
     except subprocess.TimeoutExpired:
-        raise Halt("PLAN_PROPOSE", f"planner still running after {TIMEOUTS['planner']}s",
+        raise Halt("PLAN_PROPOSE", f"planner still running after {limit + BACKSTOP_MARGIN}s",
                    "planner-run's internal timeout did not fire; check with: "
                    "pgrep -a -u planner")
     out = proc.stdout + proc.stderr
@@ -1305,7 +1329,7 @@ Write no other file. A fifth filename is rejected without being read.
 Top level:
 
     "version": 1
-    "timeouts": {"test": 120, "solver": 960, "planner": 960}   (optional)
+    "timeouts": {"test": 120, "solver": 960, "planner": 1800}  (optional)
     "limits":   {"escalations": 1}                             (optional)
     "steps":    [ ... ]
 
