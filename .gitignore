@@ -1,3 +1,5 @@
 # `wsl --export` snapshots. Several GB; keep them outside the repo.
 *.tar
 *.vhdx
+__pycache__/
+*.pyc

@@ -310,9 +310,20 @@ class TestRun:
     # whether what broke belongs to this step or to one that was already green.
     failed_files: list[str] = field(default_factory=list)
 
+    # Which tests reported no verdict at all, as "tests.test_models::test_rate".
+    skipped_names: list[str] = field(default_factory=list)
+
     @property
     def green(self) -> bool:
-        return self.tests > 0 and self.failures == 0 and self.errors == 0
+        # A skipped test produced no verdict, so it cannot be part of one.
+        # RED_GATE says this outright (R3) and VERIFY did not, and the asymmetry
+        # was a hole in PASS_TO_PASS: a test that already passed could start
+        # skipping -- a skipif or an importorskip that a later implementation
+        # makes true -- and the gate would step over it without running it,
+        # counting the step green on a suite that had quietly shrunk. Both gates
+        # now refuse the same thing for the same reason.
+        return (self.tests > 0 and self.failures == 0
+                and self.errors == 0 and self.skipped == 0)
 
 
 # R5: only a genuine assertion counts as red. An ImportError or a collection
@@ -389,26 +400,47 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
         return TestRun(0, 0, 1, 0, [f"<timeout: no verdict after {seconds}s>"], [],
                        f"The test run did not terminate within {seconds}s. The most "
                        f"likely cause is a loop in the implementation that never exits.")
-    output = proc.stdout + proc.stderr
+    return parse_junit(xml_path, proc.stdout + proc.stderr)
 
+
+def parse_junit(xml_path: Path, output: str = "") -> TestRun:
+    """The verdict, read out of the report pytest wrote.
+
+    Separate from pytest_run because this is where the gates' arithmetic
+    actually lives, and it is worth being able to hand it a report and check
+    what it says without running a suite to produce one.
+
+    Anything unreadable is an error, never an absence: a report that cannot be
+    parsed says nothing about the tests, and a gate that reads it as "no
+    failures" would pass a step on a run that never happened.
+    """
     if not xml_path.exists():
         return TestRun(0, 0, 1, 0, ["<no junit report: pytest did not start>"], [], output)
 
-    suite = ET.parse(xml_path).getroot().find("testsuite")
+    try:
+        root = ET.parse(xml_path).getroot()
+    except ET.ParseError as exc:
+        return TestRun(0, 0, 1, 0, [f"<unparsable junit report: {exc}>"], [], output)
+
+    suite = root.find("testsuite")
     if suite is None:
         return TestRun(0, 0, 1, 0, ["<malformed junit report>"], [], output)
 
     kinds: list[str] = []
     passed: list[str] = []
     broken: list[str] = []
+    no_verdict: list[str] = []
     for case in suite.iter("testcase"):
         failures = case.findall("failure")
         errors = case.findall("error")
-        problems = failures + errors + case.findall("skipped")
-        if not problems:
+        skips = case.findall("skipped")
+        if not (failures or errors or skips):
             passed.append(case.get("name") or "<unnamed>")
         if failures or errors:
             broken.append(case.get("classname") or "<unknown>")
+        if skips:
+            no_verdict.append(f"{case.get('classname') or '<unknown>'}"
+                              f"::{case.get('name') or '<unnamed>'}")
         for failure in failures:
             kinds.append(failure_kind(failure))
 
@@ -421,6 +453,7 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
         passed_names=passed,
         output=output,
         failed_files=sorted(set(broken)),
+        skipped_names=no_verdict,
     )
 
 
@@ -1755,12 +1788,27 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
             green = pytest_run(f"verify-{attempt}", [TESTS.relative_to(PROJECT).as_posix()])
             last_run = green
             regressions = [f for f in green.failed_files if f not in own_tests]
+            # skipped is in the record because a green has to be provable after
+            # the fact from the ledger alone, and "no failures" does not prove
+            # the tests ran.
             ledger("VERIFY", step=step_id, attempt=attempt, tests=green.tests,
                    failures=green.failures, errors=green.errors,
-                   green=green.green, regressions=regressions)
+                   skipped=green.skipped, green=green.green,
+                   regressions=regressions)
             if green.green:
                 break
             last_failure = green.output[-3000:]
+            if green.skipped and not (green.failures or green.errors):
+                # pytest calls this run a success, so the output alone would
+                # leave the solver with nothing to work from.
+                last_failure = (
+                    "The suite reported no failures, but "
+                    f"{green.skipped} test(s) never ran:\n  "
+                    + "\n  ".join(green.skipped_names)
+                    + "\n\nA skipped test is not a passing test, so this step "
+                      "is not green. The tests are frozen and cannot be edited -- "
+                      "whatever condition makes them skip has to stop being "
+                      "true.\n\n" + last_failure)
             if regressions:
                 # Worth saying outright, because the obvious repair is one the
                 # solver cannot make: tests/ is frozen, so the earlier tests are
