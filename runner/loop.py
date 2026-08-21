@@ -749,7 +749,11 @@ PROVIDES_NAME = re.compile(r"(?:def|class)\s+([A-Za-z_]\w*)")
 # "concrete" for L8: a number, a quoted literal, or an exception type. An
 # acceptance criterion made only of adjectives cannot be turned into a test that
 # two people would write the same way.
-CONCRETE = re.compile(r"\d|'[^']*'|\"[^\"]*\"|\b[A-Z]\w*(?:Error|Exception)\b")
+#
+# A NUMBER, not a digit. `\d` alone was satisfied by the "2" in a variable name
+# called `s2`, which let "s2 == p.state exactly" through as a concrete result --
+# the criterion that then passed against the stub and stopped the step at R4.
+CONCRETE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?!\w)|'[^']*'|\"[^\"]*\"|\b[A-Z]\w*(?:Error|Exception)\b")
 
 CASES = {"normal", "boundary", "error"}
 REQUIRED_KEYS = {
@@ -757,6 +761,24 @@ REQUIRED_KEYS = {
     "contracts": dict, "files_write": list, "files_test": list,
     "expected_tests": int, "max_attempts": int, "review_gate": bool,
 }
+
+
+def modules_of(files_write: list[str]) -> list[str]:
+    """The importable module names a step's own files create.
+
+    src/incgame/engine.py     -> incgame.engine
+    src/incgame/__init__.py   -> incgame
+    """
+    names = []
+    for f in files_write:
+        if not f.startswith("src/") or not f.endswith(".py"):
+            continue
+        parts = f[len("src/"):-len(".py")].split("/")
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if parts:
+            names.append(".".join(parts))
+    return names
 
 
 def validate_plan(tasks: dict) -> list[str]:
@@ -877,6 +899,37 @@ def validate_plan(tasks: dict) -> list[str]:
                     f"be in it (dict[str, Generator], tuple[GameState, int]). "
                     f"A named type is better still where the shape has meaning")
 
+        # L15 -- a contract says where the thing it declares lives
+        #
+        # The brief for writing tests does not include the goal, on purpose: the
+        # tests have to come from the acceptance criteria, not from a
+        # description of the implementation. What it does include is `provides`.
+        # So if `provides` does not say which module a function is in, the
+        # module name is nowhere in the brief and the solver guesses:
+        #
+        #     def new_game(now: float) -> GameState
+        #     -> from incgame.game import new_game   (game.py belongs to S10)
+        #     -> collected 1 test, expected 4        (R1, and an escalation gone)
+        #
+        # The runner does know the modules -- files_write lists them -- and the
+        # cheaper-looking fix is to append them to the brief. It was rejected:
+        # a step that writes four files still leaves which-symbol-lives-where to
+        # a guess, and a LATER step sees none of this. dep_contracts renders the
+        # frozen `provides` strings and nothing else, so a contract that does not
+        # carry its module cannot be repaired downstream at all. The information
+        # belongs in the contract, which is 1-5 again: the one channel between
+        # steps has to be sufficient on its own.
+        for provided in s["contracts"]["provides"]:
+            if not any(re.search(rf"(?<![\w.]){re.escape(m)}(?![\w.])", provided)
+                       for m in modules_of(s["files_write"])):
+                signature = provided.split(chr(8212))[0].strip()
+                problems.append(
+                    f"L15: step {sid} provides `{signature}` without saying which "
+                    f"module it lives in; name one of "
+                    f"{', '.join(modules_of(s['files_write'])) or '(no modules)'} "
+                    f"in the line, e.g. `... -- defined in "
+                    f"{(modules_of(s['files_write']) or ['pkg.mod'])[0]}`")
+
         # L6 -- normal, boundary and error are all covered
         missing = CASES - {a["case"] for a in s["acceptance"]}
         if missing:
@@ -889,9 +942,22 @@ def validate_plan(tasks: dict) -> list[str]:
                 f"{len(s['acceptance'])} acceptance criteria")
 
         # L8 -- skipping human review requires criteria a machine can check
+        #
+        # The `then` is checked ALONE. It used to be concatenated with the
+        # `given`, and a criterion whose expected result was stated as a
+        # comparison against another call passed on the strength of a number in
+        # its setup:
+        #
+        #     given  state = new_game(0.0); p = buy(state, ...)
+        #     then   advance(p.state, ..., 0.0) == p.state exactly
+        #
+        # Both sides of that come out of the stub, so both are the same sentinel
+        # and the test PASSES at RED_GATE -- R4 stops the step for a test that
+        # never showed it could fail. The expected result has to be a value, not
+        # a relationship between two things the code under test produced.
         if not s["review_gate"]:
             for a in s["acceptance"]:
-                if not CONCRETE.search(a["given"] + " " + a["then"]):
+                if not CONCRETE.search(a["then"]):
                     problems.append(
                         f"L8: step {sid} has review_gate false but the [{a['case']}] criterion "
                         f"states no concrete value")
@@ -905,9 +971,12 @@ def validate_plan(tasks: dict) -> list[str]:
             owners[f] = s["id"]
 
     # L9 / L10 -- something joined-up early, and a join at the end
+    # L9 asked for an integration or skeleton step within the first three. L13
+    # requires the FIRST step to be a skeleton, which satisfies L9 by
+    # construction -- it could never fire again. Retired 2026-08-21 rather than
+    # left as a rule nobody could make fail. The number is not reused: L-numbers
+    # are identifiers, and the ledger of past runs refers to them.
     kinds = [s["kind"] for s in steps]
-    if not ({"skeleton", "integration"} & set(kinds[:3])):
-        problems.append("L9: no integration step within the first three steps")
     if kinds[-1] != "integration":
         problems.append("L10: the final step is not an integration step")
 
@@ -1302,9 +1371,8 @@ yourself first.
     L6   every step has at least one "normal", one "boundary" and one "error"
          acceptance case
     L7   expected_tests is at least the number of acceptance criteria
-    L8   with review_gate false, every criterion states a concrete value: a
-         number, a quoted literal, or an exception type
-    L9   one of the FIRST THREE steps is kind "integration" or "skeleton"
+    L8   with review_gate false, the `then` of every criterion states a concrete
+         value ON ITS OWN: a number, a quoted literal, or an exception type
     L10  the LAST step is kind "integration"
     L11  a "unit" step may not provide something that no later step requires
     L12  files_write is under src/, files_test is under tests/
@@ -1312,6 +1380,8 @@ yourself first.
     L14  every type in contracts.provides states its contents: dict[str, Item],
          tuple[State, int], list[str]. A bare dict, list, tuple or set is
          rejected
+    L15  every line of contracts.provides names the module it lives in, and that
+         module is one of this step's own files_write
 
 # Four things that are not obvious
 
@@ -1348,11 +1418,21 @@ These were each learned by watching a run fail on them.
    you can compute by hand. "the result is correct" is not a criterion;
    "the result is exactly 2011.357" is.
 
-Also: the stub returns a conspicuously wrong value of the right type, so a
-criterion whose expected answer is an empty string, zero, an empty list, or the
-argument unchanged will PASS against the stub and stop the step. Where a
-boundary case genuinely has such an answer, keep it -- but make sure the step
-has other criteria that cannot.
+Also, and this one has stopped a step twice: the tests are first run against a
+stub, and RED_GATE rejects the step if ANY of them passes there (R4) -- a test
+that has never been seen to fail proves nothing later. Other criteria do not
+make up for it; one passing test stops the step. Two ways a criterion walks into
+this:
+
+- Its expected answer is a value the stub can produce -- an empty string, zero,
+  an empty list, or an argument returned unchanged.
+- It states the expected result as a comparison between two things the code
+  under test produced. `advance(p.state, catalog, 0.0) == p.state` is one:
+  both sides come from the stub, so both are the same sentinel and the test
+  passes. Write the expected value out instead -- `resource == 0.0,
+  generators == {'cursor': 1}, last_update == 0.0`. That is a criterion the
+  stub fails and a correct implementation passes, which is what a criterion is
+  for.
 """
 
 BOOTSTRAP_ESCALATE = """
