@@ -332,6 +332,16 @@ class TestRun:
 # had a working test.
 RED_KINDS = re.compile(r"^(AssertionError|Failed)\b")
 
+# L14: a container type whose contents are not stated. Matched only where a type
+# is actually annotated -- after "->" or ":" -- so prose in the same string
+# ("... a list of ids") is not mistaken for a signature.
+ANNOTATION = re.compile(r"(?:->|:)\s*([A-Za-z_][\w.]*)\s*(\[?)")
+SHAPELESS = {
+    "tuple", "list", "dict", "set", "frozenset",
+    "Tuple", "List", "Dict", "Set", "FrozenSet",
+    "Sequence", "Mapping", "Iterable", "Iterator", "Collection",
+}
+
 # pytest ends every failure body with "<file>:<line>: <ExceptionName>". That
 # last line is where the exception class is actually legible; see failure_kind.
 FAILURE_TAIL = re.compile(r":\s*([A-Za-z_][\w.]*)\s*$")
@@ -590,6 +600,16 @@ return an argument unchanged. Those are answers a correct implementation gives
 for some input, so a test covering that input would pass against the stub -- and
 a test that passes here has never shown it can fail, which rejects the step.
 
+The sentinel must also have the SHAPE the signature states, because the test
+takes it apart before it asserts anything. A tuple returns exactly as many
+elements as the annotation lists, each a sentinel of its own type
+(tuple[GameState, int] -> a GameState-shaped sentinel and -999999). A dict
+returns every key a caller of this signature would look up. A dataclass returns
+an instance with every field filled with a sentinel.
+
+A value the caller cannot take apart does not fail as a red test; it fails as a
+broken call, which RED_GATE rejects outright (R5) and no later phase can repair.
+
 Implement no behaviour whatsoever: no validation, no type checks, no special
 cases, no branching on the input. Do not raise NotImplementedError; the tests
 must fail on an assertion, not on an exception.
@@ -818,6 +838,44 @@ def validate_plan(tasks: dict) -> list[str]:
         for f in s["files_test"]:
             if not f.startswith("tests/"):
                 problems.append(f"L12: step {sid} tests {f}, which is outside tests/")
+
+        # L14 -- a contract states the shape of what it hands over
+        #
+        # BOOTSTRAP 1-5: contracts are the ONLY thing passed to a later step.
+        # `-> tuple` is a contract that cannot be discharged from the contract:
+        # the arity is nowhere in it, so the caller cannot destructure what it
+        # gets back and the stub cannot know what to return.
+        #
+        #     def buy_max_affordable(...) -> tuple      arity not stated
+        #     stub:  return ("__stub__",)               one element
+        #     test:  result, count = buy_max_affordable(...)
+        #            ValueError: not enough values to unpack
+        #
+        # RED_GATE stops that correctly (R5: the call itself is broken, not the
+        # value), but nothing downstream can repair it. The solver only ever
+        # sees the signature during STUB -- showing it the tests would let it
+        # hardcode the answers -- and the planner spent two escalations on it
+        # without being able to fix it, because the defect is in a contract it
+        # had already written and P5 will not let it edit a green step.
+        #
+        # So the rule sits here, before any of that can happen. Same move as
+        # taking sudo away rather than watching for chmod 777: make the
+        # unstatable contract unwritable instead of handling its consequences.
+        #
+        # This is a Python-shaped expression of a language-independent rule --
+        # "the contract determines the shape". A second language re-states it in
+        # its own type syntax; the rule itself does not change.
+        for provided in s["contracts"]["provides"]:
+            bare = sorted({name for name, bracket in ANNOTATION.findall(provided)
+                           if name in SHAPELESS and bracket != "["})
+            if bare:
+                signature = provided.split(chr(8212))[0].strip()
+                problems.append(
+                    f"L14: step {sid} provides `{signature}` with "
+                    f"{', '.join(bare)} left unparameterised; a later step is "
+                    f"handed this line and nothing else, so the contents have to "
+                    f"be in it (dict[str, Generator], tuple[GameState, int]). "
+                    f"A named type is better still where the shape has meaning")
 
         # L6 -- normal, boundary and error are all covered
         missing = CASES - {a["case"] for a in s["acceptance"]}
@@ -1251,8 +1309,11 @@ yourself first.
     L11  a "unit" step may not provide something that no later step requires
     L12  files_write is under src/, files_test is under tests/
     L13  the FIRST step is kind "skeleton", and it is the only one
+    L14  every type in contracts.provides states its contents: dict[str, Item],
+         tuple[State, int], list[str]. A bare dict, list, tuple or set is
+         rejected
 
-# Three things that are not obvious
+# Four things that are not obvious
 
 These were each learned by watching a run fail on them.
 
@@ -1264,7 +1325,16 @@ These were each learned by watching a run fail on them.
    step. Write `def parse(s: str) -> Config`. Do not write "raises ValueError on
    bad input" here; that belongs in acceptance.
 
-2. **contracts.invariants must be observable through the public contract.**
+2. **A contract states the shape of what it hands over (L14).**
+   A later step is handed this one line and nothing else -- not the source, not
+   the tests. `-> tuple` cannot be discharged from that line: the arity is not
+   in it, so the caller cannot take the result apart and the stub cannot know
+   what to build. Write `-> tuple[GameState, int]`, `-> dict[str, Generator]`,
+   `list[str]`. Where the shape carries meaning, a named type is better than a
+   parameterised container -- `-> Purchase` beats `-> tuple[GameState, int]`,
+   and it is a class you declare in `provides` like any other.
+
+3. **contracts.invariants must be observable through the public contract.**
    Invariants go into the brief for writing the TESTS. An invariant about
    internal structure ("must call normalize() rather than reimplement it")
    makes the solver write a test that reaches inside the module, which then
@@ -1272,7 +1342,7 @@ These were each learned by watching a run fail on them.
    as facts about inputs and outputs. Put implementation requirements in `goal`,
    which only the implementation phase sees.
 
-3. **The acceptance criteria are the specification.**
+4. **The acceptance criteria are the specification.**
    Write each as an exact input and an exact expected output, concrete enough
    that two engineers who never spoke would write the same test. Prefer values
    you can compute by hand. "the result is correct" is not a criterion;

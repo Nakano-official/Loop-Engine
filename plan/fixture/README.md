@@ -14,6 +14,10 @@ the distro by `plan bootstrap` from the requirements the human writes, and lives
 at `/srv/loop/project/plan/`. The working tree that produced this fixture is
 archived in the distro at `/srv/loop/project.fixture`.
 
+Note it also predates L13 (no `skeleton` step, so `validate` now reports two L13
+violations against it) and satisfies L14 as written. Kept as it was: it is a
+record of a run that happened, not a plan to re-run as-is.
+
 Note it predates linter rule L12: `files_write` here is `src/*.py` at the top of
 `src/`, which is still valid, but the imports use the old `from src.x import y`
 form from before `conftest.py` put `src/` on `sys.path`.
