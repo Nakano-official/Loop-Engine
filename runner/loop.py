@@ -97,7 +97,14 @@ PYTEST_ARGS = ["-q", "-p", "no:cacheprovider", "--strict-markers"]
 # a process belonging to another uid, so a timeout enforced only on this side
 # would leave the agent running with nothing able to stop it. This value is a
 # backstop and is deliberately longer than the one solver-run applies.
-TIMEOUTS = {"test": 120, "solver": 960, "planner": 960}
+# Measured, not guessed. Planning has taken 8m (run 4), 12m (run 3) and more
+# than 16 (run 5, killed at the old 960s ceiling with nothing written at all).
+# The spread grows with the rules: every one of them is something the plan has to
+# satisfy before the planner will write it out. A ceiling that fires is pure
+# waste here -- Claude Code writes the files at the end, so a killed planning
+# call yields no partial plan to salvage -- which makes the cost of setting this
+# too low much higher than the cost of setting it too high.
+TIMEOUTS = {"test": 120, "solver": 960, "planner": 1800}
 
 # RUNNER_SPEC 6-2. BOOTSTRAP 1-4 caps the ATTEMPTS inside a step but says nothing
 # about the loop outside it, so a planner answering (a) over and over is
