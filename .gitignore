@@ -1,5 +1,21 @@
+# 資格情報。ソルバーに Codex CLI を使わせる以上、いずれ API キーの置き場所が
+# 要る。公開リポジトリに一度でも入れば自動収集されるので、置く前に塞いでおく。
+.env
+.env.*
+!.env.example
+
+# SSH 鍵。provision/15-authkeys.sh は鍵ペアをリポジトリ外から受け取る設計だが、
+# 生成した鍵をここに置いてしまう事故を防ぐため、公開鍵ごと弾く。
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*_ed25519
+*_ed25519.pub
+
 # `wsl --export` snapshots. Several GB; keep them outside the repo.
 *.tar
 *.vhdx
+
 __pycache__/
 *.pyc
