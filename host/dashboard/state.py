@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -52,6 +52,11 @@ class DashboardState:
         self.project = project.resolve()
         self.data_dir = data_dir.resolve()
         self.decisions_file = self.data_dir / "decisions.jsonl"
+        # The server is threaded, so two decisions can arrive at once. Checking
+        # that a request is still pending and recording the answer have to be
+        # one indivisible act, or the second answer is written against a view
+        # of the world the first one already invalidated.
+        self._lock = threading.Lock()
 
     def snapshot(self) -> dict[str, Any]:
         ledger = read_jsonl(self.project / "plan" / "ledger.jsonl")
@@ -121,6 +126,10 @@ class DashboardState:
         }
 
     def decide(self, kind: str, request: str, decision: str, note: str) -> dict[str, Any]:
+        with self._lock:
+            return self._decide(kind, request, decision, note)
+
+    def _decide(self, kind: str, request: str, decision: str, note: str) -> dict[str, Any]:
         snapshot = self.snapshot()
         matching = next(
             (item for item in snapshot["pending"]
@@ -149,21 +158,18 @@ class DashboardState:
         return record
 
     def _append(self, record: dict[str, Any]) -> None:
+        """One line, appended and flushed to the disk.
+
+        This used to read the whole file and write it back through a temporary
+        file, which made every decision a rewrite of every earlier one: a
+        crash mid-rewrite, or two writers racing, could destroy answers that
+        were already safe.  An append cannot touch what is already there, and
+        these records are the one thing here that no other system can
+        reconstruct -- the runner knows what the tests did, not what the human
+        concluded from playing the thing.
+        """
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        # One append is the durable source of truth.  The temporary-file dance
-        # protects existing decisions on platforms where a process is killed
-        # while rewriting a short file.
-        old = self.decisions_file.read_text(encoding="utf-8") if self.decisions_file.exists() else ""
-        content = old + json.dumps(record, ensure_ascii=False) + "\n"
-        fd, name = tempfile.mkstemp(dir=self.data_dir, prefix="decisions-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(name, self.decisions_file)
-        finally:
-            try:
-                os.unlink(name)
-            except FileNotFoundError:
-                pass
+        with self.decisions_file.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())

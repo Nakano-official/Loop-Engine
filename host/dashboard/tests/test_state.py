@@ -69,6 +69,17 @@ class Decisions(DashboardFixture):
         self.state.decide("escalation", request["id"], "respond", "change the boundary")
         self.assertEqual(self.state.snapshot()["pending"], [])
 
+    def test_recording_an_answer_never_rewrites_the_earlier_ones(self):
+        self.state.data_dir.mkdir(parents=True, exist_ok=True)
+        self.state.decisions_file.write_text('{"event":"HUMAN_DECISION","kind":"old"}\n',
+                                             encoding="utf-8")
+        self.ledger({"event": "ALL_GREEN", "steps": ["S1", "S2"]})
+        request = self.state.snapshot()["pending"][0]
+        self.state.decide("review", request["id"], "approve", "played it")
+        lines = self.state.decisions_file.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[0])["kind"], "old")
+
     def test_a_revision_or_response_cannot_be_empty(self):
         self.ledger({"event": "ALL_GREEN", "steps": ["S1", "S2"]})
         request = self.state.snapshot()["pending"][0]
