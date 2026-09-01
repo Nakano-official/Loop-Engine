@@ -42,6 +42,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+# What may be decided from somewhere other than this machine. Refusing work
+# needs nothing but judgement, and stopping a run is the one thing you want
+# reachable from a phone. Saying "I played it and it is good" is a different
+# act: the review exists precisely because no machine can check the screen, so
+# a device that cannot open the window must not be able to certify it.
+REMOTE_DECISIONS = {"review": {"revise"}, "escalation": {"respond", "stop"}}
+
+
 def request_id(kind: str, value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(kind.encode("ascii") + b"\0" + encoded).hexdigest()[:16]
@@ -125,11 +133,13 @@ class DashboardState:
             "decisions": decisions[-50:],
         }
 
-    def decide(self, kind: str, request: str, decision: str, note: str) -> dict[str, Any]:
+    def decide(self, kind: str, request: str, decision: str, note: str,
+               scope: str = "local", user: str = "") -> dict[str, Any]:
         with self._lock:
-            return self._decide(kind, request, decision, note)
+            return self._decide(kind, request, decision, note, scope, user)
 
-    def _decide(self, kind: str, request: str, decision: str, note: str) -> dict[str, Any]:
+    def _decide(self, kind: str, request: str, decision: str, note: str,
+                scope: str, user: str) -> dict[str, Any]:
         snapshot = self.snapshot()
         matching = next(
             (item for item in snapshot["pending"]
@@ -144,6 +154,9 @@ class DashboardState:
         }
         if decision not in allowed.get(kind, set()):
             raise ValueError("decision is not valid for this request")
+        if scope != "local" and decision not in REMOTE_DECISIONS.get(kind, set()):
+            raise ValueError(
+                "that has to be decided at the machine that can run the result")
         if decision in {"revise", "respond"} and not note.strip():
             raise ValueError("this decision requires a note")
         record = {
@@ -153,6 +166,11 @@ class DashboardState:
             "request_id": request,
             "decision": decision,
             "note": note.strip(),
+            # Where the answer came from is part of the answer. An approval
+            # recorded from a phone would mean something different from one
+            # recorded at the desk, so the record says which it was.
+            "scope": scope,
+            "user": user,
         }
         self._append(record)
         return record

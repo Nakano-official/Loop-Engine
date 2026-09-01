@@ -80,6 +80,34 @@ class Decisions(DashboardFixture):
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["kind"], "old")
 
+    def test_a_phone_may_refuse_the_work_but_may_not_certify_it(self):
+        # The review exists because no machine can look at the screen. A device
+        # that cannot open the window must not be able to say the window is
+        # fine -- but saying "not good enough" costs nothing to allow.
+        self.ledger({"event": "ALL_GREEN", "steps": ["S1", "S2"]})
+        request = self.state.snapshot()["pending"][0]
+        with self.assertRaisesRegex(ValueError, "machine that can run the result"):
+            self.state.decide("review", request["id"], "approve", "",
+                              scope="remote", user="someone@example.com")
+        record = self.state.decide("review", request["id"], "revise", "実行できない",
+                                   scope="remote", user="someone@example.com")
+        self.assertEqual((record["scope"], record["user"]),
+                         ("remote", "someone@example.com"))
+
+    def test_an_escalation_can_be_answered_or_stopped_from_anywhere(self):
+        self.ledger({"event": "RUN_ALL_STOP", "reason": "cap reached"})
+        (self.project / "plan" / "ESCALATION.md").write_text("reason", encoding="utf-8")
+        request = self.state.snapshot()["pending"][0]
+        record = self.state.decide("escalation", request["id"], "stop", "",
+                                   scope="remote", user="someone@example.com")
+        self.assertEqual(record["decision"], "stop")
+
+    def test_where_the_answer_came_from_is_part_of_the_answer(self):
+        self.ledger({"event": "ALL_GREEN", "steps": ["S1", "S2"]})
+        request = self.state.snapshot()["pending"][0]
+        record = self.state.decide("review", request["id"], "approve", "played it")
+        self.assertEqual((record["scope"], record["user"]), ("local", ""))
+
     def test_a_revision_or_response_cannot_be_empty(self):
         self.ledger({"event": "ALL_GREEN", "steps": ["S1", "S2"]})
         request = self.state.snapshot()["pending"][0]
