@@ -44,10 +44,27 @@ def handler_for(state: DashboardState, launchers: Launchers, token: str):
                 raise ValueError("JSON body must be an object")
             return value
 
+        def _local_host(self) -> bool:
+            """Refuse a request whose Host is not this machine's loopback.
+
+            Binding 127.0.0.1 and requiring a custom header keep an ordinary
+            web page out: the header forces a CORS preflight, and there is no
+            do_OPTIONS to answer it.  DNS rebinding defeats both -- the
+            attacker's name is made to resolve to 127.0.0.1, the page and this
+            server become same-origin, and the browser stops objecting.  What
+            the rebound request cannot change is the Host header, which still
+            carries the attacker's name, so that is what gets checked.
+            """
+            host = self.headers.get("Host", "").rsplit(":", 1)[0].strip("[]")
+            return host in {"127.0.0.1", "localhost", "::1"}
+
         def _authorized(self) -> bool:
             return secrets.compare_digest(self.headers.get("X-Loop-Token", ""), token)
 
         def do_GET(self) -> None:
+            if not self._local_host():
+                self._json({"error": "unexpected Host header"}, HTTPStatus.FORBIDDEN)
+                return
             path = urlparse(self.path).path
             if path == "/api/session":
                 self._json({"token": token, "launchers": launchers.public()})
@@ -70,6 +87,9 @@ def handler_for(state: DashboardState, launchers: Launchers, token: str):
             self.wfile.write(body)
 
         def do_POST(self) -> None:
+            if not self._local_host():
+                self._json({"error": "unexpected Host header"}, HTTPStatus.FORBIDDEN)
+                return
             if not self._authorized():
                 self._json({"error": "invalid session token"}, HTTPStatus.FORBIDDEN)
                 return
