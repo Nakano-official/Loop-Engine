@@ -1977,12 +1977,7 @@ def complete_green(step_id: str, goal: str, attempts: int) -> None:
     publish(f"step {step_id}")
 
 
-def completion_recorded(plan_digest: str) -> bool:
-    """Whether this exact plan already has a durable ALL_GREEN checkpoint."""
-    try:
-        lines = LEDGER.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return False
+def has_all_green(lines: list[str], plan_digest: str) -> bool:
     for line in reversed(lines):
         try:
             record = json.loads(line)
@@ -1993,6 +1988,28 @@ def completion_recorded(plan_digest: str) -> bool:
     return False
 
 
+def completion_recorded(plan_digest: str) -> bool:
+    """Whether this plan's ALL_GREEN has reached a commit.
+
+    Deliberately not "whether the record exists in the file". Writing the
+    record and committing it are two steps, and a failure between them left
+    this unrecoverable: the ledger said ALL_GREEN, so every later run returned
+    early, and the commit that carries the fact to a host mirror was never
+    made -- which is the exact defect complete_run exists to prevent. So the
+    question asked is whether git has it, and the answer is read out of git.
+    """
+    shown = run(["git", "show", f"HEAD:{LEDGER.relative_to(PROJECT).as_posix()}"])
+    return shown.returncode == 0 and has_all_green(shown.stdout.splitlines(), plan_digest)
+
+
+def completion_written(plan_digest: str) -> bool:
+    """Whether the record is in the working file, committed or not."""
+    try:
+        return has_all_green(LEDGER.read_text(encoding="utf-8").splitlines(), plan_digest)
+    except OSError:
+        return False
+
+
 def complete_run(done: set[str], tasks: dict) -> None:
     """Make completion visible in the bare repository and therefore the GUI."""
     plan_digest = hashlib.sha256(
@@ -2000,7 +2017,12 @@ def complete_run(done: set[str], tasks: dict) -> None:
     ).hexdigest()
     if completion_recorded(plan_digest):
         return
-    ledger("ALL_GREEN", steps=sorted(done), plan_sha256=plan_digest)
+    # Not recorded in git. Either this run just finished, or an earlier one
+    # wrote the record and failed before committing it; in the second case the
+    # record is already in the file and appending it again would say the run
+    # completed twice.
+    if not completion_written(plan_digest):
+        ledger("ALL_GREEN", steps=sorted(done), plan_sha256=plan_digest)
     ledger_path = LEDGER.relative_to(PROJECT).as_posix()
     run(["git", "add", "--", ledger_path], check=True)
     run(["git", "commit", "-q", "-m", "run: all steps green", "--", ledger_path],

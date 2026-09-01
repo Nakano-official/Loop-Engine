@@ -3,6 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -58,6 +59,39 @@ class RunCheckpoint(unittest.TestCase):
         ledger.assert_not_called()
         run.assert_not_called()
         publish.assert_not_called()
+
+
+class DurableCompletion(unittest.TestCase):
+    """"Recorded" has to mean "in a commit", or the gap between writing the
+    record and committing it becomes a state nothing can leave."""
+
+    @patch("loop.run")
+    def test_the_committed_ledger_is_what_is_searched(self, run):
+        run.return_value = SimpleNamespace(
+            returncode=0, stdout='{"event": "ALL_GREEN", "plan_sha256": "abc"}\n')
+        self.assertTrue(loop.completion_recorded("abc"))
+        self.assertFalse(loop.completion_recorded("a different plan"))
+
+    @patch("loop.run")
+    def test_a_ledger_absent_from_HEAD_is_not_a_completed_run(self, run):
+        run.return_value = SimpleNamespace(returncode=128, stdout="")
+        self.assertFalse(loop.completion_recorded("abc"))
+
+    @patch("loop.publish")
+    @patch("loop.run")
+    @patch("loop.ledger")
+    @patch("loop.completion_written", return_value=True)
+    @patch("loop.completion_recorded", return_value=False)
+    def test_a_record_that_never_reached_a_commit_is_committed_once_more(
+            self, recorded, written, ledger, run, publish):
+        loop.complete_run({"S1"}, {"steps": [{"id": "S1"}]})
+
+        # The record is already in the file; saying it twice would report the
+        # run as having completed twice.
+        ledger.assert_not_called()
+        self.assertEqual([args.args[0][:2] for args in run.call_args_list],
+                         [["git", "add"], ["git", "commit"]])
+        publish.assert_called_once_with("run completion")
 
 
 if __name__ == "__main__":
