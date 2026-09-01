@@ -30,10 +30,16 @@ set "MIRRORROOT=C:\dev\roop-engin"
 set "ARCHIVEROOT=%MIRRORROOT%\runs"
 set "SSHHOST=loop-runner"
 
-if not exist "%ARCHIVEROOT%" mkdir "%ARCHIVEROOT%"
-if errorlevel 1 (
-  echo cannot create archive root %ARCHIVEROOT%
-  exit /b 1
+REM The check has to sit INSIDE the `if not exist`. When the directory is
+REM already there mkdir never runs, and errorlevel still holds whatever the
+REM caller's last command left behind -- which would stop this script for a
+REM failure that happened before it started.
+if not exist "%ARCHIVEROOT%" (
+  mkdir "%ARCHIVEROOT%"
+  if errorlevel 1 (
+    echo cannot create archive root %ARCHIVEROOT%
+    exit /b 1
+  )
 )
 
 REM One line, space separated, straight from the shell's own glob: no pipes, so
