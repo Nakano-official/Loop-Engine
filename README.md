@@ -111,7 +111,7 @@ Qwen3.5-9B**（nonthinking / IQ4_XS / RTX 2060 6GB / 41.6 tok/s）に替えた�
 │   └── HANDOFF.md        # 進捗と引き継ぎ
 ├── runner/
 │   ├── loop.py           # ランナー本体（関門の適用、状態遷移、台帳）
-│   └── tests/            # ランナー自身のテスト（39件）
+│   └── tests/            # ランナー自身のテスト（42件）
 ├── plan/
 │   └── fixture/          # 計画の形を確認するための最小サンプル
 ├── host/

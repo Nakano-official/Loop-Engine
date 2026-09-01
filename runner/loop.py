@@ -1962,6 +1962,52 @@ def publish(what: str) -> None:
         print("  " + line.replace("\n", "\n  "), file=sys.stderr)
 
 
+def complete_green(step_id: str, goal: str, attempts: int) -> None:
+    """Commit the proof of GREEN with the code it describes.
+
+    GREEN used to be appended after the step commit.  The next step happened
+    to carry that record into its commit, but the final step had no successor,
+    so a host mirror always looked one step behind.  The ledger fact must be in
+    the same commit as the implementation whose result it records.
+    """
+    ledger("GREEN", step=step_id, attempts=attempts)
+    run(["git", "add", "-A"], check=True)
+    run(["git", "commit", "-q", "-m", f"{step_id}: {goal[:60]}"], check=True)
+    run(["git", "tag", "-f", f"step-{step_id}"], check=True)
+    publish(f"step {step_id}")
+
+
+def completion_recorded(plan_digest: str) -> bool:
+    """Whether this exact plan already has a durable ALL_GREEN checkpoint."""
+    try:
+        lines = LEDGER.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return False
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if record.get("event") == "ALL_GREEN" and record.get("plan_sha256") == plan_digest:
+            return True
+    return False
+
+
+def complete_run(done: set[str], tasks: dict) -> None:
+    """Make completion visible in the bare repository and therefore the GUI."""
+    plan_digest = hashlib.sha256(
+        json.dumps(tasks, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if completion_recorded(plan_digest):
+        return
+    ledger("ALL_GREEN", steps=sorted(done), plan_sha256=plan_digest)
+    ledger_path = LEDGER.relative_to(PROJECT).as_posix()
+    run(["git", "add", "--", ledger_path], check=True)
+    run(["git", "commit", "-q", "-m", "run: all steps green", "--", ledger_path],
+        check=True)
+    publish("run completion")
+
+
 def run_step(step_id: str, unvalidated: bool = False) -> int:
     tasks = json.loads((PLAN / "tasks.json").read_text(encoding="utf-8"))
     load_settings(tasks)
@@ -2147,11 +2193,7 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
         (contracts_dir / f"{step_id}.json").write_text(
             json.dumps(step["contracts"], ensure_ascii=False, indent=2), encoding="utf-8")
 
-        run(["git", "add", "-A"], check=True)
-        run(["git", "commit", "-q", "-m", f"{step_id}: {step['goal'][:60]}"], check=True)
-        run(["git", "tag", "-f", f"step-{step_id}"], check=True)
-        ledger("GREEN", step=step_id, attempts=attempt)
-        publish(f"step {step_id}")
+        complete_green(step_id, step["goal"], attempt)
         print(f"\nstep {step_id}: GREEN in {attempt} attempt(s)")
         return 0
 
@@ -2218,7 +2260,7 @@ def cmd_run_all(unvalidated: bool = False, budget_minutes: int = 0) -> int:
         done = green_steps()
         remaining = [s for s in tasks["steps"] if s["id"] not in done]
         if not remaining:
-            ledger("ALL_GREEN", steps=sorted(done))
+            complete_run(done, tasks)
             print(f"\nall {len(done)} step(s) green")
             return 0
 
