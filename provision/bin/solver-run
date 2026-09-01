@@ -2,7 +2,7 @@
 # Start the solver agent, non-interactively, on one brief.
 #
 # Invoked by the runner as:
-#     sudo -u solver /srv/loop/bin/solver-run <brief-file>
+#     sudo -u solver /srv/loop/bin/solver-run <brief-file> <seconds> [backend]
 #
 # The runner has no sudo (10-users.sh asserts that). The single exception in
 # /etc/sudoers.d/91-runner-to-solver names this script and no other, and is
@@ -18,12 +18,49 @@ BRIEF="${1:?usage: solver-run <brief-file>}"
 LIMIT="${2:-900}"
 [ -r "$BRIEF" ] || { echo "solver-run: cannot read brief: $BRIEF" >&2; exit 2; }
 
+# Which backend runs this brief. The runner passes a NAME and never a command:
+# the mapping from name to executable lives HERE, in a root-owned script the
+# runner cannot write. Adding a backend is therefore a deliberate act by someone
+# with sudo, not something a plan or a runner can ask for.
+#
+# The character class is the whole of the validation, and it has to be, because
+# the name goes into a path below.
+BACKEND="${3:-codex}"
+case "$BACKEND" in
+  ""|*[!a-z0-9]*) echo "solver-run: bad backend name: $BACKEND" >&2; exit 4 ;;
+esac
+
 # sudo's env_reset does not reliably hand HOME to the target user, and codex
 # resolves its credential directory from HOME. Without these two lines it looks
 # in the RUNNER's home, finds nothing, and reports "Not logged in" -- a failure
 # a long way from its cause. Set both explicitly rather than depending on a
 # sudo flag the runner would have to remember to pass.
 export HOME=/home/solver
+
+# Anything that is not codex is expected to be dropped in beside this script as
+# /srv/loop/bin/solver-<name>, root-owned and 0755, taking the same <brief>
+# <seconds> arguments and applying its own `timeout`. That is the entire
+# integration surface for a second solver -- a local model, say -- and it stops
+# here on purpose: the write fences, the one-brief channel and the account this
+# runs as are already correct for whatever executes, because they are properties
+# of the uid and the filesystem rather than of the agent.
+#
+# The reason there is a second backend at all: when the cheap one exhausts its
+# attempts, the alternative is an escalation, and an escalation spends a PLANNER
+# call. A second solver is the cheaper of the two things that can happen next.
+if [ "$BACKEND" != codex ]; then
+  helper="/srv/loop/bin/solver-$BACKEND"
+  [ -x "$helper" ] || {
+    echo "solver-run: no backend '$BACKEND' ($helper is not executable)" >&2
+    exit 4
+  }
+  # Into the working tree first, for the reason spelled out at the `cd` below:
+  # sudo hands down the RUNNER's cwd, whose home is 0700, and a process that
+  # cannot traverse its own working directory fails somewhere unrecognisable.
+  cd /srv/loop/project
+  exec "$helper" "$BRIEF" "$LIMIT"
+fi
+
 export CODEX_HOME=/home/solver/.codex
 
 # The solver authenticates with its OWN ChatGPT login, stored under a home at

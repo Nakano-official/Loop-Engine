@@ -129,7 +129,42 @@ BACKSTOP_MARGIN = 120
 # violation for another would otherwise do so forever. Three is enough that a
 # plan which merely misunderstood the layout converges, and few enough that one
 # which cannot satisfy the rules stops costing money.
-LIMITS = {"escalations": 1, "revisions": 3}
+# "attempts" is a plan-wide override for every step's max_attempts, and 0 means
+# "leave each step alone". It exists because the right number depends on WHO IS
+# PAYING for an attempt, which the planner cannot know when it writes the plan:
+# against a metered solver 3 is right, and against a local one an attempt costs
+# only wall-clock -- so ten of them are cheaper than the single planner call that
+# an escalation buys.
+LIMITS = {"escalations": 1, "revisions": 3, "attempts": 0}
+
+# How the next attempt inside a step begins.
+#
+#   "repair"   -- from the failed tree, told what broke. Right when the solver
+#                 can read its own mistake and undo it.
+#   "resample" -- from a clean tree, carrying only the RED_GATE failures. An
+#                 independent draw rather than a repair.
+#
+# The second exists because attempts are not all the same kind of thing. A
+# solver that cannot see what it did wrong compounds the damage rather than
+# undoing it, and every later attempt then starts from a worse tree. Meanwhile
+# the runner is an EXACT verifier: N independent draws against a gate that
+# cannot be talked round is a different use of the same budget, and for a weaker
+# solver a better one. Overridable per plan ("policy") and per step ("retry").
+POLICY = {"retry": "repair"}
+RETRY_MODES = ("repair", "resample")
+
+# The solver backends to try, in order. Each gets a full set of attempts before
+# the next one sees the step at all. The runner passes the NAME to solver-run,
+# which owns the mapping to an actual command -- so this is not a way for the
+# runner, or for a plan, to choose what runs.
+#
+# One entry is the normal case. Two is the arrangement this was built for: a
+# cheap or local backend does the work, and a metered one is spent only on the
+# steps it could not finish. The ordering matters more than it looks, because
+# the alternative on exhaustion is an escalation, and an escalation costs a
+# PLANNER call -- so a second solver tier is not an extra expense, it is the
+# cheaper of the two things that can happen next.
+SOLVER_TIERS = ["codex"]
 
 
 # --------------------------------------------------------------------------
@@ -159,6 +194,15 @@ def run(cmd: list[str], cwd: Path = PROJECT, check: bool = False,
         env=({**os.environ, **env} if env else None),
         timeout=timeout,
     )
+
+
+def attempts_for(step: dict) -> int:
+    return LIMITS["attempts"] or step.get("max_attempts", 3)
+
+
+def attempt_schedule(step: dict) -> list[str]:
+    """One entry per attempt, naming the backend that attempt runs on."""
+    return [t for t in SOLVER_TIERS for _ in range(attempts_for(step))]
 
 
 def source_files(path: Path):
@@ -219,6 +263,31 @@ def set_writable(*, tests: bool | None, src: bool | None) -> None:
             path.chmod(0o2755)
             for child in source_files(path):
                 child.chmod(0o444)
+
+
+def discard_attempt(files_write: list[str]) -> list[str]:
+    """Undo one failed attempt, leaving this step's frozen tests in place.
+
+    Deliberately NOT `git reset --hard`, which is what `reset` uses: this step's
+    tests are written but not yet committed -- the commit happens at GREEN -- so
+    a reset here would delete the very tests the attempt is trying to satisfy.
+
+    Only the step's own write paths are touched, and that is exactly the set
+    `assert_touched` has already confirmed is the only thing that changed. A
+    path that exists in HEAD goes back to it; one that does not is removed,
+    because it did not exist before this attempt invented it.
+    """
+    tracked = set(run(["git", "ls-files", "--"] + files_write).stdout.splitlines())
+    dropped = []
+    for rel in files_write:
+        if rel in tracked:
+            run(["git", "checkout", "HEAD", "--", rel], check=True)
+        elif (PROJECT / rel).exists():
+            (PROJECT / rel).unlink()
+        else:
+            continue
+        dropped.append(rel)
+    return dropped
 
 
 def adopt(*dirs: Path) -> list[str]:
@@ -487,7 +556,8 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
 # --------------------------------------------------------------------------
 
 
-def agent_command(user: str, script: Path, brief_path: Path, limit: int) -> list[str]:
+def agent_command(user: str, script: Path, brief_path: Path, limit: int,
+                  backend: str | None = None) -> list[str]:
     """The argv for one agent call.
 
     Separate from the callers so that "the limit is handed over" is a fact a test
@@ -496,10 +566,16 @@ def agent_command(user: str, script: Path, brief_path: Path, limit: int) -> list
     not a ceiling at all -- which is exactly what happened to run 5, killed twice
     at 900 while this file said 1800.
     """
-    return ["sudo", "-u", user, str(script), str(brief_path), str(limit)]
+    argv = ["sudo", "-u", user, str(script), str(brief_path), str(limit)]
+    if backend is not None:
+        # A name, never a command. solver-run resolves it, and solver-run is
+        # root-owned: the runner cannot add a backend, only ask for one that a
+        # human with sudo has already installed.
+        argv.append(backend)
+    return argv
 
 
-def call_solver(phase: str, brief: str) -> str:
+def call_solver(phase: str, brief: str, backend: str | None = None) -> str:
     """Hand the solver one brief and nothing else.
 
     The brief is written to /srv/loop/brief (runner:solverw 0750): the solver can
@@ -517,8 +593,12 @@ def call_solver(phase: str, brief: str) -> str:
     brief_path.chmod(0o640)
 
     limit = TIMEOUTS["solver"]
+    # Always named, never left to solver-run's own default. Which backend
+    # produced a green has to be answerable from the ledger afterwards, and a
+    # default applied on the far side of a sudo boundary is not an answer.
+    backend = backend or SOLVER_TIERS[0]
     try:
-        proc = run(agent_command("solver", SOLVER_RUN, brief_path, limit),
+        proc = run(agent_command("solver", SOLVER_RUN, brief_path, limit, backend),
                    timeout=limit + BACKSTOP_MARGIN)
     except subprocess.TimeoutExpired:
         # Reaching this means solver-run's own, shorter ceiling did not fire.
@@ -538,7 +618,7 @@ def call_solver(phase: str, brief: str) -> str:
     # be able to re-apply modes, and it can only do that to files it owns.
     taken = adopt(TESTS, SRC)
     if taken:
-        ledger("ADOPT", phase=phase, files=taken)
+        ledger("ADOPT", phase=phase, backend=backend, files=taken)
     return out
 
 
@@ -665,8 +745,8 @@ def brief_impl(step: dict, context: str, tests_text: str, last_failure: str) -> 
 # The tests (frozen -- read-only, and they will not be accepted if modified)
 {tests_text}
 
-# What failed on the previous attempt
-{last_failure or "(this is the first attempt)"}
+# How the tests are failing right now
+{last_failure or "(nothing recorded)"}
 
 # Files you may create or modify
 {chr(10).join(step["files_write"])}
@@ -739,7 +819,8 @@ def escalate(step: dict, halt: Halt, attempt: int, run_: TestRun | None) -> None
 ## Facts
 - phase: {halt.phase}
 - reason: {halt.reason}
-- attempt: {attempt} of {step.get("max_attempts", 3)}
+- attempt: {attempt} of {len(attempt_schedule(step))}
+- solver backends: {", ".join(SOLVER_TIERS)}
 - escalation: {n} of {cap}
 
 ## Failing tests
@@ -828,6 +909,8 @@ def validate_plan(tasks: dict) -> list[str]:
                 problems.append(f"L1: {where}.{key} must be {typ.__name__}")
         if s.get("kind") not in ("skeleton", "unit", "integration"):
             problems.append(f"L1: {where}.kind must be 'skeleton', 'unit' or 'integration'")
+        if "retry" in s and s["retry"] not in RETRY_MODES:
+            problems.append(f"L1: {where}.retry must be one of {list(RETRY_MODES)}")
         for a in s.get("acceptance", []):
             if not isinstance(a, dict) or {"case", "given", "then"} - a.keys():
                 problems.append(f"L1: {where} has an acceptance entry without case/given/then")
@@ -1333,6 +1416,10 @@ Top level:
     "limits":   {"escalations": 1}                             (optional)
     "steps":    [ ... ]
 
+Two further top-level keys exist, "policy" and "solver_tiers", and you must not
+write them. They select how retries and solver backends behave, which is a
+property of the machine the plan runs on and not of the plan.
+
 Each step:
 
     "id"              short and stable, e.g. "S1"
@@ -1817,6 +1904,21 @@ def load_settings(tasks: dict) -> None:
                      if k in TIMEOUTS})
     LIMITS.update({k: int(v) for k, v in (tasks.get("limits") or {}).items()
                    if k in LIMITS})
+    POLICY.update({k: str(v) for k, v in (tasks.get("policy") or {}).items()
+                   if k in POLICY})
+    if POLICY["retry"] not in RETRY_MODES:
+        raise SystemExit(f"policy.retry must be one of {list(RETRY_MODES)}, "
+                         f"not {POLICY['retry']!r}")
+    tiers = tasks.get("solver_tiers")
+    if tiers:
+        # Rejected rather than filtered. A backend name that quietly disappeared
+        # would leave the loop running entirely on the tier it was meant to be
+        # sparing, and the ledger would say so only by omission.
+        bad = [t for t in tiers
+               if not (isinstance(t, str) and re.fullmatch(r"[a-z0-9]+", t))]
+        if bad:
+            raise SystemExit(f"solver_tiers: not usable as a backend name: {bad}")
+        SOLVER_TIERS[:] = list(tiers)
 
 
 def publish(what: str) -> None:
@@ -1934,18 +2036,41 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
 
         # --- IMPL / VERIFY ----------------------------------------------
         tests_text = frozen_tests_text(step)
-        last_failure = "\n".join(red.failure_kinds)
-        max_attempts = step.get("max_attempts", 3)
+        red_baseline = "\n".join(red.failure_kinds)
+        last_failure = red_baseline
+        retry_mode = step.get("retry", POLICY["retry"])
+        schedule = attempt_schedule(step)
 
         # pytest names a test's home as a dotted module path, so this is what
         # "tests/test_models.py" looks like in the report it writes.
         own_tests = {Path(p).with_suffix("").as_posix().replace("/", ".")
                      for p in step["files_test"]}
 
-        while attempt < max_attempts:
+        while attempt < len(schedule):
+            backend = schedule[attempt]
+            handover = attempt > 0 and backend != schedule[attempt - 1]
             attempt += 1
             set_writable(tests=None, src=True)   # tests/ stays frozen; see set_writable
-            call_solver("IMPL", brief_impl(step, context, tests_text, last_failure))
+
+            # A clean tree for an attempt that is not a repair. Two different
+            # things arrive here. `resample` wants an independent draw rather
+            # than a repair of the last one. A handover means a DIFFERENT
+            # backend is starting, and inheriting the previous one's
+            # half-finished work is not what handing a step over means.
+            #
+            # The failure text survives a handover and does not survive a
+            # resample, and that difference is the point of having both: a
+            # resample is trying to be a fresh draw, a handover is trying to be
+            # a better solver given everything already known.
+            if attempt > 1 and (handover or retry_mode == "resample"):
+                dropped = discard_attempt(step["files_write"])
+                ledger("DISCARD", step=step_id, attempt=attempt, backend=backend,
+                       reason="handover" if handover else "resample", files=dropped)
+                if not handover:
+                    last_failure = red_baseline
+
+            call_solver("IMPL", brief_impl(step, context, tests_text, last_failure),
+                        backend=backend)
 
             # Freeze tripwire before anything else: if tests changed, nothing
             # the run says about passing means anything.
@@ -1972,7 +2097,8 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
             # skipped is in the record because a green has to be provable after
             # the fact from the ledger alone, and "no failures" does not prove
             # the tests ran.
-            ledger("VERIFY", step=step_id, attempt=attempt, tests=green.tests,
+            ledger("VERIFY", step=step_id, attempt=attempt, backend=backend,
+                   tests=green.tests,
                    failures=green.failures, errors=green.errors,
                    skipped=green.skipped, green=green.green,
                    regressions=regressions)
@@ -2002,7 +2128,9 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
                       "satisfying this step.\n\n" + last_failure)
         else:
             broke = [f for f in last_run.failed_files if f not in own_tests] if last_run else []
-            reason = f"still failing after {max_attempts} attempts"
+            tried = ", ".join(dict.fromkeys(schedule))
+            reason = (f"still failing after {attempt} attempts"
+                      + (f" across {tried}" if len(SOLVER_TIERS) > 1 else ""))
             if broke:
                 # Named separately in the reason because it reaches the planner
                 # through ESCALATION.md, and "this step cannot be built without
