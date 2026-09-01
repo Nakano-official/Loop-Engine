@@ -74,7 +74,7 @@ Qwen3.5-9B**（nonthinking / IQ4_XS / RTX 2060 6GB / 41.6 tok/s）に替えた�
 - `runner` / `solver` ユーザー、権限、SSH、ネットワーク制限
 - Windows 側の起動、keepalive、Remote SSH に関する手順
 - 要件からの通し実行（題材2つ・最長11ステップ）
-- **ソルバーの差し替え**（バックエンド名で分岐。ローカルモデル用の一式は [LOCAL_SOLVER.md](LOCAL_SOLVER.md)）
+- **ソルバーの差し替え**（バックエンド名で分岐。ローカルモデル用の一式は [LOCAL_SOLVER.md](docs/LOCAL_SOLVER.md)）
 
 未完了のもの：
 
@@ -83,29 +83,31 @@ Qwen3.5-9B**（nonthinking / IQ4_XS / RTX 2060 6GB / 41.6 tok/s）に替えた�
 - **実用的な題材での検証。** これまでの題材は2つとも小規模
 - `plan review`（プランナーが自分の計画を監査して追加だけ提案する動詞）
 
-最新の進捗と再開手順は [HANDOFF.md](HANDOFF.md) を参照してください。
+最新の進捗と再開手順は [HANDOFF.md](docs/HANDOFF.md) を参照してください。
 
 ## ドキュメント
 
 初めて読む場合は、次の順番を推奨します。
 
-1. [BOOTSTRAP.md](BOOTSTRAP.md) — 設計思想と、プランナーが作る成果物
-2. [RUNNER_SPEC.md](RUNNER_SPEC.md) — ランナーの関門、状態遷移、CLI、データ形式
+1. [BOOTSTRAP.md](docs/BOOTSTRAP.md) — 設計思想と、プランナーが作る成果物
+2. [RUNNER_SPEC.md](docs/RUNNER_SPEC.md) — ランナーの関門、状態遷移、CLI、データ形式
 3. [runner/loop.py](runner/loop.py) — 上記仕様の実装
 4. [provision/README.md](provision/README.md) — WSL2 サンドボックスの構築・検証手順
 5. [host/README.md](host/README.md) — Windows 側の起動、keepalive、SSH 設定
-6. [LOCAL_SOLVER.md](LOCAL_SOLVER.md) — ローカルモデルをソルバーに据える手順と失敗表
-7. [HANDOFF.md](HANDOFF.md) — 現在地、未完了項目、作業再開時の注意
+6. [LOCAL_SOLVER.md](docs/LOCAL_SOLVER.md) — ローカルモデルをソルバーに据える手順と失敗表
+7. [HANDOFF.md](docs/HANDOFF.md) — 現在地、未完了項目、作業再開時の注意
 
 ## リポジトリ構成
 
 ```text
 .
 ├── README.md             # このファイル
-├── BOOTSTRAP.md          # プランナー向けの開始プロンプト
-├── RUNNER_SPEC.md        # ループランナーの仕様
-├── LOCAL_SOLVER.md       # ローカルモデルをソルバーに据える手順と失敗表
-├── HANDOFF.md            # 進捗と引き継ぎ
+├── docs/
+│   ├── README.md         # ドキュメント索引
+│   ├── BOOTSTRAP.md      # プランナー向けの開始プロンプト
+│   ├── RUNNER_SPEC.md    # ループランナーの仕様
+│   ├── LOCAL_SOLVER.md   # ローカルモデルをソルバーに据える手順と失敗表
+│   └── HANDOFF.md        # 進捗と引き継ぎ
 ├── runner/
 │   ├── loop.py           # ランナー本体（関門の適用、状態遷移、台帳）
 │   └── tests/            # ランナー自身のテスト（39件）
@@ -136,4 +138,4 @@ WSL2 は既定のままでは隔離環境ではありません。この構成で
 
 一般性の実測が次の主要マイルストーンです。題材を変えて Python でもう1本通し、そのあと2言語目として TypeScript を実装します。言語結合を抽象化するのは、その2つ目が動いてからです。
 
-作業を再開する際は、先に [HANDOFF.md](HANDOFF.md) の「次にやること」と未決事項を確認してください。
+作業を再開する際は、先に [HANDOFF.md](docs/HANDOFF.md) の「次にやること」と未決事項を確認してください。
