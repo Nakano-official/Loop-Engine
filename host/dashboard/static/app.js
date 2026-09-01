@@ -22,6 +22,12 @@ function button(label, decision, item, note) {
   return element;
 }
 
+function note_only(text) {
+  const element = document.createElement("p");
+  element.className = "why"; element.textContent = text;
+  return element;
+}
+
 async function refresh() {
   const state = await api("/api/state");
   document.querySelector("#project").textContent = state.project;
@@ -37,7 +43,9 @@ async function refresh() {
     card.querySelector("pre").textContent = item.detail;
     const note = card.querySelector("textarea"), actions = card.querySelector(".request-actions");
     if (item.kind === "review") {
-      actions.append(button("承認", "approve", item, note), button("修正を依頼", "revise", item, note));
+      if (session.scope === "local") actions.append(button("承認", "approve", item, note));
+      else actions.append(note_only("承認はこの機械の前でだけ ── 画面を見られない端末から「遊べる」とは記録できません"));
+      actions.append(button("修正を依頼", "revise", item, note));
     } else {
       actions.append(button("回答を記録", "respond", item, note), button("停止", "stop", item, note));
     }
@@ -53,8 +61,14 @@ async function refresh() {
 
 async function start() {
   session = await api("/api/session");
+  document.querySelector("#scope").textContent =
+    session.scope === "local" ? "この機械" : `リモート（${session.user}）`;
   const launchers = document.querySelector("#launchers");
-  if (!session.launchers.length) launchers.textContent = "config.json に起動可能な成果物を設定してください。";
+  if (session.scope !== "local") {
+    launchers.append(note_only("成果物の起動はこの機械の前でだけできます。"));
+  } else if (!session.launchers.length) {
+    launchers.textContent = "config.json に起動可能な成果物を設定してください。";
+  }
   for (const item of session.launchers) {
     const element = document.createElement("button"); element.textContent = `${item.label}を起動`;
     element.onclick = async () => { try { await api("/api/launch", {method: "POST", body: JSON.stringify({launcher_id: item.id})}); } catch (error) { alert(error.message); } };

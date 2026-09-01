@@ -8,5 +8,5 @@ if not exist "%PROJECT%\plan" (
   echo Run host\loop-pull.cmd first.
   exit /b 1
 )
-echo Open http://127.0.0.1:8765 after the server starts.
+echo Open http://127.0.0.1:8443 after the server starts.
 python "%~dp0dashboard\server.py" --project "%PROJECT%"
