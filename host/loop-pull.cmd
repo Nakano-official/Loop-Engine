@@ -18,7 +18,7 @@ REM pointing at them. Unreachable objects are what `git gc` deletes, and gc runs
 REM on its own inside ordinary commands. The backup would stop existing at a
 REM moment nobody observed. So:
 REM
-REM     /srv/loop/repo.runN.git  ->  C:\dev\roop-engin\project.runN   (immutable)
+REM     /srv/loop/repo.runN.git  ->  C:\dev\roop-engin\runs\run-NNN  (immutable)
 REM     /srv/loop/repo.git       ->  C:\dev\roop-engin\project        (the live one)
 REM
 REM which is the shape the sandbox already uses for project.runN. A copy should
@@ -27,7 +27,14 @@ REM look like the thing it is a copy of.
 setlocal enabledelayedexpansion
 
 set "MIRRORROOT=C:\dev\roop-engin"
+set "ARCHIVEROOT=%MIRRORROOT%\runs"
 set "SSHHOST=loop-runner"
+
+if not exist "%ARCHIVEROOT%" mkdir "%ARCHIVEROOT%"
+if errorlevel 1 (
+  echo cannot create archive root %ARCHIVEROOT%
+  exit /b 1
+)
 
 REM One line, space separated, straight from the shell's own glob: no pipes, so
 REM nothing here needs batch escaping.
@@ -63,10 +70,16 @@ exit /b 0
 setlocal
 set "NAME=%~1"
 set "MODE=%~2"
-REM repo.git -> ""  ;  repo.run4.git -> ".run4"
-set "SUFFIX=%NAME:~4%"
-set "SUFFIX=%SUFFIX:.git=%"
-set "DEST=%MIRRORROOT%\project%SUFFIX%"
+if /i "%NAME%"=="repo.git" (
+  set "DEST=%MIRRORROOT%\project"
+) else (
+  REM repo.run4.git -> 4 -> run-004. Delayed expansion is required because
+  REM this subroutine is parsed before RUNNO and PAD are assigned.
+  set "RUNNO=%NAME:~8,-4%"
+  set "PAD=000!RUNNO!"
+  set "PAD=!PAD:~-3!"
+  set "DEST=%ARCHIVEROOT%\run-!PAD!"
+)
 
 if not exist "%DEST%\.git" (
   echo   %NAME%  ^-^>  %DEST%   [clone]

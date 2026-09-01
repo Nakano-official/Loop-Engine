@@ -126,7 +126,7 @@ Host loop-runner
 | 段 | どこへ | 何から守るか |
 |---|---|---|
 | 1 | `project` → `/srv/loop/repo.git` | `reset` / `clean`。**同じ VHDX の中**なので、それ以上は守らない |
-| 2 | `repo.git` → `C:\dev\roop-engin\project` | **VHDX の消失**。ここで初めて別のディスクに乗る |
+| 2 | `repo.git` → `C:\dev\roop-engin\project`、過去run → `runs\run-NNN` | **VHDX の消失**。ここで初めて別のディスクに乗る |
 | 3 | ミラー → GitHub など | ホストの故障。やるなら**鍵はホストだけが持つ** |
 
 段1 はランナーが自動でやる（`loop.py` の `publish()`、GREEN と `plan apply` の直後）。
@@ -134,7 +134,7 @@ Host loop-runner
 `repo*.git` を全部列挙し、無ければクローン、有れば fetch する。
 
 ```
-/srv/loop/repo.runN.git  ->  C:\dev\roop-engin\project.runN   （不変。ff のみ）
+/srv/loop/repo.runN.git  ->  C:\dev\roop-engin\runs\run-NNN  （不変。ff のみ）
 /srv/loop/repo.git       ->  C:\dev\roop-engin\project        （現行。毎回作り直す）
 ```
 
@@ -144,13 +144,14 @@ Host loop-runner
 1つも残らない**。到達不能なオブジェクトは `git gc` が消し、gc は普通のコマンドの中で
 勝手に走る。**誰も見ていない時点でバックアップが消える。**
 
-この形はサンドボックス側が既に採っているもの（`project.run5` / `repo.run5.git`）と同じ。
-**コピーはコピー元と同じ形をしているべき**で、`ls` 一発で何を持っているか分かる。
+サンドボックス側の名前は既存の運用記録との対応を保つため `project.run5` /
+`repo.run5.git` のまま。ホスト側は `runs\run-005` にまとめ、ライブ成果物だけを
+`project` に置く。run番号の対応は変わらず、各保存先は独立したGitリポジトリである。
 
 `project`（現行 run）は毎回 `reset --hard` と `clean` で作り直す。run ごとに
 `repo.git` は新しい root コミットから始まるので ff できないため。
 **したがって `project\` に自分の物を置かないこと** ── 維持されるのではなく作り直される。
-その回の内容は次の pull までに `project.runN` として捕まっているので、失われるものは無い。
+その回の内容は次の pull までに `runs\run-NNN` として捕まっているので、失われるものは無い。
 
 **押すのではなく引くのは意図的**。サンドボックスは生成されたコードを実行する場所なので、
 外に届く認証情報をその中に置かない。段3 をやる場合も同じで、GitHub の鍵は
