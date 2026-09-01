@@ -111,13 +111,15 @@ sudo -u solver /srv/loop/bin/smoke-local
 sudo -u runner python3 /srv/loop/runner/loop.py reset S1     # 必要なら
 ```
 
-`plan/tasks.json` の最上位に3つ足す:
+`plan/tasks.json` の最上位に足す:
 
 ```json
-"solver_tiers": ["local", "codex"],
 "policy":       {"retry": "resample"},
 "limits":       {"attempts": 8}
 ```
+
+`solver_tiers` は書かなくてよい ── **既定が `["local", "codex"]`**（RUNNER_SPEC §7 末尾）。
+ここに書くのは、この箱の既定と違う段構成を試すときだけ。
 
 `resample` と温度 0.7 は**対で意味を持つ**。温度 0 で `resample` すると8回とも同じ
 答えを引く。逆に `repair` にするなら温度は下げてよい。

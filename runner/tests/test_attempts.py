@@ -64,6 +64,10 @@ class HowManyAttempts(Settings):
 
 class WhichSolverRunsWhichAttempt(Settings):
     def test_one_backend_is_one_attempt_each(self) -> None:
+        # Named rather than left to the default: the default describes the box
+        # this happens to run on, and what is being pinned here is the shape of
+        # the schedule for a single tier.
+        load_settings({"solver_tiers": ["codex"]})
         self.assertEqual(attempt_schedule(STEP), ["codex"] * 3)
 
     def test_the_cheap_backend_spends_its_whole_budget_first(self) -> None:
@@ -107,7 +111,8 @@ class SettingsThatWouldBeWrongAreRefused(Settings):
         for bad in (["../../bin/sh"], ["Codex"], [""], [2]):
             with self.subTest(bad=bad), self.assertRaises(SystemExit):
                 load_settings({"solver_tiers": bad})
-        self.assertEqual(SOLVER_TIERS, ["codex"])
+        # Refused outright, not partially applied: the tiers are what they were.
+        self.assertEqual(SOLVER_TIERS, self.saved[2])
 
 
 if __name__ == "__main__":

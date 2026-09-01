@@ -164,7 +164,15 @@ RETRY_MODES = ("repair", "resample")
 # the alternative on exhaustion is an escalation, and an escalation costs a
 # PLANNER call -- so a second solver tier is not an extra expense, it is the
 # cheaper of the two things that can happen next.
-SOLVER_TIERS = ["codex"]
+#
+# The default describes the BOX, not the plan, and that is why it is here rather
+# than left to tasks.json. A plan cannot name a backend it was never told about:
+# BOOTSTRAP tells the planner that what implements a step is not its concern, so
+# a bootstrapped plan has no solver_tiers at all. With ["codex"] as the default,
+# every such plan would silently run on the metered backend while the free local
+# one sat idle -- a billing decision made by omission. Free first, metered as
+# the fallback; a plan that does say solver_tiers still overrides this.
+SOLVER_TIERS = ["local", "codex"]
 
 
 # --------------------------------------------------------------------------
