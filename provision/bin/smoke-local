@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Every question I would otherwise have to ask you, answered in one command.
+
+    sudo -u solver /srv/loop/bin/smoke-local
+
+Run it as `solver`, not as yourself: the point is to test the path the runner
+actually uses, through the account that actually uses it. Each check prints
+PASS or FAIL, and every FAIL carries its own fix. The diagnostic block at the
+end is what to paste if a fix is not obvious -- it holds everything a second
+pair of eyes would ask for, so one paste replaces a conversation.
+
+Exit code is the number of the first check that failed, 0 if all passed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ENDPOINT = os.environ.get("LOOP_LLM_ENDPOINT", "http://127.0.0.1:8080")
+CTX = int(os.environ.get("LOOP_LLM_CTX", "16384"))
+SOLVER_LOCAL = Path("/srv/loop/bin/solver-local")
+
+notes: list[str] = []
+
+
+def call(path: str, payload=None, timeout=120):
+    url = ENDPOINT.rstrip("/") + path
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET",
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def check(n: int, title: str, fn) -> bool:
+    try:
+        detail = fn()
+    except Exception as e:                      # noqa: BLE001 -- report, never raise
+        print(f"[{n}] FAIL  {title}\n      {type(e).__name__}: {e}")
+        notes.append(f"check {n}: {type(e).__name__}: {e}")
+        return False
+    print(f"[{n}] PASS  {title}" + (f"  ({detail})" if detail else ""))
+    return True
+
+
+# --------------------------------------------------------------------------
+
+def c1_binary():
+    if not shutil.which("llama-server"):
+        raise RuntimeError("llama-server is not on PATH.\n"
+                           "      Fix: LOCAL_SOLVER.md step 1 (install or build it).")
+    return shutil.which("llama-server")
+
+
+def c2_running():
+    try:
+        call("/health", timeout=5)
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"nothing answering at {ENDPOINT}: {e.reason}\n"
+            "      Fix: sudo -u llm /srv/loop/bin/llm-serve   (leave it running)") from None
+    return ENDPOINT
+
+
+def c3_context():
+    props = call("/props", timeout=10)
+    n_ctx = props.get("default_generation_settings", {}).get("n_ctx") or props.get("n_ctx")
+    if not n_ctx:
+        raise RuntimeError("the server did not report its context size; it is older "
+                           "than this script expects.\n"
+                           "      Fix: LOCAL_SOLVER.md, 'server too old'.")
+    if int(n_ctx) < CTX:
+        raise RuntimeError(
+            f"server context is {n_ctx} but LOOP_LLM_CTX says {CTX}.\n"
+            "      These disagreeing is the silent-truncation failure: the brief\n"
+            "      loses its front and the model looks stupid instead of starved.\n"
+            f"      Fix: start llm-serve with --ctx-size {CTX}, or lower LOOP_LLM_CTX.")
+    return f"n_ctx={n_ctx}"
+
+
+def c4_speed():
+    t0 = time.time()
+    body = call("/v1/chat/completions", {
+        "model": "local", "max_tokens": 64, "temperature": 0.7,
+        "messages": [{"role": "user", "content": "Write the numbers 1 to 20, comma separated."}],
+    }, timeout=300)
+    dt = time.time() - t0
+    out = (body.get("usage") or {}).get("completion_tokens") or 0
+    rate = out / dt if dt else 0
+    notes.append(f"generation: {out} tokens in {dt:.1f}s = {rate:.1f} tok/s")
+    if rate < 4:
+        raise RuntimeError(
+            f"{rate:.1f} tokens/s. This is CPU-speed, not GPU-speed.\n"
+            "      A step needs a few thousand output tokens, so at this rate one\n"
+            "      attempt will not finish inside timeouts.solver.\n"
+            "      Fix: check --n-gpu-layers took effect (nvidia-smi inside WSL),\n"
+            "      or accept it and raise timeouts.solver a long way.")
+    return f"{rate:.1f} tok/s"
+
+
+def c5_constrained():
+    schema = {"type": "object",
+              "properties": {"files": {"type": "array", "minItems": 1, "items": {
+                  "type": "object",
+                  "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                  "required": ["path", "content"], "additionalProperties": False}}},
+              "required": ["files"], "additionalProperties": False}
+    body = call("/v1/chat/completions", {
+        "model": "local", "max_tokens": 256, "temperature": 0.7,
+        "messages": [{"role": "user",
+                      "content": "Return a file named a.py containing: x = 1"}],
+        "response_format": {"type": "json_schema",
+                            "json_schema": {"name": "files", "strict": True,
+                                            "schema": schema}},
+    }, timeout=300)
+    text = body["choices"][0]["message"]["content"]
+    parsed = json.loads(text)          # raises if the constraint did not hold
+    if not parsed.get("files"):
+        raise RuntimeError("constrained output came back empty.")
+    return f"{len(parsed['files'])} file(s)"
+
+
+def c6_thinking_off():
+    body = call("/v1/chat/completions", {
+        "model": "local", "max_tokens": 128, "temperature": 0.7,
+        "messages": [{"role": "user", "content": "What is 17 + 25? Answer with the number."}],
+        "chat_template_kwargs": {"enable_thinking": False},
+    }, timeout=300)
+    text = body["choices"][0]["message"]["content"]
+    reasoning = body["choices"][0]["message"].get("reasoning_content")
+    if "<think>" in text or reasoning:
+        raise RuntimeError(
+            "the model still emitted a thinking channel.\n"
+            "      Fix, in order: (a) llm-serve must pass --jinja, or the template\n"
+            "      never runs and the switch is ignored; (b) confirm the GGUF's\n"
+            "      template reads enable_thinking. See LOCAL_SOLVER.md.")
+    return "no thinking channel"
+
+
+def c7_end_to_end():
+    """The whole path: a brief in the real format, through solver-local, onto disk."""
+    if not os.access(SOLVER_LOCAL, os.X_OK):
+        raise RuntimeError(f"{SOLVER_LOCAL} is not executable by this account.\n"
+                           "      Fix: sudo ./70-local-solver.sh")
+    work = Path(tempfile.mkdtemp(prefix="smoke-local-"))
+    try:
+        brief = work / "impl.md"
+        brief.write_text(
+            "Make the tests pass.\n\n"
+            "# Goal\nProvide add(a, b) returning their sum.\n\n"
+            "# The tests (frozen -- read-only)\n"
+            "from sample import add\n\ndef test_add():\n    assert add(2, 3) == 5\n\n"
+            "# Files you may create or modify\nsample.py\n\n"
+            "Change nothing outside those paths.\n", encoding="utf-8")
+        proc = subprocess.run([str(SOLVER_LOCAL), str(brief), "600"],
+                              cwd=work, capture_output=True, text=True, timeout=900)
+        notes.append("solver-local stdout: " + proc.stdout.strip()[-500:])
+        if proc.returncode != 0:
+            raise RuntimeError(f"solver-local exited {proc.returncode}\n"
+                               f"      {proc.stderr.strip()[-500:]}")
+        written = work / "sample.py"
+        if not written.is_file():
+            raise RuntimeError("solver-local exited 0 but wrote no file. That is the\n"
+                               "      model failing, not the plumbing -- the plumbing works.\n"
+                               f"      Model said: {proc.stdout.strip()[-300:]}")
+        body = written.read_text(encoding="utf-8")
+        ns: dict = {}
+        exec(compile(body, "sample.py", "exec"), ns)   # noqa: S102 -- our own smoke file
+        if ns.get("add", lambda *_: None)(2, 3) != 5:
+            raise RuntimeError("the file it wrote does not satisfy the test. Plumbing is\n"
+                               "      fine; this is a statement about the model.")
+        return f"{len(body)} bytes, add(2,3)==5"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+CHECKS = [
+    ("llama-server is installed", c1_binary),
+    ("the server is up and answering", c2_running),
+    ("its context matches LOOP_LLM_CTX", c3_context),
+    ("it generates fast enough to finish a step", c4_speed),
+    ("json_schema constrains the output", c5_constrained),
+    ("thinking is off", c6_thinking_off),
+    ("a real brief goes in and a working file comes out", c7_end_to_end),
+]
+
+
+def main() -> int:
+    print(f"smoke-local: uid={os.getuid()} endpoint={ENDPOINT} ctx={CTX}\n")
+    for i, (title, fn) in enumerate(CHECKS, start=1):
+        if not check(i, title, fn):
+            print("\n--- paste this ---")
+            print(f"uid={os.getuid()} endpoint={ENDPOINT} ctx={CTX}")
+            print(f"python={sys.version.split()[0]} llama-server={shutil.which('llama-server')}")
+            for n in notes:
+                print(n)
+            print("--- end ---")
+            return i
+    print("\nall checks passed. The plumbing is not the problem.")
+    for n in notes:
+        print(f"  {n}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

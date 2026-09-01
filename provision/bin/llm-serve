@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# The local inference server, as uid `llm`.
+#
+#     sudo -u llm /srv/loop/bin/llm-serve
+#
+# Its own account, which is neither solver nor runner nor planner. The solver
+# reaches it over loopback and cannot restart it, read its weights, or change
+# how it was started -- the same argument as everywhere else here: the fence is
+# the uid, not a promise about who calls what.
+set -euo pipefail
+
+WEIGHTS="${LOOP_LLM_WEIGHTS:-/srv/loop/models/model.gguf}"
+PORT="${LOOP_LLM_PORT:-8080}"
+CTX="${LOOP_LLM_CTX:-16384}"
+# All layers on the GPU when there is one. llama-server silently falls back to
+# CPU for what does not fit, which is the right behaviour but a slow surprise:
+# smoke-local reports the tokens per second so the fallback is visible.
+NGL="${LOOP_LLM_NGL:-99}"
+
+[ -r "$WEIGHTS" ] || {
+  echo "llm-serve: cannot read weights: $WEIGHTS" >&2
+  echo "  Fix: put the .gguf there (root-owned, 0444) or set LOOP_LLM_WEIGHTS." >&2
+  exit 2
+}
+command -v llama-server >/dev/null || {
+  echo "llm-serve: llama-server is not on PATH. See LOCAL_SOLVER.md step 1." >&2
+  exit 2
+}
+
+# --host 127.0.0.1   never a routable interface. Nothing outside this VM has any
+#                    business reaching a solver's model server.
+# --jinja            REQUIRED. Without it llama.cpp does not run the model's own
+#                    chat template, and `chat_template_kwargs` -- which is how
+#                    thinking gets turned OFF -- is silently ignored. A thinking
+#                    model with no way to stop thinking is the failure this flag
+#                    exists to prevent, and it fails quietly.
+# --alias local      the name solver-local sends as "model".
+exec llama-server \
+  --model "$WEIGHTS" \
+  --alias local \
+  --host 127.0.0.1 \
+  --port "$PORT" \
+  --ctx-size "$CTX" \
+  --n-gpu-layers "$NGL" \
+  --jinja \
+  --log-file /srv/loop/models/llama-server.log

@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""A solver backend that is one request, not an agent.
+
+    solver-local <brief-file> <seconds>
+
+Invoked by solver-run when the runner names a backend other than codex. The cwd
+is already /srv/loop/project and the uid is already `solver`; both are set by
+solver-run, and neither is this script's business.
+
+WHY THIS IS NOT AN AGENT CLI
+----------------------------
+Everything an agent harness usually provides -- deciding when it is done,
+checking whether the tests pass, trying again -- the runner already provides,
+and provides in a way that cannot be talked round. Running a second loop inside
+this one would duplicate all of it, and every duplicated part is somewhere a
+small model can fail WHERE THE RUNNER CANNOT SEE IT. So: one request, whole
+files back, exit. No tools, no navigation, no test running, no retry.
+
+Whole files rather than a diff, for the same reason. The most common failure of
+a small model editing code is a unified diff whose hunk headers do not apply;
+whole-file output has no such failure mode by construction. What keeps that safe
+is that the runner checks the paths afterwards (`assert_touched`) and the plan
+keeps `files_write` small.
+
+WHAT COSTS WHAT (this is the load-bearing design decision here)
+--------------------------------------------------------------
+A non-zero exit from this script becomes `Halt` in the runner, and a Halt
+becomes an ESCALATION, and an escalation spends a PLANNER call. So the exit code
+is not a report of how well things went -- it is a choice about who pays:
+
+    model did something useless   -> exit 0. The attempt is spent, VERIFY fails,
+                                     the loop draws again. Cheap.
+    the machine is wrong          -> non-zero. Retrying cannot help, a human has
+                                     to look, and saying so immediately is the
+                                     cheapest thing available.
+
+Bad JSON, a path outside the allowlist, an empty file: those are the model being
+bad at its job, and they must NOT reach the planner. Server unreachable, brief
+in an unexpected shape, prompt longer than the context: those are the machine
+being wrong, and they must not be retried nine times in silence.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+# --------------------------------------------------------------------------
+# The knobs. Everything you are likely to want to change is in this block.
+# --------------------------------------------------------------------------
+
+ENDPOINT = os.environ.get("LOOP_LLM_ENDPOINT", "http://127.0.0.1:8080")
+MODEL = os.environ.get("LOOP_LLM_MODEL", "local")
+
+# Above zero on purpose, and this is not a style preference. `policy.retry:
+# "resample"` spends the attempt budget on INDEPENDENT DRAWS; at temperature 0
+# every draw is the same draw and the whole budget buys one answer. If you set
+# retry to "repair", low is fine again.
+TEMPERATURE = float(os.environ.get("LOOP_LLM_TEMPERATURE", "0.7"))
+TOP_P = float(os.environ.get("LOOP_LLM_TOP_P", "0.9"))
+
+# Must match what the server was started with (llm-serve passes --ctx-size).
+# Checked against the server's own report at startup, because the failure this
+# prevents is silent: a prompt over the limit comes back as a confidently wrong
+# answer written from half a brief, which looks exactly like a stupid model.
+CTX_TOKENS = int(os.environ.get("LOOP_LLM_CTX", "16384"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("LOOP_LLM_MAX_OUTPUT", "8192"))
+
+# Rough, and deliberately pessimistic: code and Japanese both run under 3
+# characters per token. Only used to refuse before spending minutes on a
+# generation that was truncated before it started.
+CHARS_PER_TOKEN = 2.6
+
+# The thinking channel is turned off in the CHAT TEMPLATE, not by asking the
+# model not to think. An instruction is a request and a 9B breaks requests; a
+# template that has no thinking channel cannot emit one. Same argument as the
+# rest of this system: take the ability away rather than detect the misuse.
+# llama.cpp passes this through to the Jinja template (Qwen3 reads it).
+CHAT_TEMPLATE_KWARGS = {"enable_thinking": False}
+
+# Exit codes. 0 and 124 are the two the runner interprets; the rest are for the
+# human reading them, and each one appears in LOCAL_SOLVER.md with its fix.
+EXIT_OK = 0
+EXIT_USAGE = 2
+EXIT_BRIEF_SHAPE = 5
+EXIT_CONTEXT = 6
+EXIT_SERVER = 7
+EXIT_TIMEOUT = 124
+
+FILES_HEADING = "# Files you may create or modify"
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "files": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+        },
+        "note": {"type": "string"},
+    },
+    "required": ["files"],
+    "additionalProperties": False,
+}
+
+SYSTEM = """You write Python files. You are given one task and the exact list of
+files you may write. Return the COMPLETE final content of each file you change.
+
+Rules:
+- Only paths from the given list. A path not on the list is discarded.
+- Whole file contents, never a diff, never an excerpt, never "unchanged".
+- No explanation outside the JSON.
+- If a file already has content, your version replaces it entirely, so carry
+  over everything that must survive.
+"""
+
+
+def die(code: int, message: str) -> None:
+    """Every non-zero exit says what happened and what to do about it.
+
+    The expensive failure in this project is not a broken run, it is a broken
+    run that needs three rounds of questions to identify. So no error here is
+    allowed to be only a symptom.
+    """
+    print(f"solver-local: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def files_from_brief(brief: str) -> list[str]:
+    """The paths the brief allows, read from the one heading all three use.
+
+    TEST_WRITE, STUB and IMPL are different briefs that happen to agree on this
+    heading (`brief_test_write`, `brief_stub`, `brief_impl` in loop.py). That
+    agreement is load-bearing and undeclared, so if it ever stops holding this
+    refuses instead of quietly writing nothing -- a backend that silently does
+    nothing burns every attempt in the step and reports it as a model that could
+    not solve the problem.
+    """
+    if FILES_HEADING not in brief:
+        die(EXIT_BRIEF_SHAPE,
+            f"the brief has no {FILES_HEADING!r} section.\n"
+            "  loop.py's brief format changed and this backend was not updated.\n"
+            "  Fix: compare with brief_impl() in runner/loop.py.")
+    tail = brief.split(FILES_HEADING, 1)[1]
+    paths = []
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line:
+            if paths:
+                break
+            continue
+        if line.startswith("#"):
+            break
+        # The list is bare paths, one per line. Anything with a space in it is
+        # the prose that follows the list, not a path.
+        if " " in line:
+            break
+        paths.append(line)
+    if not paths:
+        die(EXIT_BRIEF_SHAPE,
+            f"the {FILES_HEADING!r} section listed no paths.\n"
+            "  Fix: check the step's files_write / files_test in plan/tasks.json.")
+    return paths
+
+
+def current_contents(paths: list[str]) -> str:
+    """What the allowed files hold right now.
+
+    Needed because this backend never reads the repository: it gets one request
+    and cannot go looking. codex could, which is why brief_impl does not carry
+    this. Reading it here rather than adding it to the brief keeps the brief
+    contract -- one step's worth of information, and nothing else -- unchanged.
+    """
+    parts = []
+    for rel in paths:
+        p = Path(rel)
+        if p.is_file():
+            parts.append(f"--- {rel} ---\n{p.read_text(encoding='utf-8')}")
+        else:
+            parts.append(f"--- {rel} ---\n(does not exist yet)")
+    return "\n\n".join(parts)
+
+
+def post(path: str, payload: dict | None, seconds: float) -> dict:
+    url = ENDPOINT.rstrip("/") + path
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        url, data=data, method="POST" if data else "GET",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=seconds) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:800]
+        die(EXIT_SERVER,
+            f"the inference server rejected the request ({e.code}) at {url}\n"
+            f"  {body}\n"
+            "  Fix: if it names an unknown field, the server is older than this\n"
+            "  script expects -- see LOCAL_SOLVER.md, 'server too old'.")
+    except urllib.error.URLError as e:
+        die(EXIT_SERVER,
+            f"cannot reach the inference server at {url}: {e.reason}\n"
+            "  Fix: sudo -u llm /srv/loop/bin/llm-serve   (or check it is still up:\n"
+            "       pgrep -a -u llm llama-server)")
+    except json.JSONDecodeError:
+        die(EXIT_SERVER, f"the server at {url} did not answer with JSON.")
+    raise AssertionError("unreachable")
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        die(EXIT_USAGE, "usage: solver-local <brief-file> [seconds]")
+    brief_path = Path(sys.argv[1])
+    seconds = int(sys.argv[2]) if len(sys.argv) > 2 else 900
+
+    # This script is exec'd by solver-run WITHOUT a `timeout` wrapper, because
+    # solver-run's contract is that a backend applies its own ceiling. 124 is
+    # not an arbitrary code: call_solver reads it as "the solver hit its own
+    # timeout", which is a different sentence from "the solver crashed".
+    def out_of_time(_sig, _frm):
+        die(EXIT_TIMEOUT,
+            f"no answer within {seconds}s.\n"
+            "  A local 9B on CPU does not finish a step in this budget. Fix:\n"
+            "  raise timeouts.solver in plan/tasks.json, or give the server a GPU.")
+    signal.signal(signal.SIGALRM, out_of_time)
+    signal.alarm(seconds)
+
+    if not brief_path.is_file():
+        die(EXIT_USAGE, f"cannot read brief: {brief_path}")
+    brief = brief_path.read_text(encoding="utf-8")
+    allowed = files_from_brief(brief)
+
+    user = (brief
+            + "\n\n# Current contents of the files you may write\n"
+            + current_contents(allowed)
+            + "\n\n# Output\nReturn JSON: the complete final content of every file"
+              " you are changing. Only these paths:\n"
+            + "\n".join(allowed) + "\n")
+
+    estimated = int((len(SYSTEM) + len(user)) / CHARS_PER_TOKEN)
+    room = CTX_TOKENS - MAX_OUTPUT_TOKENS
+    if estimated > room:
+        # Refused rather than sent. Over the limit the server either errors or
+        # silently drops the front of the prompt, and the silent case produces a
+        # confident answer written from half a brief -- indistinguishable, from
+        # the outside, from a model that is simply bad.
+        die(EXIT_CONTEXT,
+            f"prompt is about {estimated} tokens and only {room} fit "
+            f"(ctx {CTX_TOKENS} minus {MAX_OUTPUT_TOKENS} reserved for output).\n"
+            "  Fix, cheapest first: raise --ctx-size in bin/llm-serve and\n"
+            "  LOOP_LLM_CTX to match; or split the step so files_write and its\n"
+            "  tests are smaller (see LOCAL_SOLVER.md, 'the step is too big').")
+
+    body = post("/v1/chat/completions", {
+        "model": MODEL,
+        "messages": [{"role": "system", "content": SYSTEM},
+                     {"role": "user", "content": user}],
+        "temperature": TEMPERATURE,
+        "top_p": TOP_P,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        # Constrained decoding, not a formatting request. The single largest
+        # reliability lever available for a model this size: a shape it cannot
+        # emit is a shape that never has to be parsed defensively.
+        "response_format": {"type": "json_schema",
+                            "json_schema": {"name": "files", "strict": True,
+                                            "schema": SCHEMA}},
+        "chat_template_kwargs": CHAT_TEMPLATE_KWARGS,
+        # llama.cpp keeps the shared prefix of successive requests. Attempts on
+        # one step differ only in their tail, so this is most of the wall-clock.
+        "cache_prompt": True,
+    }, seconds=max(30, seconds - 15))
+
+    used = (body.get("usage") or {}).get("prompt_tokens")
+    if used and used > CTX_TOKENS:
+        die(EXIT_CONTEXT,
+            f"the server read {used} prompt tokens with a context of {CTX_TOKENS}; "
+            "the front of the brief was dropped.\n"
+            "  Fix: raise --ctx-size in bin/llm-serve and LOOP_LLM_CTX to match.")
+
+    text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+
+    # -- from here down, nothing exits non-zero -----------------------------
+    # Everything below is the model being bad at its job, and the model being
+    # bad at its job must cost an ATTEMPT, not an escalation. Escalations are
+    # answered by the planner, and the planner is the expensive account.
+    print(f"[solver-local] {MODEL} temp={TEMPERATURE} prompt~{estimated}tok "
+          f"used={used} out={len(text)}ch")
+
+    if "<think>" in text:
+        # Not fatal, but worth saying loudly once: the template still has a
+        # thinking channel, so tokens are being spent on it every request.
+        print("[solver-local] WARNING: <think> in the output -- enable_thinking "
+              "did not take effect. See LOCAL_SOLVER.md, 'thinking is still on'.",
+              file=sys.stderr)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+
+    try:
+        answer = json.loads(text)
+        entries = answer["files"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        print("[solver-local] the answer was not the agreed JSON; writing nothing. "
+              "This attempt is spent.", file=sys.stderr)
+        print(text[:800], file=sys.stderr)
+        return EXIT_OK
+
+    allowed_set = set(allowed)
+    written, refused = [], []
+    for entry in entries:
+        rel = str(entry.get("path", "")).lstrip("./")
+        content = entry.get("content")
+        if rel not in allowed_set or not isinstance(content, str) or not content.strip():
+            refused.append(rel or "(no path)")
+            continue
+        target = Path(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not content.endswith("\n"):
+            content += "\n"
+        target.write_text(content, encoding="utf-8")
+        written.append(rel)
+
+    print(f"[solver-local] wrote {written or 'nothing'}"
+          + (f"; refused {refused}" if refused else ""))
+    if refused and not written:
+        # Said plainly because it is the failure that looks like nothing
+        # happening: the step will burn its whole budget producing identical
+        # VERIFY failures, and the ledger will not say why.
+        print("[solver-local] every path was outside the allowlist. The step will "
+              "fail VERIFY unchanged.", file=sys.stderr)
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
