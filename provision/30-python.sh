@@ -6,7 +6,16 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get update -qq
-apt-get install -y -qq python3-venv python3-pip git
+# python3-tk is not optional even though nothing here opens a window. On Debian
+# tkinter is a separate package, so `import tkinter` raises ModuleNotFoundError
+# -- and a test that imports a module which imports tkinter fails at import
+# time, before any assertion runs. The solver would see a failure with no
+# relation to what it was asked to build and spend every attempt on it. The
+# venv picks this up for free: tkinter lives in the stdlib, not site-packages.
+# There is still no DISPLAY here (WSLg does not reach an sshd session), so the
+# runner can check the logic of a GUI program but never the GUI itself. That is
+# what the host-side review in host/dashboard is for.
+apt-get install -y -qq python3-venv python3-pip python3-tk git
 
 V=/srv/loop/project/.venv
 if [ ! -x "$V/bin/python" ]; then
