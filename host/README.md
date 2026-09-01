@@ -10,7 +10,7 @@ WSL2 では起動と生存管理がホスト側の責務になった（`RUNNER_S
 |---|---|---|
 | `loop-dev.cmd` | `C:\Users\<you>\bin\loop-dev.cmd`（PATH の通った場所） | ディストロ起動 → sshd 待機 → VS Code Remote-SSH 起動 |
 | `wsl-keepalive.vbs` | このリポジトリのまま（タスクが絶対パスで参照する） | VM を**窓を出さずに**生かし続ける。下の keepalive タスクの実体 |
-| `loop-pull.cmd` | このリポジトリのまま | `repo.git` をホスト側のミラーに引く。**VHDX を失っても残る唯一の複製** |
+| `loop-pull.cmd` | このリポジトリのまま | **すべての** `repo*.git` を run ごとのミラーに引く。**VHDX を失っても残る唯一の複製** |
 
 **ASCII のみで書くこと。** PowerShell 5.1 と cmd.exe は BOM 無し UTF-8 を ANSI として
 読むため、日本語コメントを入れると行継続として誤解釈され、変数が黙って null になる
@@ -108,11 +108,27 @@ Host loop-runner
 | 3 | ミラー → GitHub など | ホストの故障。やるなら**鍵はホストだけが持つ** |
 
 段1 はランナーが自動でやる（`loop.py` の `publish()`、GREEN と `plan apply` の直後）。
-段2 が `loop-pull.cmd`。最初の1回だけクローンを作る:
+段2 が `loop-pull.cmd`。**引数も事前のクローンも要らない** ── サンドボックスにある
+`repo*.git` を全部列挙し、無ければクローン、有れば fetch する。
 
 ```
-git clone ssh://loop-runner/srv/loop/repo.git C:\dev\roop-engin\project
+/srv/loop/repo.runN.git  ->  C:\dev\roop-engin\project.runN   （不変。ff のみ）
+/srv/loop/repo.git       ->  C:\dev\roop-engin\project        （現行。毎回作り直す）
 ```
+
+**run ごとにディレクトリを分けるのは整頓ではなく保存のため。** どの run も
+`step-S1`…`step-S11` という同じタグ名を作るので、1つのクローンに引くと `--force` で
+前の run のタグを上書きするしかなく、`main` も動かせば**古い run のコミットを指す ref が
+1つも残らない**。到達不能なオブジェクトは `git gc` が消し、gc は普通のコマンドの中で
+勝手に走る。**誰も見ていない時点でバックアップが消える。**
+
+この形はサンドボックス側が既に採っているもの（`project.run5` / `repo.run5.git`）と同じ。
+**コピーはコピー元と同じ形をしているべき**で、`ls` 一発で何を持っているか分かる。
+
+`project`（現行 run）は毎回 `reset --hard` と `clean` で作り直す。run ごとに
+`repo.git` は新しい root コミットから始まるので ff できないため。
+**したがって `project\` に自分の物を置かないこと** ── 維持されるのではなく作り直される。
+その回の内容は次の pull までに `project.runN` として捕まっているので、失われるものは無い。
 
 **押すのではなく引くのは意図的**。サンドボックスは生成されたコードを実行する場所なので、
 外に届く認証情報をその中に置かない。段3 をやる場合も同じで、GitHub の鍵は
