@@ -1624,10 +1624,41 @@ def environment_facts() -> str:
     conftest = PROJECT / "conftest.py"
     conftest_text = conftest.read_text(encoding="utf-8") if conftest.exists() else "(none)"
 
+    # Gathered rather than written down, like everything else here, and for the
+    # same reason -- but this one has teeth. A criterion such as "the window
+    # opens" produces a test that fails with TclError, which is a real red and
+    # passes RED_GATE cleanly. Nothing the solver can write will turn it green,
+    # so the step spends every attempt of every tier and then an escalation, and
+    # the cause is nowhere in what any of them can see.
+    interpreter = PROJECT / ".venv" / "bin" / "python"
+
+    def imports(module: str) -> bool:
+        try:
+            return run([str(interpreter), "-c", f"import {module}"]).returncode == 0
+        except OSError:
+            return False
+
+    display = os.environ.get("DISPLAY", "")
+    has_tk = imports("tkinter")
+
     return f"""# The environment, as it actually is right now
 
-Interpreter: {version(PROJECT / ".venv" / "bin" / "python")}
+Interpreter: {version(interpreter)}
 Test runner: {version(PYTEST)}
+
+Graphical display: {f"DISPLAY={display}" if display else "NONE. DISPLAY is not set"}
+GUI toolkit: {"tkinter imports" if has_tk else "tkinter does NOT import"}
+
+{"" if display else '''There is no screen here and there will not be one. Code that opens a window
+raises an error about the display, so an acceptance criterion about what appears
+on screen becomes a test that fails and that no implementation can fix.
+
+Every criterion you write has to be checkable by pytest with no display. If the
+requirements ask for a user interface, put whatever constructs it in its own
+step, keep that step as thin as you can, and write its criteria in terms of the
+functions it calls and the state it passes on -- not in terms of what is drawn.
+A human checks the screen afterwards; the runner never can.
+'''}
 
 The runner executes the tests itself, as:
     .venv/bin/pytest {" ".join(PYTEST_ARGS)} <the step's files_test>
