@@ -11,7 +11,12 @@ set -euo pipefail
 
 WEIGHTS="${LOOP_LLM_WEIGHTS:-/srv/loop/models/model.gguf}"
 PORT="${LOOP_LLM_PORT:-8080}"
-CTX="${LOOP_LLM_CTX:-16384}"
+# 8192, and the number is measured rather than chosen: this box has an RTX
+# 2060 with 6144 MiB, the weights (IQ4_XS, 4.81 GB) take most of it, and what is
+# left has to hold the KV cache and the compute buffer. A step's brief plus the
+# files it may write comes to roughly 2-3k tokens, so 8192 with 4096 reserved
+# for output is comfortable -- raising it would buy nothing and cost the fit.
+CTX="${LOOP_LLM_CTX:-8192}"
 # All layers on the GPU when there is one. llama-server silently falls back to
 # CPU for what does not fit, which is the right behaviour but a slow surprise:
 # smoke-local reports the tokens per second so the fallback is visible.
@@ -43,4 +48,10 @@ exec llama-server \
   --ctx-size "$CTX" \
   --n-gpu-layers "$NGL" \
   --jinja \
-  --log-file /srv/loop/models/llama-server.log
+  --cache-type-k q8_0 \
+  --cache-type-v q8_0
+
+# No --log-file: /srv/loop/models is 2750 root:llm, so `llm` reads the
+# weights and cannot write beside them -- which is right, and means the
+# log has to go elsewhere. Under systemd that is the journal
+# (journalctl -u loop-llm).

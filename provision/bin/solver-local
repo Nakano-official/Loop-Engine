@@ -69,8 +69,8 @@ TOP_P = float(os.environ.get("LOOP_LLM_TOP_P", "0.9"))
 # Checked against the server's own report at startup, because the failure this
 # prevents is silent: a prompt over the limit comes back as a confidently wrong
 # answer written from half a brief, which looks exactly like a stupid model.
-CTX_TOKENS = int(os.environ.get("LOOP_LLM_CTX", "16384"))
-MAX_OUTPUT_TOKENS = int(os.environ.get("LOOP_LLM_MAX_OUTPUT", "8192"))
+CTX_TOKENS = int(os.environ.get("LOOP_LLM_CTX", "8192"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("LOOP_LLM_MAX_OUTPUT", "4096"))
 
 # Rough, and deliberately pessimistic: code and Japanese both run under 3
 # characters per token. Only used to refuse before spending minutes on a

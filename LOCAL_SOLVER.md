@@ -22,15 +22,48 @@
 
 ## 1. 手順
 
-### 1-1. llama.cpp を入れる
+### 1-1. llama.cpp を入れる（**ビルドが必要**）
 
 ```bash
-nvidia-smi                      # WSL 内から GPU が見えるか。ここが最初の分岐点
+/usr/lib/wsl/lib/nvidia-smi     # WSL 内から GPU が見えるか。PATH には無い
 ```
 
-見えるなら CUDA ビルド、見えないなら CPU ビルド（`-DGGML_CUDA=ON` を外す）。
-リリースバイナリを解凍して `/usr/local/bin` に置くのが速い。
-`llama-server --version` が答えれば完了。
+**リリースバイナリでは済まない。** llama.cpp は Linux 向けの CUDA バイナリを
+配布しておらず（Windows 向けのみ）、Linux 用の Vulkan ビルドは WSL では
+`llvmpipe`（ソフトウェアラスタライザ）しか見つけられない ── つまり GPU で動いて
+いるように見えて CPU で回る。2026-09-01 にこの箱で実測。
+
+```bash
+# CUDA ツールチェーン（ドライバは Windows 側。ここでは入れない）
+curl -sSLO https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb && sudo apt-get update
+VER=$(apt-cache search '^cuda-nvcc-[0-9]' | awk '{print $1}' | sed 's/cuda-nvcc-//' | sort -V | tail -1)
+sudo apt-get install -y "cuda-nvcc-$VER" "cuda-cudart-dev-$VER" "libcublas-dev-$VER"
+
+git clone --depth 1 https://github.com/ggml-org/llama.cpp && cd llama.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=75 -DLLAMA_CURL=OFF
+cmake --build build -j"$(nproc)" --target llama-server
+sudo install -m 755 build/bin/llama-server /usr/local/bin/
+```
+
+`75` は Turing（RTX 2060）。**アーキテクチャを1つに絞ること**と
+**`llama-server` だけを作ること**で、ビルド時間の大半が消える。
+それでも6コアで30分前後かかる（`ggml-cuda` の flash-attention テンプレートが大半）。
+
+### 1-1b. この箱の実測値（2026-09-01）
+
+| | |
+|---|---|
+| GPU | RTX 2060 / **VRAM 6144 MiB** / driver 591.59 / `/dev/dxg` あり |
+| CPU / RAM | 6コア / 7.8 GiB（WSL VM の割当） |
+| 選んだ量子化 | `Qwen3.5-9B-IQ4_XS.gguf` **4.81 GB** |
+| ctx | **8192**（`--cache-type-k/v q8_0`）。max_output 4096 |
+
+VRAM 6 GB に対し重みが 4.81 GB なので、残りで KV キャッシュと計算バッファを賄う。
+`Q4_K_M`（5.29 GB）は full offload では入らない。入らなければ `Q3_K_M`（4.35 GB）へ。
+**ctx を上げるより量子化を落とすほうが先** ── ブリーフ＋対象ファイルは 2〜3k トークンで、
+8192 は既に余裕がある。
 
 ### 1-2. 重みを置く
 
@@ -147,15 +180,17 @@ GPU に載っていない。`nvidia-smi` と `--n-gpu-layers`。載せられな�
 
 ## 3. 1本目に観測すること
 
-run 5（Codex、11/11 緑、19分37秒、エスカレーション1回）が比較対象。
+run 5（Codex）が比較対象。**run 6 の実測値を入れてある**（2026-09-01）。
 
-| | run 5 | ローカル |
+| | run 5 (Codex) | run 6 (Qwen3.5-9B local) |
 |---|---|---|
-| 無介入の緑 | 11/11 | |
-| ステップあたり試行数 | ほぼ1 | |
-| **エスカレーション回数** | 1 | |
-| codex 段に落ちたステップ数 | ─ | |
-| 実時間 | 19分37秒 | |
+| 無介入の緑 | 11/11 | **11/11** |
+| ステップあたり試行数 | ほぼ1 | **1（全ステップ attempt=1）** |
+| **エスカレーション回数** | 1 | **0** |
+| codex 段に落ちたステップ数 | ─ | **0** |
+| 実時間 | 19分37秒 | **15分12秒** |
+| 最終スイート | 48 passed | **48 passed**（skipped 0 / regressions []） |
+| 消費した課金アカウント | Codex | **なし** |
 
 **エスカレーション回数が最重要**。それが Claude の消費そのもので、
 「ソルバーを安くしたら費用がプランナー側へ移った」かどうかはこの数字だけで分かる。

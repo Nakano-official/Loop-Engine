@@ -432,6 +432,27 @@ unlink と rename は親ディレクトリの権限で決まるため `conftest.
 
 ---
 
+### プロビジョニングを 0700 のホームから走らせない（2026-09-01）
+
+`20-layout.sh` を `~/provision` から実行すると、内部の `sudo -u runner git clone` が
+
+    fatal: failed to stat '/home/yoshito/provision': Permission denied
+
+で落ちる。**スクリプトの問題ではなく cwd の問題**で、`sudo` は呼び出し元の作業
+ディレクトリをそのまま渡し、`runner` は `/home/<maint>`（0700）を辿れない。
+`solver-run` の `cd /srv/loop/project` が存在する理由とまったく同じ形の失敗で、
+あちらは codex が `src/` に対してエラーを出すという原因から遠い場所に現れた。
+
+対処は cwd を中立な場所にするだけ:
+
+    cd /tmp && sudo bash ~/provision/20-layout.sh
+
+`45-agent-invoke.sh` と `70-local-solver.sh` は自分で `cd "$(dirname "$0")"` して
+相対パスの `bin/...` を読むので、こちらは provision ディレクトリから実行してよい
+（内部で他 uid に落ちないため）。
+
+---
+
 ## 4. 未適用
 
 `70-local-solver.sh` は**ソルバーをローカルモデルに差し替えると決めたときだけ**当てる

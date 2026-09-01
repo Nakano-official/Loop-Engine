@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 ENDPOINT = os.environ.get("LOOP_LLM_ENDPOINT", "http://127.0.0.1:8080")
-CTX = int(os.environ.get("LOOP_LLM_CTX", "16384"))
+CTX = int(os.environ.get("LOOP_LLM_CTX", "8192"))
 SOLVER_LOCAL = Path("/srv/loop/bin/solver-local")
 
 notes: list[str] = []

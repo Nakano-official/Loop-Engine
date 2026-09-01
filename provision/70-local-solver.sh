@@ -47,23 +47,29 @@ echo "  /srv/loop/bin/smoke-local    (run as solver)"
 if ! command -v llama-server >/dev/null 2>&1; then
   cat <<'EOF'
 
-llama-server is not on PATH, and this script deliberately does not install it:
-a CUDA build guessed at from here is exactly the kind of failure that costs an
-afternoon. Pick one, then re-run this script.
+llama-server is not on PATH. It has to be BUILT, and that is not a preference:
+llama.cpp publishes no CUDA binary for Linux (only Windows), and the Vulkan
+Linux build finds nothing but llvmpipe under WSL -- measured on this box,
+2026-09-01 -- so it would run on the CPU while looking like it was not.
 
-  (a) Release binary, CUDA:
-        https://github.com/ggml-org/llama.cpp/releases  ->  llama-*-bin-ubuntu-x64-cuda.zip
-        unzip into /usr/local/bin, then: llama-server --version
+  sudo -u <you> bash ~/build-llama.sh      # see LOCAL_SOLVER.md 1-1
 
-  (b) Build it:
-        apt-get install -y build-essential cmake libcurl4-openssl-dev
-        git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
-        cmake -B build -DGGML_CUDA=ON && cmake --build build -j --config Release
-        install build/bin/llama-server /usr/local/bin/
+  In short: cuda-keyring from the wsl-ubuntu repo, then cuda-nvcc +
+  cuda-cudart-dev + libcublas-dev, then
 
-  No GPU visible in WSL?  nvidia-smi   inside the distro answers that. If it is
-  absent, drop -DGGML_CUDA=ON, expect single-digit tokens/second, and read the
-  timeout note in LOCAL_SOLVER.md before running a plan.
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
+          -DCMAKE_CUDA_ARCHITECTURES=75 -DLLAMA_CURL=OFF
+    cmake --build build -j"$(nproc)" --target llama-server
+
+  75 is Turing (RTX 2060). Naming one architecture rather than all of them is
+  most of the build time, and building only the llama-server target is most of
+  the rest.
+
+  No GPU?  /usr/lib/wsl/lib/nvidia-smi   answers that (it is not on PATH). With
+  no GPU this is a CPU inference of a 9B on six cores: single-digit tokens per
+  second, several hundred seconds per attempt. Read the timeout note in
+  LOCAL_SOLVER.md before running a plan -- the design does not change, but the
+  numbers do.
 EOF
 fi
 
