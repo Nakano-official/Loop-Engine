@@ -1,0 +1,169 @@
+"""Read objective runner state and append human decisions.
+
+The dashboard deliberately does not infer whether work is good.  It reports
+facts already emitted by the runner and records what the human decided about a
+specific, immutable request.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+
+def _read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return default
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return records
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            records.append({"event": "UNREADABLE_LEDGER_RECORD", "line": number})
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+def request_id(kind: str, value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(kind.encode("ascii") + b"\0" + encoded).hexdigest()[:16]
+
+
+class DashboardState:
+    def __init__(self, project: Path, data_dir: Path):
+        self.project = project.resolve()
+        self.data_dir = data_dir.resolve()
+        self.decisions_file = self.data_dir / "decisions.jsonl"
+
+    def snapshot(self) -> dict[str, Any]:
+        ledger = read_jsonl(self.project / "plan" / "ledger.jsonl")
+        tasks = _read_json(self.project / "plan" / "tasks.json", {})
+        decisions = read_jsonl(self.decisions_file)
+        answered = {
+            (item.get("kind"), item.get("request_id"))
+            for item in decisions if item.get("event") == "HUMAN_DECISION"
+        }
+        steps = tasks.get("steps", []) if isinstance(tasks, dict) else []
+        step_ids = [step.get("id") for step in steps if isinstance(step, dict)]
+        green = []
+        for record in ledger:
+            if record.get("event") == "GREEN" and record.get("step") not in green:
+                green.append(record.get("step"))
+
+        escalation_path = self.project / "plan" / "ESCALATION.md"
+        escalation = None
+        if escalation_path.is_file():
+            text = escalation_path.read_text(encoding="utf-8", errors="replace")
+            escalation_id = request_id("escalation", text)
+            escalation = {
+                "id": escalation_id,
+                "kind": "escalation",
+                "title": "実装が停止し、人間の判断を待っています",
+                "detail": text,
+            }
+            if ("escalation", escalation_id) in answered:
+                escalation = None
+
+        all_green = next(
+            (record for record in reversed(ledger) if record.get("event") == "ALL_GREEN"),
+            None,
+        )
+        review = None
+        if all_green is not None:
+            review_id = request_id("review", all_green)
+            if ("review", review_id) not in answered:
+                review = {
+                    "id": review_id,
+                    "kind": "review",
+                    "title": "全ステップGreenです。成果物を実際に確認してください",
+                    "detail": "機械的な受け入れ条件は完了しました。成果物を起動し、承認または差し戻しを記録してください。",
+                }
+
+        pending = [item for item in (escalation, review) if item is not None]
+        last = ledger[-1] if ledger else None
+        if escalation:
+            phase = "escalated"
+        elif review:
+            phase = "review_required"
+        elif all_green:
+            phase = "human_reviewed"
+        elif ledger:
+            phase = "running" if last and last.get("event") != "RUN_ALL_STOP" else "stopped"
+        else:
+            phase = "not_started"
+
+        return {
+            "project": str(self.project),
+            "phase": phase,
+            "steps": {"total": len(step_ids), "green": len(green), "ids": step_ids},
+            "pending": pending,
+            "last_event": last,
+            "recent_events": ledger[-50:],
+            "decisions": decisions[-50:],
+        }
+
+    def decide(self, kind: str, request: str, decision: str, note: str) -> dict[str, Any]:
+        snapshot = self.snapshot()
+        matching = next(
+            (item for item in snapshot["pending"]
+             if item["id"] == request and item["kind"] == kind),
+            None,
+        )
+        if matching is None:
+            raise ValueError("the request is no longer pending")
+        allowed = {
+            "review": {"approve", "revise"},
+            "escalation": {"respond", "stop"},
+        }
+        if decision not in allowed.get(kind, set()):
+            raise ValueError("decision is not valid for this request")
+        if decision in {"revise", "respond"} and not note.strip():
+            raise ValueError("this decision requires a note")
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "event": "HUMAN_DECISION",
+            "kind": kind,
+            "request_id": request,
+            "decision": decision,
+            "note": note.strip(),
+        }
+        self._append(record)
+        return record
+
+    def _append(self, record: dict[str, Any]) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # One append is the durable source of truth.  The temporary-file dance
+        # protects existing decisions on platforms where a process is killed
+        # while rewriting a short file.
+        old = self.decisions_file.read_text(encoding="utf-8") if self.decisions_file.exists() else ""
+        content = old + json.dumps(record, ensure_ascii=False) + "\n"
+        fd, name = tempfile.mkstemp(dir=self.data_dir, prefix="decisions-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(name, self.decisions_file)
+        finally:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass

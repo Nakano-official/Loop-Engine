@@ -11,10 +11,32 @@ WSL2 では起動と生存管理がホスト側の責務になった（`RUNNER_S
 | `loop-dev.cmd` | `C:\Users\<you>\bin\loop-dev.cmd`（PATH の通った場所） | ディストロ起動 → sshd 待機 → VS Code Remote-SSH 起動 |
 | `wsl-keepalive.vbs` | このリポジトリのまま（タスクが絶対パスで参照する） | VM を**窓を出さずに**生かし続ける。下の keepalive タスクの実体 |
 | `loop-pull.cmd` | このリポジトリのまま | **すべての** `repo*.git` を run ごとのミラーに引く。**VHDX を失っても残る唯一の複製** |
+| `loop-dashboard.cmd` | このリポジトリのまま | 進捗、エスカレーション、予定レビューを扱うローカルGUIを起動 |
 
 **ASCII のみで書くこと。** PowerShell 5.1 と cmd.exe は BOM 無し UTF-8 を ANSI として
 読むため、日本語コメントを入れると行継続として誤解釈され、変数が黙って null になる
 （`provision/README.md` §3-6）。
+
+## オペレーターGUI
+
+`dashboard/` は、ホストへ取得したプロジェクトの台帳を読み、進捗、エスカレーション、
+全 Green 後の予定レビューをブラウザで扱うローカルGUI。次の順で同期して起動する。
+
+```cmd
+host\loop-pull.cmd
+host\loop-dashboard.cmd
+```
+
+その後、<http://127.0.0.1:8765> を開く。
+
+予定されたプレイテストは失敗ではないため、`ALL_GREEN` から「予定レビュー」を生成し、
+`ESCALATION.md` から生じる異常時のエスカレーションとは画面上・記録上ともに区別する。
+回答は `dashboard/.state/decisions.jsonl` に対象ID付きで保存され、古い画面から別の要求へ
+回答することはできない。
+
+成果物の起動は `dashboard/config.json` に人間が書いたIDの許可リストだけを使う。計画、
+ソルバー出力、HTTP入力をコマンドとして実行する経路はない。詳しい設定とテスト方法は
+`dashboard/README.md`。
 
 ## リポジトリに入っていないもの
 

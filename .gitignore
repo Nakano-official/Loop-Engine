@@ -19,3 +19,7 @@ id_ed25519*
 
 __pycache__/
 *.pyc
+
+# Host dashboard runtime state and machine-local launcher configuration.
+host/dashboard/.state/
+host/dashboard/config.json

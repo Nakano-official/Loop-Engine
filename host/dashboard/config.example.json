@@ -1,0 +1,9 @@
+{
+  "launchers": {
+    "game": {
+      "label": "アイドルゲーム",
+      "argv": ["python", "-m", "idlegame.app"],
+      "cwd": "C:\\dev\\roop-engin\\project"
+    }
+  }
+}

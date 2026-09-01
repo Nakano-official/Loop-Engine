@@ -73,6 +73,7 @@ Qwen3.5-9B**（nonthinking / IQ4_XS / RTX 2060 6GB / 41.6 tok/s）に替えた�
 - WSL2 `Ubuntu-24.04` を使う隔離環境の設計とプロビジョニング
 - `runner` / `solver` ユーザー、権限、SSH、ネットワーク制限
 - Windows 側の起動、keepalive、Remote SSH に関する手順
+- ホスト側の進捗・エスカレーション・予定レビューGUI
 - 要件からの通し実行（題材2つ・最長11ステップ）
 - **ソルバーの差し替え**（バックエンド名で分岐。ローカルモデル用の一式は [LOCAL_SOLVER.md](docs/LOCAL_SOLVER.md)）
 
@@ -115,6 +116,8 @@ Qwen3.5-9B**（nonthinking / IQ4_XS / RTX 2060 6GB / 41.6 tok/s）に替えた�
 │   └── fixture/          # 計画の形を確認するための最小サンプル
 ├── host/
 │   ├── README.md         # Windows ホスト側の手順
+│   ├── dashboard/        # 人間向けのローカルWeb GUI
+│   ├── loop-dashboard.cmd # GUIランチャー
 │   ├── loop-dev.cmd      # 開発環境ランチャー
 │   ├── loop-pull.cmd     # 成果物の取り出し（run ごとにミラーを分ける）
 │   └── wsl-keepalive.vbs # VM のアイドル停止を防ぐ常駐
