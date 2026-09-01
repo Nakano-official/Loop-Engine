@@ -132,6 +132,10 @@ Host loop-runner
 段1 はランナーが自動でやる（`loop.py` の `publish()`、GREEN と `plan apply` の直後）。
 段2 が `loop-pull.cmd`。**引数も事前のクローンも要らない** ── サンドボックスにある
 `repo*.git` を全部列挙し、無ければクローン、有れば fetch する。
+1件でも clone / fetch / reset / clean / fast-forward に失敗すれば、その場で非ゼロ終了する。
+不変アーカイブをすべて確認してから最後にライブミラーへ進むため、アーカイブ同期に失敗した
+状態でライブを作り直さない。成功済みの独立アーカイブは巻き戻さないが、部分成功を
+「done」と表示してはならない。
 
 ```
 /srv/loop/repo.runN.git  ->  C:\dev\roop-engin\runs\run-NNN  （不変。ff のみ）

@@ -55,10 +55,22 @@ REM reset to whatever run it now holds, and that is only safe once the run it
 REM used to hold has been captured as project.runN. Left to the glob, repo.git
 REM would come first ("g" sorts before "r").
 for %%R in (%REPOS%) do (
-  if /i not "%%R"=="repo.git" call :sync "%%R" ff
+  if /i not "%%R"=="repo.git" (
+    call :sync "%%R" ff
+    if errorlevel 1 (
+      echo FAILED: stopping before the live mirror is changed.
+      exit /b 1
+    )
+  )
 )
 for %%R in (%REPOS%) do (
-  if /i "%%R"=="repo.git" call :sync "%%R" live
+  if /i "%%R"=="repo.git" (
+    call :sync "%%R" live
+    if errorlevel 1 (
+      echo FAILED: the live mirror was not synchronized.
+      exit /b 1
+    )
+  )
 )
 
 echo.
@@ -102,7 +114,9 @@ if /i "%MODE%"=="live" (
   REM Consequence, and it is the reason this is spelled out: do not keep
   REM anything of your own in project\ -- it is rebuilt, not maintained.
   git -C "%DEST%" reset --hard --quiet origin/main
+  if errorlevel 1 exit /b 1
   git -C "%DEST%" clean -fdq
+  if errorlevel 1 exit /b 1
 ) else (
   REM An archive never changes, so this can only ever fast-forward -- and if it
   REM somehow does not, something rewrote history that is supposed to be frozen,
