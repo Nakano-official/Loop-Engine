@@ -44,6 +44,10 @@ SRC = PROJECT / "src"
 STATE = PROJECT / ".runner"
 BRIEF_DIR = LOOP / "brief"
 PYTEST = PROJECT / ".venv" / "bin" / "pytest"
+# The TypeScript side of the same idea: the toolchain is frozen and lives
+# outside the project (provision/35-node.sh), reached through a symlink the
+# solver can follow and cannot replace.
+VITEST = PROJECT / "node_modules" / ".bin" / "vitest"
 SOLVER_RUN = LOOP / "bin" / "solver-run"
 PLANNER_RUN = LOOP / "bin" / "planner-run"
 PLANNER_BRIEF = LOOP / "planner" / "brief"
@@ -338,7 +342,9 @@ def freeze_tests() -> dict[str, str]:
     shutil.chown(TESTS, group="runner")
     TESTS.chmod(0o2555)
     manifest = {}
-    for f in sorted(TESTS.rglob("*.py")):
+    for f in sorted(TESTS.rglob("*")):
+        if not f.is_file() or f.suffix not in LANGUAGE["test_suffixes"]:
+            continue
         f.chmod(0o444)
         manifest[str(f.relative_to(PROJECT))] = sha256(f)
     return manifest
@@ -435,12 +441,85 @@ RED_KINDS = re.compile(r"^(AssertionError|Failed)\b")
 # L14: a container type whose contents are not stated. Matched only where a type
 # is actually annotated -- after "->" or ":" -- so prose in the same string
 # ("... a list of ids") is not mistaken for a signature.
-ANNOTATION = re.compile(r"(?:->|:)\s*([A-Za-z_][\w.]*)\s*(\[?)")
-SHAPELESS = {
-    "tuple", "list", "dict", "set", "frozenset",
-    "Tuple", "List", "Dict", "Set", "FrozenSet",
-    "Sequence", "Mapping", "Iterable", "Iterator", "Collection",
+ANNOTATION = re.compile(r"(?:->|:)\s*([A-Za-z_][\w.]*)\s*([\[<]?)")
+
+
+# --------------------------------------------------------------------------
+# the language a plan is written in
+# --------------------------------------------------------------------------
+#
+# Two entries, and no plugin mechanism. An adapter cut while only one language
+# existed would have been cut in the wrong place; this is the second, so the
+# differences are now facts rather than guesses. They turned out to be four:
+# what command produces a verdict, which suffixes the freeze covers, how a file
+# path becomes an importable name, and which type names carry no shape.
+#
+# What did NOT differ is worth as much: the junit report, every gate's
+# arithmetic, the write fence, the ledger, the escalation rules, and every
+# linter rule except L14's vocabulary. The rules were language-independent
+# already -- only their Python-shaped expression was not.
+#
+# TypeScript rather than plain JavaScript, and the reason is L14: a contract has
+# to state the shape of what it hands the next step, and a language with no type
+# syntax cannot. vitest transpiles .ts through esbuild with no separate build
+# step and no tsc in the loop -- the types are there to be READ, by the planner
+# writing a contract and the solver reading one.
+LANGUAGES = {
+    "python": {
+        "label": "Python",
+        "source_suffix": ".py",
+        "test_suffixes": (".py",),
+        # A package directory names itself through __init__; nothing else does.
+        "index_name": "__init__",
+        "module_separator": ".",
+        "shapeless": frozenset({
+            "tuple", "list", "dict", "set", "frozenset",
+            "Tuple", "List", "Dict", "Set", "FrozenSet",
+            "Sequence", "Mapping", "Iterable", "Iterator", "Collection",
+        }),
+        "shape_bracket": "[",
+        "shape_example": "dict[str, Generator], tuple[GameState, int]",
+        "layout_note": """Put the package inside src/, e.g. `src/yourpkg/models.py`, and import it as
+`from yourpkg.models import Thing` -- `src` is on sys.path, so the `src.`
+prefix does not appear in imports. Say this in CONTEXT.md; the solver has no
+other way to learn it.""",
+    },
+    "typescript": {
+        "label": "TypeScript",
+        "source_suffix": ".ts",
+        "test_suffixes": (".ts",),
+        "index_name": "index",
+        "module_separator": "/",
+        # `object` and `any` are here for the same reason `dict` is: they are
+        # the shapes a contract can name while saying nothing, and a stub
+        # written from one of them satisfies whatever the criterion asked.
+        "shapeless": frozenset({
+            "Array", "ReadonlyArray", "Record", "Map", "Set", "WeakMap",
+            "Promise", "Iterable", "Iterator",
+            "object", "Object", "any", "unknown",
+        }),
+        "shape_bracket": "<",
+        "shape_example": "Record<string, Generator>, [GameState, number]",
+        "layout_note": """Every source file is `.ts` under src/, e.g. `src/idlegame/models.ts`, and
+every test file is `.ts` under tests/. Import with a RELATIVE path and no
+extension in the specifier is wrong here -- write the extension:
+`import { Thing } from "../src/idlegame/models.ts"`. vitest resolves it and
+esbuild strips the types; there is no build step and no tsc, so a type is
+something the next step READS, not something a compiler checks.
+
+The artifact itself is a page: an HTML file and the script it loads. Only the
+HTML lives outside src/ and it is the one file the runner cannot fence, so
+keep it to a shell that loads one module and calls one exported function. That
+function is ordinary code under src/ and its behaviour is checkable -- write
+criteria against what it puts in the document, not against the HTML.
+
+Say all of this in CONTEXT.md; the solver has no other way to learn it.""",
+    },
 }
+
+# Selected by tasks.json's top-level "language", defaulting to Python because
+# that is what every plan written before this existed assumed.
+LANGUAGE = dict(LANGUAGES["python"])
 
 # pytest ends every failure body with "<file>:<line>: <ExceptionName>". That
 # last line is where the exception class is actually legible; see failure_kind.
@@ -450,9 +529,10 @@ FAILURE_TAIL = re.compile(r":\s*([A-Za-z_][\w.]*)\s*$")
 def failure_kind(failure: ET.Element) -> str:
     """The exception class that ended one test.
 
-    pytest never sets the `type` attribute on <failure>, so this has to be read
-    out of the report. The obvious place -- the `message` attribute -- is the
-    wrong one, and wrong in a way that took a real step to expose:
+    vitest sets `type` and that is the end of it. pytest never does, so for a
+    Python report this has to be read out of the body. The obvious place -- the
+    `message` attribute -- is the wrong one, and wrong in a way that took a real
+    step to expose:
 
         assert float("nan") == 5.0     -> "AssertionError: assert nan == 5.0"
         assert state.resources == 5.0  -> "assert nan == 5.0"
@@ -473,6 +553,9 @@ def failure_kind(failure: ET.Element) -> str:
 
     which is exactly the distinction R5 exists to make.
     """
+    declared = (failure.get("type") or "").strip()
+    if declared:
+        return declared
     body = (failure.text or "").strip()
     if body:
         match = FAILURE_TAIL.search(body.splitlines()[-1])
@@ -482,6 +565,26 @@ def failure_kind(failure: ET.Element) -> str:
     # the class cannot be read, R5 should refuse rather than guess generously.
     message = (failure.get("message") or "").strip()
     return message.splitlines()[0] if message else "<no type>"
+
+
+def test_argv(files_test: list[str], xml_path: Path) -> tuple[list[str], dict[str, str]]:
+    """The command that produces a verdict, and the environment it needs.
+
+    Separate from the running so a test can check what would be executed without
+    executing it -- the same reason agent_command exists.
+    """
+    if LANGUAGE["source_suffix"] == ".ts":
+        # `run` and not `watch`: vitest's default is interactive, and a runner
+        # that blocks forever looks exactly like a step that never finishes.
+        # The binary comes from the frozen toolchain by absolute path rather
+        # than through npx, which would be willing to fetch one.
+        return ([str(VITEST), "run", *files_test,
+                 "--reporter=junit", f"--outputFile={xml_path}"],
+                {"CI": "1", "NO_COLOR": "1"})
+    # No bytecode: a .pyc is owned by whoever wrote it, and a solver-owned one
+    # under tests/ makes the runner unable to re-apply modes there at all.
+    return ([str(PYTEST), *files_test, *PYTEST_ARGS, "--junitxml", str(xml_path)],
+            {"PYTHONDONTWRITEBYTECODE": "1"})
 
 
 def pytest_run(tag: str, files_test: list[str]) -> TestRun:
@@ -496,12 +599,12 @@ def pytest_run(tag: str, files_test: list[str]) -> TestRun:
     stopped passing."""
     STATE.mkdir(parents=True, exist_ok=True)
     xml_path = STATE / f"pytest-{tag}.xml"
-    # No bytecode: a .pyc is owned by whoever wrote it, and a solver-owned one
-    # under tests/ makes the runner unable to re-apply modes there at all.
+    argv, env = test_argv(files_test, xml_path)
+    # vitest appends to a report that is already there, so a stale one from an
+    # earlier attempt would be counted alongside this run's.
+    xml_path.unlink(missing_ok=True)
     try:
-        proc = run([PYTEST, *files_test, *PYTEST_ARGS, "--junitxml", str(xml_path)],
-                   env={"PYTHONDONTWRITEBYTECODE": "1"},
-                   timeout=TIMEOUTS["test"])
+        proc = run(argv, env=env, timeout=TIMEOUTS["test"])
     except subprocess.TimeoutExpired:
         # Reported as an error rather than a failure, which is what it is: the
         # suite produced no verdict at all. R2 rejects it outright at RED_GATE,
@@ -525,22 +628,28 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
     failures" would pass a step on a run that never happened.
     """
     if not xml_path.exists():
-        return TestRun(0, 0, 1, 0, ["<no junit report: pytest did not start>"], [], output)
+        return TestRun(0, 0, 1, 0, ["<no junit report: the test runner did not start>"], [], output)
 
     try:
         root = ET.parse(xml_path).getroot()
     except ET.ParseError as exc:
         return TestRun(0, 0, 1, 0, [f"<unparsable junit report: {exc}>"], [], output)
 
-    suite = root.find("testsuite")
-    if suite is None:
+    # EVERY suite, not the first one. pytest writes a single <testsuite> for the
+    # whole run, so reading root.find("testsuite") was indistinguishable from
+    # reading the totals -- until vitest, which writes one per test FILE. VERIFY
+    # hands over the whole of tests/, so on a multi-file suite the first-suite
+    # reading would have counted one file and called the rest green. A gate that
+    # under-counts failures is worse than no gate.
+    suites = root.findall("testsuite")
+    if not suites:
         return TestRun(0, 0, 1, 0, ["<malformed junit report>"], [], output)
 
     kinds: list[str] = []
     passed: list[str] = []
     broken: list[str] = []
     no_verdict: list[str] = []
-    for case in suite.iter("testcase"):
+    for case in root.iter("testcase"):
         failures = case.findall("failure")
         errors = case.findall("error")
         skips = case.findall("skipped")
@@ -554,11 +663,14 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
         for failure in failures:
             kinds.append(failure_kind(failure))
 
+    def total(attribute: str) -> int:
+        return sum(int(suite.get(attribute, 0) or 0) for suite in suites)
+
     return TestRun(
-        tests=int(suite.get("tests", 0)),
-        failures=int(suite.get("failures", 0)),
-        errors=int(suite.get("errors", 0)),
-        skipped=int(suite.get("skipped", 0)),
+        tests=total("tests"),
+        failures=total("failures"),
+        errors=total("errors"),
+        skipped=total("skipped"),
         failure_kinds=kinds,
         passed_names=passed,
         output=output,
@@ -891,18 +1003,26 @@ REQUIRED_KEYS = {
 def modules_of(files_write: list[str]) -> list[str]:
     """The importable module names a step's own files create.
 
-    src/incgame/engine.py     -> incgame.engine
+    src/incgame/engine.py     -> incgame.engine       (Python)
     src/incgame/__init__.py   -> incgame
+    src/idlegame/engine.ts    -> idlegame/engine      (TypeScript)
+    src/idlegame/index.ts     -> idlegame
+
+    The two languages spell the same idea differently: a separator, and a name
+    that means "the directory itself". Nothing else about L15 changes.
     """
+    suffix = LANGUAGE["source_suffix"]
+    separator = LANGUAGE["module_separator"]
+    index = LANGUAGE["index_name"]
     names = []
     for f in files_write:
-        if not f.startswith("src/") or not f.endswith(".py"):
+        if not f.startswith("src/") or not f.endswith(suffix):
             continue
-        parts = f[len("src/"):-len(".py")].split("/")
-        if parts[-1] == "__init__":
+        parts = f[len("src/"):-len(suffix)].split("/")
+        if parts[-1] == index:
             parts = parts[:-1]
         if parts:
-            names.append(".".join(parts))
+            names.append(separator.join(parts))
     return names
 
 
@@ -1015,15 +1135,17 @@ def validate_plan(tasks: dict) -> list[str]:
         # "the contract determines the shape". A second language re-states it in
         # its own type syntax; the rule itself does not change.
         for provided in s["contracts"]["provides"]:
+            shapeless = LANGUAGE["shapeless"]
+            opener = LANGUAGE["shape_bracket"]
             bare = sorted({name for name, bracket in ANNOTATION.findall(provided)
-                           if name in SHAPELESS and bracket != "["})
+                           if name in shapeless and bracket != opener})
             if bare:
                 signature = provided.split(chr(8212))[0].strip()
                 problems.append(
                     f"L14: step {sid} provides `{signature}` with "
                     f"{', '.join(bare)} left unparameterised; a later step is "
                     f"handed this line and nothing else, so the contents have to "
-                    f"be in it (dict[str, Generator], tuple[GameState, int]). "
+                    f"be in it ({LANGUAGE['shape_example']}). "
                     f"A named type is better still where the shape has meaning")
 
         # L15 -- a contract says where the thing it declares lives
@@ -1488,10 +1610,7 @@ starts with `tests/`. Those two directories are the only ones the runner can
 open and close for writing, so a plan that puts code anywhere else cannot be
 enforced and is rejected.
 
-Put the package inside src/, e.g. `src/yourpkg/models.py`, and import it as
-`from yourpkg.models import Thing` -- `src` is on sys.path, so the `src.`
-prefix does not appear in imports. Say this in CONTEXT.md; the solver has no
-other way to learn it.
+{LAYOUT_NOTE}
 
 # Rules the runner checks before it will run the plan
 
@@ -1602,7 +1721,7 @@ making a plan this machine accepts is your problem, not the author's.
 # The requirements, written by the human
 {requirements}
 {environment_facts()}
-{BOOTSTRAP_RULES}
+{BOOTSTRAP_RULES.replace('{LAYOUT_NOTE}', LANGUAGE['layout_note'])}
 {BOOTSTRAP_ESCALATE}
 {feedback_section(feedback)}
 Output nothing but the files. Do not restate the plan in your final message.
@@ -1628,7 +1747,8 @@ def environment_facts() -> str:
         except (OSError, IndexError):
             return "(not installed)"
 
-    skip = {".git", ".venv", ".runner", "plan", "__pycache__", ".pytest_cache"}
+    skip = {".git", ".venv", ".runner", "plan", "__pycache__", ".pytest_cache",
+            "node_modules"}
     listing = []
     for child in sorted(PROJECT.rglob("*")):
         if any(part in skip for part in child.relative_to(PROJECT).parts):
@@ -1637,8 +1757,12 @@ def environment_facts() -> str:
         listing.append(f"  {rel}/" if child.is_dir() else f"  {rel}")
     tree = "\n".join(listing) or "  (empty apart from the directories above)"
 
-    conftest = PROJECT / "conftest.py"
-    conftest_text = conftest.read_text(encoding="utf-8") if conftest.exists() else "(none)"
+    # The file that decides what the tests can reach. Different name per
+    # language, same job, and in both cases the planner has to see it: a plan
+    # that fights the import path loses.
+    wiring = PROJECT / ("vitest.config.mjs" if LANGUAGE["source_suffix"] == ".ts"
+                        else "conftest.py")
+    wiring_text = wiring.read_text(encoding="utf-8") if wiring.exists() else "(none)"
 
     # Gathered rather than written down, like everything else here, and for the
     # same reason -- but this one has teeth. A criterion such as "the window
@@ -1647,6 +1771,7 @@ def environment_facts() -> str:
     # so the step spends every attempt of every tier and then an escalation, and
     # the cause is nowhere in what any of them can see.
     interpreter = PROJECT / ".venv" / "bin" / "python"
+    typescript = LANGUAGE["source_suffix"] == ".ts"
 
     def imports(module: str) -> bool:
         try:
@@ -1655,17 +1780,32 @@ def environment_facts() -> str:
             return False
 
     display = os.environ.get("DISPLAY", "")
-    has_tk = imports("tkinter")
+    argv, _ = test_argv(["<the step's files_test>"], STATE / "report.xml")
+    command = " ".join(a.replace(str(PROJECT) + "/", "") for a in argv)
 
-    return f"""# The environment, as it actually is right now
+    if typescript:
+        runtime = f"Runtime: {version(Path('node'))}"
+        toolkit = ("User interface: the DOM, via happy-dom. Every test file is "
+                   "given a `document` with no display behind it.")
+        screen = """There is no screen, and there does not need to be one. happy-dom builds a
+document in memory, so a test can construct the interface, read what it says,
+click a button and assert what changed. THE USER INTERFACE IS CHECKABLE HERE --
+do not push it out of reach of the tests.
 
-Interpreter: {version(interpreter)}
-Test runner: {version(PYTEST)}
-
-Graphical display: {f"DISPLAY={display}" if display else "NONE. DISPLAY is not set"}
-GUI toolkit: {"tkinter imports" if has_tk else "tkinter does NOT import"}
-
-{"" if display else '''There is no screen here and there will not be one. Code that opens a window
+This is worth saying plainly because the previous attempt at this was written
+for a toolkit that could not be driven without a screen. The plan quite
+reasonably confined the interface to one function nobody could test, and what
+shipped was a window in which every button was disabled from the first frame:
+ten steps green, forty-two tests passing, and nothing the player could press.
+Write criteria about what is on the screen and what happens when it is used.
+`element.click()` works, and so does reading `textContent` and `disabled`.
+"""
+    else:
+        runtime = f"Interpreter: {version(interpreter)}"
+        toolkit = ("GUI toolkit: "
+                   + ("tkinter imports" if imports("tkinter")
+                      else "tkinter does NOT import"))
+        screen = "" if display else """There is no screen here and there will not be one. Code that opens a window
 raises an error about the display, so an acceptance criterion about what appears
 on screen becomes a test that fails and that no implementation can fix.
 
@@ -1674,19 +1814,29 @@ requirements ask for a user interface, put whatever constructs it in its own
 step, keep that step as thin as you can, and write its criteria in terms of the
 functions it calls and the state it passes on -- not in terms of what is drawn.
 A human checks the screen afterwards; the runner never can.
-'''}
+"""
 
+    return f"""# The environment, as it actually is right now
+
+Language: {LANGUAGE["label"]}
+{runtime}
+Test runner: {version(VITEST if typescript else PYTEST)}
+
+Graphical display: {f"DISPLAY={display}" if display else "NONE. DISPLAY is not set"}
+{toolkit}
+
+{screen}
 The runner executes the tests itself, as:
-    .venv/bin/pytest {" ".join(PYTEST_ARGS)} <the step's files_test>
+    {command}
 
-Everything under the project root, except plan/, .git/, .venv/ and caches --
-this is the whole of what exists today:
+Everything under the project root, except plan/, .git/ and the frozen
+toolchain -- this is the whole of what exists today:
 
 {tree}
 
-conftest.py at the root, which pytest loads automatically:
+{wiring.name} at the root, which the test runner loads automatically:
 
-{conftest_text}
+{wiring_text}
 """
 
 
@@ -2003,6 +2153,18 @@ def load_settings(tasks: dict) -> None:
         if bad:
             raise SystemExit(f"solver_tiers: not usable as a backend name: {bad}")
         SOLVER_TIERS[:] = list(tiers)
+
+    # The language, and it is rejected rather than defaulted when unknown. A
+    # plan that asked for "js" and silently got Python would be checked by the
+    # wrong test runner against the wrong suffixes, and every gate would report
+    # confidently about files it never read.
+    language = tasks.get("language")
+    if language is not None:
+        if language not in LANGUAGES:
+            raise SystemExit(f"language must be one of {sorted(LANGUAGES)}, "
+                             f"not {language!r}")
+        LANGUAGE.clear()
+        LANGUAGE.update(LANGUAGES[language])
 
 
 def publish(what: str) -> None:
