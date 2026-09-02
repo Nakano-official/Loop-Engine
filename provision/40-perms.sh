@@ -27,6 +27,22 @@ chown -R runner:runner "$P"
 chgrp solverw "$P"
 chmod 3775 "$P"      # setgid + sticky + rwxrwxr-x
 
+# The setgid bit has a second effect that is easy to miss and expensive to
+# leave: a file the RUNNER creates at the root inherits group solverw too, and
+# runner's umask is 002, so it lands 664 -- writable by the solver.
+#
+# The files that live there are not work, they are the fence. conftest.py
+# decides what pytest can import; vitest.config.mjs decides what the DOM tests
+# run against; .gitignore decides what `git status` reports as a stray file,
+# which is the whole of assert_touched(). A solver that can rewrite any of them
+# can undo FREEZE without touching a single file FREEZE hashes.
+#
+# conftest.py is group runner today only because 20-layout.sh happens to run
+# BEFORE the root becomes setgid. Re-running that script afterwards would flip
+# it -- the same accident that once left plan/ readable through ten whole
+# steps. So the rule is stated here rather than relied on.
+find "$P" -maxdepth 1 -type f -user runner -exec chgrp runner {} + -exec chmod 644 {} +
+
 # Private to runner: git history, the plan, and the freeze manifests.
 # solver must not be able to read tasks.json (RUNNER_SPEC 5) or learn which
 # files are being hashed.
@@ -64,6 +80,11 @@ chk_can    test -x "$P/.venv/bin/python"
 chk_can    test -r /srv/loop/brief
 
 chk_cannot test -w "$P/.venv/bin/python"
+# The fence files at the root. Rewriting any of these defeats the freeze from
+# outside the set of files the freeze watches.
+chk_cannot test -w "$P/conftest.py"
+chk_cannot test -w "$P/.gitignore"
+[ -e "$P/vitest.config.mjs" ] && chk_cannot test -w "$P/vitest.config.mjs"
 chk_cannot ls "$P/.git"
 chk_cannot ls "$P/plan"
 chk_cannot ls "$P/.runner"

@@ -5,8 +5,10 @@
 
 最終更新: 2026-09-02（run 7 完了 ── **md を投げてからゲームが立ち上がるまで一周した**。
 10/10 緑・42テスト・Codex 課金ゼロ。**そして出来上がったゲームは1クリックも受け付けない**
-── すべてのステップが緑で系全体が死んでいる（§3「run 7」欠陥5）。
-これが run 7 の一番重い結果で、予定レビューが効いた証拠でもある。次は要件の修正と差し戻し）
+── すべてのステップが緑で系全体が死んでいる（§3「run 7」欠陥5）。engine の欠陥7件のうち
+3件は同日修正・配備済み。**UI を機械に見せる土台（vitest + happy-dom）も入れた** ──
+死んだ UI が赤いテストになることを実測済み。次は run 8、またはランナーに Node を
+教える側）
 
 ---
 
@@ -752,7 +754,7 @@ import しただけでは画面に触らない。セーブは `~/.idlegame-save.
 3. **要件の1行目そのものが未達。** 「`python -m idlegame` の一つのコマンドで画面が
    開く」は、`project/` からでは `No module named idlegame` になる（欠陥4）
 
-#### 拾った engine の欠陥 6件
+#### 拾った engine の欠陥 7件
 
 **1. 形だけを主張する受け入れ基準は、RED_GATE を原理的に通れない。**（未修正・最優先）
 
@@ -929,6 +931,11 @@ L15・S10 の `goal` に続いて3度目の同じ構図 ── **ブリーフに
 リモートからもできる（画面を見る必要が無い判断だから）。
 `host/dashboard/tests/test_state.py` に4件（計25件）。
 
+**7. setgid のルートが、runner の作ったファイルを solver に書かせていた。**（修正済み）
+
+`conftest.py` / `.gitignore` / `vitest.config.mjs` ── **防壁そのものが solver から
+書けた**。詳細は下の「UI を機械に見せる」の節（Node の土台を書いている最中に踏んだ）。
+
 #### 再開するとき
 
 ```bash
@@ -948,6 +955,94 @@ host\loop-dashboard.cmd     # http://127.0.0.1:8443
 `repo.git` を `repo.run7.git` に退避し、`20-layout.sh` で新しい `project/` を作り、
 venv を移して `plan bootstrap`。**`plan bootstrap` は緑のステップが残っていると
 拒否する**ので、同じディレクトリでは始められない。
+
+### UI を機械に見せる ── Node/DOM の土台（2026-09-02 夜・実装済み）
+
+run 7 の欠陥4と5は、どちらも**「UI が関門の外にある」**という一つの原因から出ている。
+tkinter は画面が無いと駆動できず、画面はサンドボックスに無い。だから計画は UI を
+`main()` という薄い殻に追い出し、検査できる部分だけを厚くした ── **検査できる部分＝
+テキスト**になり、見た目が端末的になり、そして殻の中で起きることは誰も見なかった。
+
+**DOM は画面を要らない。** happy-dom がメモリ上に document を作るので、テストが
+ボタンを押して変化を確かめられる。「押せるものがあるか」が、人間にしか答えられない
+問いから**ただの赤いテスト**になる。
+
+実測（`provision/bin/smoke-dom`、書く前に確かめた）:
+
+```
+working UI:   3 test(s), 0 failure(s)
+run 7's UI:   3 test(s), 2 failure(s)
+  message="expected 0 to be greater than 0"
+  message="Cannot read properties of null (reading 'click')"
+```
+
+**両方向を見るのが要点。** 何でも通す関門は、働いている関門と見分けがつかない。
+`expected 0 to be greater than 0` が、run 7 で誰も見られなかったものそのもの。
+
+vitest の JUnit XML は pytest と同じ形（`testsuites`/`testsuite`/`testcase` に
+tests/failures/errors/skipped）なので、**ランナーの判定部はほぼそのまま使える。**
+
+#### 入れたもの
+
+- `provision/35-node.sh` ── vitest 4.1.11 + happy-dom 20.13.1 を `/srv/loop/node` に
+  入れて凍結し、`project/node_modules` からシンボリックリンクで見せる。
+  `project/vitest.config.mjs` を runner 所有で置く。solver 視点の assert 付き
+- `provision/bin/smoke-dom` ── 上の実測を再実行可能にしたもの
+- `provision/provision.sh` の順序に `35-node.sh` を追加（`30-python` と `40-perms` の間）
+
+#### 設計上、Python と同じにできなかった点
+
+**Node のモジュール解決はファイルシステム上の位置で決まる。** Python は `sys.path` を
+ランナーが握っているので solver が何をどこに入れても無関係だが、Node は
+`src/node_modules/` に置かれればそこから解決する。ネットワークは開いているので、
+これはレジストリ全体への通り道になる。
+
+塞いでいるのは `.gitignore` の書き方1つ:
+
+```
+/node_modules        ← ルートだけを無視する
+node_modules/        ← 全ての深さで無視する（これを書くと穴が開く）
+```
+
+`assert_touched()` は `git status --untracked-files=all` で stray を見つける。
+**git が無視するものは、この検査から見えない** ── `.gitignore` は防壁の一部である。
+ツールチェーン本体をプロジェクトの外に置いたのはこのためで、中に置くと
+`node_modules/` を無視するしかなくなる。`35-node.sh` は危険な形の行を見つけたら
+進まずに落ちる。実測で `src/node_modules/evil/index.js` は未追跡として見えている。
+
+#### 7. setgid のルートが、runner の作ったファイルを solver に書かせていた（修正済み）
+
+**書いている最中に踏んだ。** `35-node.sh` が `vitest.config.mjs` を置いた直後、
+自分の assert が落ちた ── `FAIL: solver should NOT be able to: test -w .../vitest.config.mjs`。
+
+ルートは `3775`（setgid + スティッキー）で、setgid は「solver が作ったファイルを
+runner が管理できる」ためのものだった。**同じビットが、runner がそこに作った
+ファイルの group も `solverw` にする。** runner の umask は 002 なので `664` で落ちる。
+
+ルートにあるのは作業物ではなく**防壁そのもの**:
+
+| ファイル | 何を決めているか |
+|---|---|
+| `conftest.py` | pytest が何を import できるか |
+| `vitest.config.mjs` | DOM テストが何に対して走るか |
+| `.gitignore` | `git status` が何を stray と報告するか（= `assert_touched()` の全部） |
+
+**どれか1つ書き換えられれば、FREEZE が見張っているファイルに一切触れずに FREEZE を
+無効化できる。** `conftest.py` が無事だったのは偶然で、`20-layout.sh` が
+`40-perms.sh` より先に走るというだけの理由 ── 順番が入れ替われば穴が開く。
+`plan/` が10ステップ分ずっと読めていたのと同じ事故の形。
+
+`40-perms.sh` がルート直下の runner 所有ファイルを `runner:runner 644` に揃え、
+3つとも solver が書けないことを assert する。各スクリプトは**自分が作ったファイルの
+mode を自分で設定する**（後続に閉じさせない）。
+
+#### まだやっていないこと
+
+ランナーは**まだ Node を知らない**。ステップごとに言語を選び、vitest を起動し、
+その XML を読む部分は未実装。`docs/HANDOFF.md` §5 の「アダプタを切るのは2つ目を
+実装したあと」に従い、**先に土台の実在を確かめた**（今日ここまで）。言語結合は9か所:
+テスト起動と判定 / 赤の判定 / `provides` の名前抽出 / 環境凍結 / コードの置き場 /
+`environment_facts`。
 
 ### そのあと
 
@@ -970,7 +1065,10 @@ venv を移して `plan bootstrap`。**`plan bootstrap` は緑のステップが
    いまは「ソルバーが詰まったとき」しかプランナーを呼べない
 7. ~~**題材を変えて Python で1本**~~ ── run 7 で 10/10 緑。ゲームが立ち上がるところ
    まで到達した。残るは人間が遊んでの予定レビュー（一つ上の節）
-8. **2言語目は TypeScript。** 理由は好みではなく必然で、フロントがどのみち TS。
+8. **2言語目 ── ランナーに Node を教える。** 土台は入った（一つ上の節: vitest +
+   happy-dom を凍結し、画面なしで死んだ UI を落とせることを実測済み）。残りは
+   ランナー側 ── ステップごとの言語選択、vitest の起動、その XML の判定。
+   **アダプタを切るのは2つ目が動いたあと。** 理由は好みではなく必然で、フロントも TS。
    vitest は JUnit XML を出せる、`node_modules` を 0555 にすれば venv と同じ形、
    Node 22 は導入済み。**アダプタを切るのは2つ目を実装したあと** ──
    1つしかない状態で抽象化すると必ず外す。言語結合は9か所に集中している

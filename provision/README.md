@@ -162,9 +162,21 @@ ssh -p 2222 maint@127.0.0.1 \
 ループの三者に含めないこと（RUNNER_SPEC §0-1）。
 
 `05-isolation.sh` が WSL 隔離（Windows パス非マウント、WSLg、systemd、NAT）を、
-`40-perms.sh` が solver 視点の権限モデルを assert する。1つでも落ちたら異常終了する。
-`05-` を最初に走らせるのは、隔離が効いていないディストロには**プロビジョニングする意味が
-無い**（以降の全ステップが成功しつつ何も意味しなくなる）ため。
+`35-node.sh` が Node 側の凍結を、`40-perms.sh` が solver 視点の権限モデルを assert する。
+1つでも落ちたら異常終了する。`05-` を最初に走らせるのは、隔離が効いていないディストロには
+**プロビジョニングする意味が無い**（以降の全ステップが成功しつつ何も意味しなくなる）ため。
+
+`35-node.sh` は vitest と happy-dom を `/srv/loop/node` に入れて凍結し、
+`project/node_modules` からシンボリックリンクで見えるようにする。**画面の無い機械で
+UI を検査するための土台**で、主張の検算は:
+
+```bash
+sudo -u runner /srv/loop/bin/smoke-dom
+```
+
+生きた UI は3件通り、run 7 と同じ形の UI（ボタンが最初から全部無効）は2件落ちる ──
+`expected 0 to be greater than 0`。**両方向を見るのが要点**で、何でも通す関門は
+働いている関門と見分けがつかない。
 
 ### 2-6. スナップショット
 
@@ -470,6 +482,64 @@ Debian 系では tkinter が標準で入らない。`python3-tk` が無いと `i
 したがって計画は、テスト可能なコアと `Tk` に触る薄い殻を別のステップに割ること。
 
 ---
+
+### 3-18. setgid のルートは、runner が作ったファイルまで solver に書かせる（2026-09-02）
+
+3-13 でルートを `3775`（setgid + スティッキー）にした。setgid には**もう一つの効果**が
+あり、そちらは見落とされていた ── **runner がルートに作ったファイルも group が
+`solverw` になる。** runner の umask は 002 なので `664` で落ち、solver が書ける。
+
+ルートにあるのは作業物ではなく**防壁そのもの**である:
+
+| ファイル | 何を決めているか |
+|---|---|
+| `conftest.py` | pytest が何を import できるか（`sys.path`） |
+| `vitest.config.mjs` | DOM テストが何に対して走るか |
+| `.gitignore` | `git status` が何を stray として報告するか（= `assert_touched()` の全部） |
+
+**どれか1つでも書き換えられれば、FREEZE が見張っているファイルに一切触れずに
+FREEZE を無効化できる。**
+
+`conftest.py` が今日まで無事だったのは**偶然**で、`20-layout.sh` がルートを setgid に
+する `40-perms.sh` より先に走るというだけの理由。順番が入れ替われば穴が開く ──
+`plan/` が10ステップ分ずっと読める状態だったのと同じ事故の形。
+
+見つかったのは `35-node.sh` が `vitest.config.mjs` を書いたとき。**同じ手順で作った
+新しいファイルが、assert に引っかかって落ちた**（`FAIL: solver should NOT be able to:
+test -w .../vitest.config.mjs`）。3-13 の assert が効いていたので、書いた直後に露見した。
+
+→ `40-perms.sh` がルート直下の runner 所有ファイルを `runner:runner 644` に揃え、
+`conftest.py` / `.gitignore` / `vitest.config.mjs` を solver が書けないことを assert する。
+各スクリプトは**自分が作ったファイルの mode を自分で設定する**（後続に閉じさせない）。
+
+### 3-19. Node の凍結は Python の凍結と同じ形では効かない（2026-09-02）
+
+Python は `sys.path` をランナーが握っているので、solver が何をどこに入れても
+テストは `.venv/bin/pytest` の環境でしか走らない。**Node は違う** ── モジュール解決が
+ファイルシステム上の位置で決まるので、`src/node_modules/` に何か置かれれば
+そこから解決される。ネットワークは開いているので、これはレジストリ全体への通り道になる。
+
+塞いでいるのは `.gitignore` の書き方1つ:
+
+```
+/node_modules        ← ルートだけを無視する
+node_modules/        ← 全ての深さで無視する（これを書くと穴が開く）
+```
+
+`assert_touched()` は `git status --untracked-files=all` で stray を見つける。
+**git が無視するものは、この検査から見えない。** 先頭スラッシュで固定すれば、
+凍結済みのシンボリックリンクだけが無視され、`src/node_modules` は未追跡として現れる。
+`35-node.sh` は `node_modules/` 形式の行を見つけたら**進まずに落ちる**。
+
+実測（solver として `src/node_modules/evil/index.js` を作成）:
+
+```
+?? src/node_modules/evil/index.js        ← git に見える = allowlist 違反で停止
+.gitignore:5:/node_modules  node_modules ← ルートのみ無視
+```
+
+ツールチェーン本体を `/srv/loop/node` に置いて**プロジェクトの外**に出しているのは
+このため。中に置くと `node_modules/` を無視するしかなくなる。
 
 ## 4. 未適用
 
