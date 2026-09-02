@@ -38,6 +38,12 @@
 `host/dashboard/config.example.json` を `host/dashboard/config.json` にコピーし、成果物の
 起動コマンドと作業ディレクトリをホスト環境に合わせます。設定しなくても進捗画面は使えます。
 
+**`cwd` はミラーの直下ではなく `project\src` を指す**（例のとおり）。ランナーの計画は
+pytest の慣習で `src/` レイアウトを採り、`src/` を `sys.path` に載せているのは
+`conftest.py` の1行だけ ── **これを読み込むのは pytest だけ**なので、`project\` から
+`python -m <pkg>` を叩くと `No module named` で即死する。テストが全部緑でも起動しない、
+という形で現れる（run 7 で踏んだ。HANDOFF §3 の欠陥4）。
+
 リポジトリのルートから:
 
 ```powershell
