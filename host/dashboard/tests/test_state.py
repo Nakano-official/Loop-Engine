@@ -115,5 +115,52 @@ class Decisions(DashboardFixture):
             self.state.decide("review", request["id"], "revise", "  ")
 
 
+class TwoKindsOfStuck(DashboardFixture):
+    """The runner being stuck and the planner declining are different requests.
+
+    Both end at the same person, which is exactly why they must not be merged:
+    answering "the runner could not pass this step" says nothing about "no
+    revision I am allowed to make would help", and the second is the one that
+    means the criteria or the design have to change.
+    """
+
+    def planner_escalation(self, text="# ESCALATE -- unreachable criterion"):
+        (self.project / "plan" / "PLANNER_ESCALATION.md").write_text(text, encoding="utf-8")
+
+    def test_the_planners_refusal_reaches_the_dashboard(self):
+        self.planner_escalation()
+        snapshot = self.state.snapshot()
+        self.assertEqual(snapshot["phase"], "planner_escalated")
+        self.assertEqual(snapshot["pending"][0]["kind"], "planner")
+        self.assertIn("unreachable criterion", snapshot["pending"][0]["detail"])
+
+    def test_the_two_escalations_are_separate_requests(self):
+        self.ledger({"event": "RUN_ALL_STOP", "reason": "cap reached"})
+        (self.project / "plan" / "ESCALATION.md").write_text("step S10 stopped", encoding="utf-8")
+        self.planner_escalation()
+        pending = self.state.snapshot()["pending"]
+        self.assertEqual({item["kind"] for item in pending}, {"escalation", "planner"})
+
+        runner_request = next(i for i in pending if i["kind"] == "escalation")
+        self.state.decide("escalation", runner_request["id"], "respond", "criteria widened")
+        remaining = self.state.snapshot()["pending"]
+        self.assertEqual([item["kind"] for item in remaining], ["planner"])
+
+    def test_a_phone_may_answer_or_stop_the_planners_refusal(self):
+        # Same reasoning as an escalation: this is judgement about criteria, not
+        # a claim about what appeared on a screen.
+        self.planner_escalation()
+        request = self.state.snapshot()["pending"][0]
+        record = self.state.decide("planner", request["id"], "respond", "要件を書き直す",
+                                   scope="remote", user="someone@example.com")
+        self.assertEqual((record["kind"], record["scope"]), ("planner", "remote"))
+
+    def test_an_answered_refusal_is_not_presented_again(self):
+        self.planner_escalation()
+        request = self.state.snapshot()["pending"][0]
+        self.state.decide("planner", request["id"], "stop", "")
+        self.assertEqual(self.state.snapshot()["pending"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

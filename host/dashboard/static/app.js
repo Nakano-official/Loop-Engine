@@ -38,7 +38,8 @@ async function refresh() {
   if (!state.pending.length) pending.textContent = "現在、人間の対応を待っている項目はありません。";
   for (const item of state.pending) {
     const card = document.querySelector("#request-template").content.cloneNode(true);
-    card.querySelector(".badge").textContent = item.kind === "review" ? "予定レビュー" : "エスカレーション";
+    card.querySelector(".badge").textContent =
+      {review: "予定レビュー", planner: "プランナーからの差し戻し"}[item.kind] || "エスカレーション";
     card.querySelector("h3").textContent = item.title;
     card.querySelector("pre").textContent = item.detail;
     const note = card.querySelector("textarea"), actions = card.querySelector(".request-actions");

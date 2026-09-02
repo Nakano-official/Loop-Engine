@@ -79,6 +79,14 @@ ESCALATE_NAME = "ESCALATE.md"
 
 LEDGER = PLAN / "ledger.jsonl"
 ESCALATION = PLAN / "ESCALATION.md"
+# The planner's way of saying "this is not mine to decide", once it has reached
+# the project. `planner/out/` is outside the repository, so what the planner
+# writes there is committed nowhere, mirrored nowhere, and visible only to the
+# terminal that happened to run `plan apply`. The two files are kept apart
+# because they mean different things and are answered differently: ESCALATION.md
+# is the question `plan propose` answers, and one of those must not silently
+# become the other.
+PLANNER_ESCALATION = PLAN / "PLANNER_ESCALATION.md"
 
 # tests/ must be run with the project venv's pytest and nothing else. A plain
 # `python3 -m pytest` would put the solver's own ~/.local packages back on
@@ -1892,7 +1900,23 @@ def cmd_plan_apply() -> int:
     proposal = read_proposal()
 
     if ESCALATE_NAME in proposal:
+        # The runner's escalation reaches the human by a route that was built
+        # deliberately: plan/ESCALATION.md is committed, published, pulled to
+        # the host and shown on the dashboard. The planner's escalation had no
+        # route at all -- it was printed to whichever terminal ran this command
+        # and existed nowhere else, because planner/out/ is not in the
+        # repository. A question addressed to the human that only one terminal
+        # ever sees is not addressed to the human. Found by running the path:
+        # the planner declined correctly, and the answer was invisible.
+        PLANNER_ESCALATION.write_text(proposal[ESCALATE_NAME], encoding="utf-8")
+        PLANNER_ESCALATION.chmod(0o644)
         ledger("PLAN_ESCALATE", note="the planner declined; this is case (b) or (c)")
+        relative = PLANNER_ESCALATION.relative_to(PROJECT).as_posix()
+        run(["git", "add", "--", relative], check=True)
+        if run(["git", "diff", "--cached", "--quiet", "--", relative]).returncode:
+            run(["git", "commit", "-q", "-m", "plan: the planner escalated to the human",
+                 "--", relative], check=True)
+            publish("the planner's escalation")
         print("The planner escalated to you rather than proposing a change:\n")
         print(proposal[ESCALATE_NAME])
         return 3
@@ -1924,6 +1948,14 @@ def cmd_plan_apply() -> int:
         run(["git", "ls-files", "--", str(ESCALATION.relative_to(PROJECT))]).stdout.strip())
     ESCALATION.unlink(missing_ok=True)
 
+    # A plan that applies is an answer to whatever the planner asked, so its
+    # question stops existing too -- same reason, and the dashboard reads the
+    # file's presence as "someone is waiting on you".
+    planner_escalation_tracked = bool(
+        run(["git", "ls-files", "--",
+             str(PLANNER_ESCALATION.relative_to(PROJECT))]).stdout.strip())
+    PLANNER_ESCALATION.unlink(missing_ok=True)
+
     ledger("PLAN_APPLY", files=applied)
 
     # Commit exactly the plan and nothing else. A proposal normally arrives with
@@ -1932,6 +1964,8 @@ def cmd_plan_apply() -> int:
     paths = applied + [str(LEDGER.relative_to(PROJECT))]
     if escalation_tracked:
         paths.append(str(ESCALATION.relative_to(PROJECT)))
+    if planner_escalation_tracked:
+        paths.append(str(PLANNER_ESCALATION.relative_to(PROJECT)))
     # `git commit -- <paths>` stages tracked paths only, so on a first plan --
     # where all three files are new -- it commits nothing and exits 1. Add them
     # explicitly first. (Missed until the first bootstrap, because in the

@@ -47,7 +47,23 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 # reachable from a phone. Saying "I played it and it is good" is a different
 # act: the review exists precisely because no machine can check the screen, so
 # a device that cannot open the window must not be able to certify it.
-REMOTE_DECISIONS = {"review": {"revise"}, "escalation": {"respond", "stop"}}
+REMOTE_DECISIONS = {
+    "review": {"revise"},
+    "escalation": {"respond", "stop"},
+    "planner": {"respond", "stop"},
+}
+
+# Two different people are stuck, and they are not stuck for the same reason.
+# ESCALATION.md means the runner could not get a step past its criteria.
+# PLANNER_ESCALATION.md means the planner read the situation and concluded that
+# no revision it is allowed to make would help -- case (b) or (c), which
+# RUNNER_SPEC 6-2 reserves for the human. Answering one does not answer the
+# other, so they are separate requests with separate ids.
+ESCALATION_FILES = {
+    "escalation": ("ESCALATION.md", "実装が停止し、人間の判断を待っています"),
+    "planner": ("PLANNER_ESCALATION.md",
+                "プランナーが「自分には直せない」と返しました。基準か設計の判断です"),
+}
 
 
 def request_id(kind: str, value: Any) -> str:
@@ -81,19 +97,16 @@ class DashboardState:
             if record.get("event") == "GREEN" and record.get("step") not in green:
                 green.append(record.get("step"))
 
-        escalation_path = self.project / "plan" / "ESCALATION.md"
-        escalation = None
-        if escalation_path.is_file():
-            text = escalation_path.read_text(encoding="utf-8", errors="replace")
-            escalation_id = request_id("escalation", text)
-            escalation = {
-                "id": escalation_id,
-                "kind": "escalation",
-                "title": "実装が停止し、人間の判断を待っています",
-                "detail": text,
-            }
-            if ("escalation", escalation_id) in answered:
-                escalation = None
+        stuck = []
+        for kind, (filename, title) in ESCALATION_FILES.items():
+            path = self.project / "plan" / filename
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            identifier = request_id(kind, text)
+            if (kind, identifier) in answered:
+                continue
+            stuck.append({"id": identifier, "kind": kind, "title": title, "detail": text})
 
         all_green = next(
             (record for record in reversed(ledger) if record.get("event") == "ALL_GREEN"),
@@ -110,9 +123,11 @@ class DashboardState:
                     "detail": "機械的な受け入れ条件は完了しました。成果物を起動し、承認または差し戻しを記録してください。",
                 }
 
-        pending = [item for item in (escalation, review) if item is not None]
+        pending = stuck + ([review] if review is not None else [])
         last = ledger[-1] if ledger else None
-        if escalation:
+        if any(item["kind"] == "planner" for item in stuck):
+            phase = "planner_escalated"
+        elif stuck:
             phase = "escalated"
         elif review:
             phase = "review_required"
@@ -151,6 +166,7 @@ class DashboardState:
         allowed = {
             "review": {"approve", "revise"},
             "escalation": {"respond", "stop"},
+            "planner": {"respond", "stop"},
         }
         if decision not in allowed.get(kind, set()):
             raise ValueError("decision is not valid for this request")
