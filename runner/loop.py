@@ -1771,9 +1771,20 @@ def plan_with_retry(brief_for, tag: str) -> int:
             return 0
 
         problems = proposal_problems(proposal)
+        # A stray file is already fully remedied: prune_proposal deleted it, and
+        # read_proposal only ever looks at the three allowed names, so nothing
+        # about it can reach `plan apply`. Making it a violation on top of that
+        # spends an attempt on a condition that no longer exists -- run 7 lost
+        # one of its four that way, on a plan that was otherwise valid. So it is
+        # a note, carried into the feedback of an attempt that is failing for
+        # some other reason, and never a reason to fail by itself. The case
+        # where the stray file mattered -- the plan written under a misspelled
+        # name -- still fails, because deleting it leaves a required file
+        # missing and proposal_problems says so.
+        notes = [f"B3: {n} is not a filename a proposal may use; the "
+                 f"runner deleted it" for n in removed]
         if removed:
-            problems = [f"B3: {n} is not a filename a proposal may use; the "
-                        f"runner deleted it" for n in removed] + problems
+            ledger("PLAN_PRUNED", attempt=attempt, removed=removed)
         if not problems:
             if attempt > 1:
                 print(f"the plan passed on attempt {attempt}")
@@ -1788,7 +1799,7 @@ def plan_with_retry(brief_for, tag: str) -> int:
                 print("  " + problem, file=sys.stderr)
             return 2
 
-        feedback = "\n".join(problems)
+        feedback = "\n".join(notes + problems)
 
     return 2   # unreachable; the loop always returns
 
