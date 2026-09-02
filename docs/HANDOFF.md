@@ -3,7 +3,8 @@
 このファイルを最初に読むこと。会話の記録は引き継がれないので、状態はこことリポジトリ内の
 ファイルにしかない。
 
-最終更新: 2026-09-02（run 7 完了 ── **md を投げてからゲームが立ち上がるまで一周した**。
+最終更新: 2026-09-02（**次にやることは §3「次回はここから」の `plan bootstrap` 1つ**。
+run 7 完了 ── **md を投げてからゲームが立ち上がるまで一周した**。
 10/10 緑・42テスト・Codex 課金ゼロ。**そして出来上がったゲームは1クリックも受け付けない**
 ── すべてのステップが緑で系全体が死んでいる（§3「run 7」欠陥5）。engine の欠陥7件のうち
 3件は同日修正・配備済み。**UI を機械に見せる土台を入れ、ランナーに TypeScript を
@@ -1083,6 +1084,56 @@ VERIFY は `tests/` 全体を渡すので、複数ファイルなら1ファイ�
 UI はここでは検査できる。テストの届かない場所に押し出すな」** と言う ── run 7 で
 何が起きたかを名指しで含めてある。ただし**欠陥4（成果物の起動経路）はまだ塞いでいない**。
 run 8 の成果物は HTML ページなので、`python -m` に相当する検査をどう書くかは未決。
+
+### 次回はここから ── run 8 のブートストラップをやり直す（2026-09-02 深夜 確定）
+
+**中断地点。** run 8（TypeScript でアイドルゲーム）の準備は**全部終わっている**。
+残りは `plan bootstrap` を1回走らせるところから。
+
+    ssh loop-runner
+    cd /srv/loop/project
+    python3 /srv/loop/runner/loop.py plan bootstrap --language typescript
+    python3 /srv/loop/runner/loop.py plan show
+    python3 /srv/loop/runner/loop.py plan apply
+    nohup python3 /srv/loop/runner/loop.py run --all > /srv/loop/run8.log 2>&1 &
+
+**できている準備:**
+
+- run 7 は `project.run7` / `repo.run7.git` に退避。新しい `project/` は
+  `20-layout.sh` + `35-node.sh` + `40-perms.sh` を通し、assert 全通過
+- `/srv/loop/human/in/REQUIREMENTS.md` は Web 版に差し替え済み（起動の行が
+  「ルートに `index.html`、開発サーバをルートで起動」に変わっている）
+- `index.html` は**環境が持っている**（runner 所有 644、`35-node.sh` が置く）。
+  `import { start } from "/src/main.ts"` を呼ぶだけの4行。プランは
+  `src/main.ts` に `start(root: HTMLElement): void` を書く ── ブリーフが明示する
+- ランナーは `--language typescript` を受け、通った提案に自分で刻む
+
+**1回目のブートストラップは3回目で通り、その計画を私が壊した。** 権限の切り分けで
+`os.O_WRONLY|os.O_TRUNC` を使って「開けるか」を試し、開けたので中身が消えた
+（37,942 → 0 バイト）。**権限の確認に破壊的なフラグを使ってはいけない。**
+`CONTEXT.md` と `SYSTEM_SPEC.md` は `/srv/loop/salvage8/` に退避してある ──
+次の計画と読み比べる用で、そのまま使うものではない。
+
+**その過程で engine の欠陥を2件見つけて直した（配備済み）。**
+
+**8. L15 の名前境界が Python の文法だった。** `(?<![\w.])名前(?![\w.])` の `.` は
+Python の区切り文字のためのもので、TypeScript ではただの拡張子。プランナーが書いた
+`src/idlegame/model.ts :: interface GameState` は**モジュールを文字どおり名指ししている**
+のに、`model` の直後の `.` で落ちた。B3 と同じ形 ── 計画ではなく規則が間違っていて、
+有料の試行を1回食う。境界文字を言語ごとにした（python `[\w.]` / typescript `[\w]`）。
+`src/idlegame/models.ts` が `idlegame/model` に一致しないことも固定済み。
+
+**9. `fs.protected_regular` が `out/` への書き戻しを拒む。** `stamp_language` が
+`pathlib.write_text` を使って落ちた。カーネルの `may_create_in_sticky()` は、
+**スティッキーかつグループ書き込み可のディレクトリで、他人が所有する既存ファイルへの
+`O_CREAT` 付き open を拒否する**（この機械は `fs.protected_regular = 2`）。
+`out/` はまさにその形（dir 所有者 runner・3770、file 所有者 planner）。
+`"w"` は `O_WRONLY|O_CREAT|O_TRUNC` なので EACCES、`O_WRONLY|O_TRUNC` は通る。
+**プランナーが書いたファイルを書き戻すコードは、今後すべて O_CREAT を外すこと。**
+
+**B3 の修正が実地で効いた。** 3回目の試行でプランナーはまた検算スクリプト
+（`check.mjs`）を書いたが、削除されるだけで違反に数えられず、そのまま合格した。
+以前ならここで4回目に押し出されていた。
 
 ### そのあと
 

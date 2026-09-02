@@ -479,6 +479,10 @@ LANGUAGES = {
         }),
         "shape_bracket": "[",
         "shape_example": "dict[str, Generator], tuple[GameState, int]",
+        # What may NOT sit against a module name for it to count as named.
+        # The dot is here because it is Python's separator: `incgame.engine`
+        # appearing inside `incgame.engine.sub` names a different module.
+        "name_boundary": r"[\w.]",
         "layout_note": """Put the package inside src/, e.g. `src/yourpkg/models.py`, and import it as
 `from yourpkg.models import Thing` -- `src` is on sys.path, so the `src.`
 prefix does not appear in imports. Say this in CONTEXT.md; the solver has no
@@ -500,6 +504,13 @@ other way to learn it.""",
         }),
         "shape_bracket": "<",
         "shape_example": "Record<string, Generator>, [GameState, number]",
+        # No dot: in TypeScript the separator is the slash and the dot is a
+        # file extension. Including it rejected `src/idlegame/model.ts`, which
+        # names the module about as plainly as a line can -- L15's purpose met,
+        # and the check refusing it on Python's grammar. Found on attempt 1 of
+        # the first TypeScript bootstrap; same shape as the B3 defect, an
+        # attempt spent on a rule that was wrong rather than a plan that was.
+        "name_boundary": r"[\w]",
         "layout_note": """Every source file is `.ts` under src/, e.g. `src/idlegame/models.ts`, and
 every test file is `.ts` under tests/. Import with a RELATIVE path and no
 extension in the specifier is wrong here -- write the extension:
@@ -507,11 +518,21 @@ extension in the specifier is wrong here -- write the extension:
 esbuild strips the types; there is no build step and no tsc, so a type is
 something the next step READS, not something a compiler checks.
 
-The artifact itself is a page: an HTML file and the script it loads. Only the
-HTML lives outside src/ and it is the one file the runner cannot fence, so
-keep it to a shell that loads one module and calls one exported function. That
-function is ordinary code under src/ and its behaviour is checkable -- write
-criteria against what it puts in the document, not against the HTML.
+THE PAGE ALREADY EXISTS AND YOU DO NOT WRITE IT. `index.html` sits at the
+repository root, which is outside the write fence, so it belongs to the
+environment rather than to any step. It is four lines and it does exactly one
+thing:
+
+    import { start } from "/src/main.ts";
+    start(document.getElementById("app"));
+
+So the plan MUST end with a step whose files_write includes `src/main.ts`, and
+that module MUST export `start(root: HTMLElement): void`. Nothing else about
+the page is yours to decide. Everything `start` does is ordinary code under
+src/: it is under the fence, the tests can reach it, and its criteria are
+written against what it puts in the document -- what the element contains,
+which buttons exist, which of them are disabled, and what changes when one is
+clicked.
 
 Say all of this in CONTEXT.md; the solver has no other way to learn it.""",
     },
@@ -1169,7 +1190,9 @@ def validate_plan(tasks: dict) -> list[str]:
         # belongs in the contract, which is 1-5 again: the one channel between
         # steps has to be sufficient on its own.
         for provided in s["contracts"]["provides"]:
-            if not any(re.search(rf"(?<![\w.]){re.escape(m)}(?![\w.])", provided)
+            boundary = LANGUAGE["name_boundary"]
+            if not any(re.search(rf"(?<!{boundary}){re.escape(m)}(?!{boundary})",
+                                 provided)
                        for m in modules_of(s["files_write"])):
                 signature = provided.split(chr(8212))[0].strip()
                 problems.append(
@@ -1979,7 +2002,45 @@ with them and no partial credit: fix all of them, then stop.
 """
 
 
-def cmd_plan_bootstrap(source: str | None) -> int:
+def stamp_language(name: str) -> None:
+    """Write the language into the accepted proposal, as the runner's own act.
+
+    The planner never writes this, for the same reason it never writes
+    solver_tiers: which languages this machine has is a property of the box, and
+    which one a project uses is the human's decision before anyone is asked for
+    a plan. Neither is the planner's to choose, and a planner that could choose
+    would sometimes choose the toolchain that is not installed.
+
+    Stamped after the linter has passed rather than before, which is safe only
+    because no rule reads this key -- it selects the vocabulary the rules are
+    expressed in, and that selection was already made when the brief was built.
+    """
+    path = PLANNER_OUT / "tasks.json"
+    try:
+        tasks = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(tasks, dict):
+        return
+    tasks["language"] = name
+    body = (json.dumps(tasks, ensure_ascii=False, indent=2) + chr(10)).encode("utf-8")
+    # Written WITHOUT O_CREAT, which is not a detail. out/ is sticky and
+    # group-writable, the file belongs to `planner`, and the kernel's
+    # fs.protected_regular (2 here) refuses an O_CREAT open of another user's
+    # existing file in exactly that shape of directory -- the protection that
+    # stops one user pre-creating a file another is about to write in /tmp.
+    # pathlib's write_text opens "w", which is O_WRONLY|O_CREAT|O_TRUNC, so it
+    # is refused with EACCES while an ordinary O_WRONLY|O_TRUNC on the same file
+    # by the same process succeeds. Anything here that rewrites a file the
+    # planner wrote has to do it this way.
+    fd = os.open(path, os.O_WRONLY | os.O_TRUNC)
+    try:
+        os.write(fd, body)
+    finally:
+        os.close(fd)
+
+
+def cmd_plan_bootstrap(source: str | None, language: str = "python") -> int:
     """Ask the planner for a first plan, from a requirements file the human wrote.
 
     This is the only path by which a plan comes into existence, and it is
@@ -2006,11 +2067,20 @@ def cmd_plan_bootstrap(source: str | None) -> int:
               "fresh project directory instead.", file=sys.stderr)
         return 1
 
+    # Set before the brief is built, not after: environment_facts reports the
+    # test command and the toolkit, and the layout paragraph tells the planner
+    # what a source file even looks like. A brief written for the wrong language
+    # produces a plan that is wrong in every step.
+    load_settings({"language": language})
+
     requirements = path.read_text(encoding="utf-8")
-    ledger("PLAN_BOOTSTRAP", source=str(path))
-    return plan_with_retry(
+    ledger("PLAN_BOOTSTRAP", source=str(path), language=language)
+    code = plan_with_retry(
         lambda feedback: brief_plan_bootstrap(requirements, feedback),
         "PLAN_BOOTSTRAP_DRAFT")
+    if code == 0 and ESCALATE_NAME not in read_proposal():
+        stamp_language(language)
+    return code
 
 
 def cmd_plan_propose(step_id: str | None) -> int:
@@ -2682,6 +2752,9 @@ def main() -> int:
         "bootstrap", help="ask the planner for a first plan, from the requirements")
     boot_cmd.add_argument("--from", dest="source", default=None, metavar="PATH",
                           help=f"the requirements file (default: {REQUIREMENTS})")
+    boot_cmd.add_argument("--language", default="python", choices=sorted(LANGUAGES),
+                          help="which toolchain the plan is written for; the "
+                               "runner stamps it into the plan (default: python)")
     propose_cmd = plan_sub.add_parser(
         "propose", help="ask the planner to revise the plan in answer to ESCALATION.md")
     propose_cmd.add_argument("--step", default=None,
@@ -2705,7 +2778,7 @@ def main() -> int:
             return cmd_reset(args.step_id)
         if args.cmd == "plan":
             if args.plan_cmd == "bootstrap":
-                return cmd_plan_bootstrap(args.source)
+                return cmd_plan_bootstrap(args.source, args.language)
             if args.plan_cmd == "propose":
                 return cmd_plan_propose(args.step)
             if args.plan_cmd == "show":

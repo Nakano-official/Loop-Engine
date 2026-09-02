@@ -119,6 +119,35 @@ EOF
 chown runner:runner "$P/vitest.config.mjs"
 chmod 644 "$P/vitest.config.mjs"
 
+# ---- the page, and why the runner owns it ------------------------------
+#
+# The artifact is something a person opens, and the file they open has to sit
+# at the root -- which is exactly where the write fence does not reach. src/
+# and tests/ are the only two directories the runner can open and close, so a
+# plan that listed index.html in files_write would be rejected by L12, and a
+# solver that wrote one anyway would be caught by assert_touched.
+#
+# So the environment provides it, like conftest.py. That is not a workaround,
+# it is the fix for the thing run 7 shipped: the launch path was the one path
+# no gate covered, because it was the one path the tests fabricated their way
+# around. Here it is a fact of the box -- it always exists, and it always calls
+# the same exported function. What remains is `src/main.ts`, which is under the
+# fence, is checkable, and is the plan's to write.
+sudo -u runner tee "$P/index.html" >/dev/null <<'EOF'
+<!doctype html>
+<meta charset="utf-8">
+<title>loop artifact</title>
+<div id="app"></div>
+<script type="module">
+  // The whole of the shell. Everything else is under src/, where the runner
+  // can fence it and the tests can reach it.
+  import { start } from "/src/main.ts";
+  start(document.getElementById("app"));
+</script>
+EOF
+chown runner:runner "$P/index.html"
+chmod 644 "$P/index.html"
+
 # ---- assertions, from the solver's point of view -----------------------
 # A permission model nobody tested is a permission model that does not exist.
 fail=0
@@ -130,6 +159,8 @@ chk_can    test -r "$TOOLS/node_modules/happy-dom/package.json"
 chk_cannot test -w "$TOOLS/node_modules"
 chk_cannot test -w "$TOOLS/node_modules/.bin/vitest"
 chk_cannot test -w "$P/vitest.config.mjs"
+chk_cannot test -w "$P/index.html"
+chk_can    test -r "$P/index.html"
 # The link itself: the solver may follow it and may not swap it for its own.
 chk_cannot rm -f "$P/node_modules"
 

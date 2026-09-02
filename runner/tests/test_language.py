@@ -13,6 +13,7 @@ report.
     python3 -m unittest discover -s runner/tests
 """
 
+import json
 import sys
 import tempfile
 import unittest
@@ -158,6 +159,103 @@ class ContractsMustStateAShape(Language):
         self.assertFalse(self.l14("src/pkg/models.ts: function f(): dict"))
         self.speak("python")
         self.assertFalse(self.l14("src/pkg/models.py: def f() -> Record"))
+
+
+class ContractsMustSayWhereAThingLives(Language):
+    """L15, and the boundary that decides whether a line names a module."""
+
+    def plan(self, provides: str, source: str) -> dict:
+        return {
+            "steps": [{
+                "id": "S1", "kind": "skeleton", "goal": "g", "depends_on": [],
+                "acceptance": [
+                    {"case": "normal", "given": "g", "then": "x == 1"},
+                    {"case": "boundary", "given": "g", "then": "x == 0"},
+                    {"case": "error", "given": "g", "then": "raises ValueError"},
+                ],
+                "contracts": {"provides": [provides], "requires": [],
+                              "invariants": ["one"]},
+                "files_write": [source],
+                "files_test": ["tests/models_test" + LANGUAGE["source_suffix"]],
+                "expected_tests": 3, "max_attempts": 2, "review_gate": False,
+            }],
+        }
+
+    def l15(self, provides: str, source: str) -> list[str]:
+        return [p for p in validate_plan(self.plan(provides, source))
+                if p.startswith("L15")]
+
+    def test_a_typescript_path_names_its_own_module(self):
+        # The dot after the module name is a file extension, not a separator.
+        # Requiring the planner to repeat the name after writing the path
+        # spends an attempt on a rule that is wrong rather than a plan that is
+        # -- which is what happened on attempt 1 of the first TypeScript
+        # bootstrap.
+        self.speak("typescript")
+        self.assertFalse(self.l15(
+            "src/idlegame/model.ts :: interface GameState { resource: number }",
+            "src/idlegame/model.ts"))
+
+    def test_a_typescript_signature_with_no_module_at_all_is_refused(self):
+        self.speak("typescript")
+        self.assertTrue(self.l15("interface GameState { resource: number }",
+                                 "src/idlegame/model.ts"))
+
+    def test_a_longer_name_does_not_count_as_the_shorter_one(self):
+        self.speak("typescript")
+        self.assertTrue(self.l15("src/idlegame/models.ts :: interface X",
+                                 "src/idlegame/model.ts"))
+
+    def test_python_still_treats_the_dot_as_a_separator(self):
+        # incgame.engine appearing inside incgame.engine.sub names a different
+        # module, so the dot stays in Python's boundary.
+        self.speak("python")
+        self.assertFalse(self.l15(
+            "src/incgame/engine.py: def f() -> int -- defined in incgame.engine",
+            "src/incgame/engine.py"))
+        self.assertTrue(self.l15("def f() -> int", "src/incgame/engine.py"))
+
+
+class StampingTheLanguage(Language):
+    """The runner writes the language into the plan; the planner never does.
+
+    Which languages this machine has is a property of the box, and which one a
+    project uses is decided before anyone is asked for a plan -- the same
+    argument as solver_tiers. A planner that could choose would sometimes
+    choose the toolchain that is not installed.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.temp = tempfile.TemporaryDirectory()
+        self.out = Path(self.temp.name)
+        self.saved_out = loop.PLANNER_OUT
+        loop.PLANNER_OUT = self.out
+
+    def tearDown(self) -> None:
+        loop.PLANNER_OUT = self.saved_out
+        self.temp.cleanup()
+        super().tearDown()
+
+    def test_the_value_lands_in_the_proposal(self):
+        (self.out / "tasks.json").write_text('{"version": 1, "steps": []}',
+                                             encoding="utf-8")
+        loop.stamp_language("typescript")
+        written = json.loads((self.out / "tasks.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["language"], "typescript")
+        self.assertEqual(written["steps"], [])
+
+    def test_an_escalation_leaves_nothing_to_stamp(self):
+        # The planner may answer with ESCALATE.md and no plan at all. Stamping
+        # must not invent one.
+        loop.stamp_language("typescript")
+        self.assertFalse((self.out / "tasks.json").exists())
+
+    def test_unreadable_json_is_left_alone_rather_than_replaced(self):
+        (self.out / "tasks.json").write_text("{ not json", encoding="utf-8")
+        loop.stamp_language("typescript")
+        self.assertEqual((self.out / "tasks.json").read_text(encoding="utf-8"),
+                         "{ not json")
 
 
 class ReadingTheReport(unittest.TestCase):
