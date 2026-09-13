@@ -25,7 +25,14 @@ chown -R runner:runner "$P"
 # it. The solver can create new files at the root (which codex needs) and cannot
 # touch anything runner owns. Asserted at the bottom of this script.
 chgrp solverw "$P"
-chmod 3775 "$P"      # setgid + sticky + rwxrwxr-x
+# 3770, not 3775. The trailing 5 gave every account on the box read and traverse
+# on the workspace, and from there src/ and tests/ were readable by anyone at
+# all -- the planner, which BOOTSTRAP 1-1 keeps away from the code that
+# satisfies its criteria, and the critic, whose entire worth is not having read
+# the tests. Nothing needed `other` here: the solver reaches this through
+# solverw and the runner owns it. Found by the critic's own fence assertion on
+# the first run of it.
+chmod 3770 "$P"      # setgid + sticky + rwxrwx---
 
 # The setgid bit has a second effect that is easy to miss and expensive to
 # leave: a file the RUNNER creates at the root inherits group solverw too, and
@@ -51,7 +58,7 @@ chmod 700 "$P/.git" "$P/plan" "$P/.runner"
 # solver-writable. setgid so files created by solver keep group solverw and
 # stay manageable by runner.
 chown -R runner:solverw "$P/src" "$P/tests"
-chmod 2775 "$P/src" "$P/tests"
+chmod 2770 "$P/src" "$P/tests"
 
 # Interpreter and libraries: readable and executable, never writable.
 chmod -R go-w "$P/.venv"
@@ -90,6 +97,19 @@ chk_cannot ls "$P/plan"
 chk_cannot ls "$P/.runner"
 chk_cannot test -w /srv/loop/brief
 chk_cannot ls /home/runner
+
+# Accounts that are not in solverw must not reach the code at all. The planner
+# writes the criteria and must not see the code satisfying them (BOOTSTRAP 1-1);
+# the critic must not see the tests it would otherwise grade against.
+for stranger in planner critic; do
+  id -u "$stranger" >/dev/null 2>&1 || continue
+  for target in "$P" "$P/src" "$P/tests"; do
+    if sudo -u "$stranger" ls "$target" >/dev/null 2>&1; then
+      echo "FAIL: $stranger should NOT be able to: ls $target"
+      fail=1
+    fi
+  done
+done
 # The maintenance user's home holds the human's ssh keys and the agent CLI
 # credentials. solver reaching it would hand it the git channel and a login.
 chk_cannot ls "/home/$ADMIN_USER"

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Start the critic agent, non-interactively, on one brief.
+#
+#     sudo -u critic /srv/loop/bin/critic-run <brief-file> [seconds]
+#
+# Same shape as planner-run and solver-run, and for the same reason: the runner
+# has no sudo, and /etc/sudoers.d/93-runner-to-critic names this script and no
+# other, limited to Runas (critic). Sideways, never up.
+#
+# What makes this account worth having is what it cannot reach, and none of that
+# is enforced here:
+#
+#   plan/          0700 runner  -- it cannot read the plan it is judging
+#   tests/         not in its groups -- it cannot read the tests that passed
+#   planner/out    plannerw     -- it cannot see the proposal being written
+#   brief/         solverw      -- it cannot see what the solver was told
+#
+# All four were measured before this file existed. A critic that reads the plan
+# reports "every acceptance criterion is met", which is true and worthless; a
+# critic that reads the tests reports that the tests pass. The whole value of
+# the role is the ignorance, so the ignorance is a filesystem fact rather than a
+# line in a prompt that a future brief might soften.
+set -euo pipefail
+
+BRIEF="${1:?usage: critic-run <brief-file> [seconds]}"
+LIMIT="${2:-900}"
+[ -r "$BRIEF" ] || { echo "critic-run: cannot read brief: $BRIEF" >&2; exit 2; }
+
+OUT=/srv/loop/critic/out
+
+# Its own credentials, in its own file, readable by one uid. Same argument as
+# the planner's: a role that has burned through its quota must not be able to
+# stop another role from running, and a breach of one must not hand over the
+# credential of another.
+if [ -r /etc/loop/critic.env ]; then
+  set -a
+  . /etc/loop/critic.env
+  set +a
+fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  if [ -n "${ANTHROPIC_API_KEY_CONSOLE:-}" ]; then
+    export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_CONSOLE"
+    echo "critic-run: no subscription token; falling back to Console credit" >&2
+  else
+    echo "critic-run: no credentials in /etc/loop/critic.env" >&2
+    echo "    subscription (preferred): sudo -u critic -H claude setup-token" >&2
+    exit 3
+  fi
+fi
+unset ANTHROPIC_API_KEY_CONSOLE
+
+# A throwaway HOME for every invocation, exactly as planner-run does it. Here it
+# carries a second meaning: two critiques of the same plan must not be able to
+# agree with each other by remembering. Each one starts from the brief and
+# nothing else.
+HOME="$(mktemp -d)"
+export HOME
+trap 'rm -rf "$HOME"' EXIT
+
+cd "$OUT"
+
+# --safe-mode / --setting-sources "" / --no-session-persistence
+#     the brief is the only input, as for the planner (RUNNER_SPEC section 5).
+# --allowedTools "Read Write"
+#     it reads its brief on stdin and writes one findings file here. No Edit:
+#     there is nothing here it should be revising.
+set +e
+timeout --kill-after=30 "$LIMIT" claude -p \
+  --safe-mode \
+  --setting-sources "" \
+  --no-session-persistence \
+  --allowedTools "Read Write" \
+  < "$BRIEF"
+rc=$?
+set -e
+exit "$rc"
