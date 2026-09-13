@@ -1009,7 +1009,39 @@ def escalate(step: dict, halt: Halt, attempt: int, run_: TestRun | None) -> None
 # introduces the data model provides `class GameState(...)`, and matching only
 # `def` made every later step's `requires` fail L3 against a name the linter
 # could not see. Found the first time a real plan had a data-model step.
-PROVIDES_NAME = re.compile(r"(?:def|class)\s+([A-Za-z_]\w*)")
+# What a contract line calls the thing it declares. Language-shaped, and the
+# reason it has to be is that L3 compares names: "does anything this step
+# depends on provide what it requires?"
+#
+# The Python-only version made L3 UNSATISFIABLE in TypeScript, and the two
+# sides failed differently, which is what hid it. The provides side DROPPED
+# every line the pattern missed, so it built an empty set; the requires side
+# fell back to the whole line and looked for it in that empty set. Every
+# requires entry was a violation, always, and no plan could ever answer it.
+# Run 8's bootstrap spent two attempts and fifty-six minutes on it before the
+# pattern was visible -- the first attempt's feedback looked like an ordinary
+# inconsistency, and the planner "fixed" it into an identical failure.
+#
+# Third time a rule written in Python's grammar has cost paid attempts, after
+# L14's vocabulary and L15's name boundary. The rule was never wrong; its
+# expression was.
+PROVIDES_PATTERNS = {
+    ".py": re.compile(r"(?:def|class)" + chr(92) + r"s+([A-Za-z_]" + chr(92) + r"w*)"),
+    ".ts": re.compile(
+        r"(?:function|class|interface|type|enum|const|let)" + chr(92) + r"s+([A-Za-z_]" + chr(92) + r"w*)"),
+}
+
+
+def declared_name(line: str) -> str:
+    """The name a contract line declares, or the whole line if it declares none.
+
+    The fallback is the same on both sides of L3 now, and that symmetry is the
+    fix. Dropping unmatched lines from `provides` while keeping them in
+    `requires` does not make the rule stricter -- it makes it unanswerable.
+    """
+    pattern = PROVIDES_PATTERNS.get(LANGUAGE["source_suffix"])
+    match = pattern.search(line) if pattern else None
+    return match.group(1) if match else line.strip()
 # "concrete" for L8: a number, a quoted literal, or an exception type. An
 # acceptance criterion made only of adjectives cannot be turned into a test that
 # two people would write the same way.
@@ -1088,7 +1120,7 @@ def validate_plan(tasks: dict) -> list[str]:
     ids = [s["id"] for s in steps]
     seen: set[str] = set()
     provides_by_step = {
-        s["id"]: {m.group(1) for p in s["contracts"]["provides"] if (m := PROVIDES_NAME.search(p))}
+        s["id"]: {declared_name(p) for p in s["contracts"]["provides"]}
         for s in steps
     }
 
@@ -1105,7 +1137,7 @@ def validate_plan(tasks: dict) -> list[str]:
         available = set().union(*(provides_by_step[d] for d in s["depends_on"] if d in provides_by_step)) \
             if s["depends_on"] else set()
         for req in s["contracts"].get("requires", []):
-            name = m.group(1) if (m := PROVIDES_NAME.search(req)) else req
+            name = declared_name(req)
             if name not in available:
                 problems.append(f"L3: step {sid} requires `{name}`, which no dependency provides")
 
@@ -1301,7 +1333,7 @@ def validate_plan(tasks: dict) -> list[str]:
     # are exempt: tying the pieces together is the deliverable there, not an
     # input to a later step.
     used = set().union(*[
-        {m.group(1) if (m := PROVIDES_NAME.search(r)) else r for r in s["contracts"].get("requires", [])}
+        {declared_name(r) for r in s["contracts"].get("requires", [])}
         for s in steps
     ]) if steps else set()
     for s in steps:
@@ -2349,10 +2381,21 @@ def cmd_critique(modes: list[str]) -> int:
     worked perfectly and found a problem is a different outcome from a critique
     that failed. `run --all` needs to tell them apart.
     """
-    tasks_path = PLAN / "tasks.json"
+    # The pending proposal first, and that ordering is the point. The moment a
+    # critique is worth most is BEFORE `plan apply`, while the criteria are
+    # still a draft -- once applied they are what the loop is measured against,
+    # and changing them is case (b), which belongs to the human. Reading only
+    # the applied plan would have made this verb arrive exactly one step too
+    # late. Falls back to the applied plan so a revision can be re-examined.
+    pending = PLANNER_OUT / "tasks.json"
+    applied = PLAN / "tasks.json"
+    tasks_path = pending if pending.is_file() else applied
     if not tasks_path.is_file():
-        print(f"no plan to critique at {tasks_path}", file=sys.stderr)
+        print(f"no plan to critique: neither {pending} nor {applied}",
+              file=sys.stderr)
         return 1
+    print(f"critiquing {'the pending proposal' if tasks_path == pending else 'the applied plan'}"
+          f" ({tasks_path})")
     tasks = tasks_path.read_text(encoding="utf-8")
     load_settings(json.loads(tasks))
 
