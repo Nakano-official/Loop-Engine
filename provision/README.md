@@ -26,12 +26,23 @@ RUNNER_SPEC.md の実行環境（§1）を再現するための手順とスク�
 
 | ユーザー | uid | sudo | SSH | 用途 |
 |---|---|---|---|---|
-| `maint` | 1000 | あり | 鍵のみ | プロビジョニングと保守。VS Code Remote-SSH はここに繋ぐ |
+| 保守用（既定ユーザー） | 1000 | あり | 鍵のみ | プロビジョニングと保守。VS Code Remote-SSH はここに繋ぐ |
 | `runner` | 1001 | **なし** | 鍵のみ | ループの実行主体。ホストからの git push を受ける |
 | `solver` | 1002 | **なし** | **不可**（`AllowUsers` に載せない + `DenyUsers`） | 実装を書くだけ |
+| `planner` | 1003 | **なし** | **不可** | 受け入れ基準を書く。コードには触れない（BOOTSTRAP 1-1） |
+| `critic` | 1004 | **なし** | **不可** | 計画の欠陥を指摘する。**計画もテストも読めない**（2026-09-13 追加） |
 
-`maint` は VirtualBox 構成での `admin` に相当する。WSL2 のディストロには
-既定ユーザーが必ず1人いるので、それを保守用として使い、ループ用の2人を足す形にした。
+保守用アカウントは VirtualBox 構成での `admin` に相当する。WSL2 のディストロには
+既定ユーザーが必ず1人いるので、それを保守用として使い、ループ用の4人を足す形にした。
+
+**名前はこのリポジトリでは決め打ちにしていない。** スクリプトは `ADMIN_USER` で受け取り、
+既定は `maint`。この機械の実際の既定ユーザーは `yoshito` なので、手で叩くときは
+`ADMIN_USER=yoshito` を渡す。**`maint` を前提に書くと落ちる**（2026-09-13 に踏んだ）。
+
+`critic` の uid が分かれている理由は、他の3人とは毛色が違う。solver と planner は
+「書けるものを制限する」ための分離だが、critic は**読めるものを制限する**ための分離で、
+役の価値そのものがそこにある ── 計画を読める critic は「全基準を満たしている」と答え、
+テストを読める critic は「テストは通る」と答える。どちらも真で、どちらも無価値。
 
 ホスト側の付属物（詳細と再作成手順は `host/README.md`）:
 
@@ -305,8 +316,22 @@ PowerShell 5.1 は BOM 無し UTF-8 を ANSI として読む。日本語文字�
 ### 3-7. Git Bash から `wsl.exe` を叩くとパスが変換される
 
 Git Bash 経由で `wsl -d Ubuntu-24.04 --exec /bin/true` を実行すると、
-MSYS が `/bin/true` を Windows パスに変換して失敗する。
-`/usr/bin/true` のように変換されない形を使う（`loop-dev.cmd` がそうしている）。
+MSYS が `/bin/true` を Windows パスに変換して失敗する:
+
+```
+execvpe(C:/Program Files/Git/usr/bin/bash) failed: No such file or directory
+```
+
+**「`/usr/bin/...` の形を使えばよい」は誤りだった**（2026-09-13 実測）。変換されるのは
+プログラム名だけでなく**引数の絶対パスも**で、`/usr/bin/bash /tmp/x.sh` は両方やられる。
+2回踏んでから分かった。正しくは変換そのものを止める:
+
+```bash
+MSYS_NO_PATHCONV=1 wsl -d Ubuntu-24.04 -u root bash /tmp/x.sh
+```
+
+`loop-dev.cmd` が `/usr/bin/...` で通っているのは、cmd から呼ばれていて MSYS を
+経由しないため。Git Bash から叩くときは上の形を使う。
 
 ### 3-8. WSLg が Windows 側への通り道を開けたままにする
 
