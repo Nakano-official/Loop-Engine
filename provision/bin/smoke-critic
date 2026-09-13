@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Can the critic be started at all, and does what it writes come back?
+#
+#     sudo -u runner /srv/loop/bin/smoke-critic
+#
+# Cheap on purpose. Everything this checks -- the sudoers grant, the credential
+# file, the throwaway HOME, the working directory, the Write tool, the group on
+# the brief -- fails in a way that looks identical from the runner: a critique
+# that produced nothing. Finding that out after a bootstrap has already spent
+# twenty-five minutes is the expensive way to learn it.
+#
+# The check is not "did the agent say it wrote the file". The file is read back
+# and its contents inspected, the same as smoke-pytest reads the JUnit report
+# rather than believing a claim in prose.
+set -euo pipefail
+
+[ "$(id -un)" = "runner" ] || { echo "run as runner: sudo -u runner $0" >&2; exit 1; }
+
+BRIEF=/srv/loop/critic/brief/smoke.md
+OUT=/srv/loop/critic/out
+TOKEN="critic-smoke-$$"
+
+mkdir -p /srv/loop/critic/brief
+rm -f "$OUT"/* 2>/dev/null || true
+
+cat > "$BRIEF" <<EOF
+Write exactly one file, named FINDINGS.json, in the current directory, with
+this exact content and nothing else:
+
+    {"findings": [{"title": "$TOKEN", "evidence": "smoke", "machine_would_notice": false}]}
+
+Write no other file. Output nothing but the file.
+EOF
+chgrp criticw "$BRIEF"
+chmod 640 "$BRIEF"
+
+echo "starting the critic..."
+set +e
+sudo -u critic /srv/loop/bin/critic-run "$BRIEF" 120 >/tmp/smoke-critic.log 2>&1
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL: critic-run exited $rc" >&2
+  tail -20 /tmp/smoke-critic.log >&2
+  exit 1
+fi
+
+REPORT="$OUT/FINDINGS.json"
+[ -f "$REPORT" ] || { echo "FAIL: no $REPORT" >&2; ls -la "$OUT" >&2; exit 1; }
+
+# Read it back rather than trusting the exit code, and check the token this run
+# generated -- a file left by an earlier run would otherwise pass.
+python3 - "$REPORT" "$TOKEN" <<'PY'
+import json, sys
+report, token = sys.argv[1], sys.argv[2]
+value = json.loads(open(report, encoding="utf-8").read())
+titles = [f.get("title") for f in value["findings"]]
+if token not in titles:
+    print(f"FAIL: {report} does not carry this run's token", file=sys.stderr)
+    print(f"  wanted {token}, got {titles}", file=sys.stderr)
+    raise SystemExit(1)
+print(f"  {report}: {len(value['findings'])} finding(s), token matches")
+PY
+
+# The runner owns the directory, so it clears what it consumed.
+rm -f "$OUT"/* "$BRIEF"
+echo "smoke-critic: ok -- the critic starts, writes where it is told, and the"
+echo "               runner can read it back"

@@ -23,6 +23,7 @@ install -o root -g root -m 755 bin/smoke-solver /srv/loop/bin/smoke-solver
 install -o root -g root -m 755 bin/smoke-pytest /srv/loop/bin/smoke-pytest
 install -o root -g root -m 755 bin/smoke-planner /srv/loop/bin/smoke-planner
 install -o root -g root -m 755 bin/smoke-plan    /srv/loop/bin/smoke-plan
+install -o root -g root -m 755 bin/smoke-critic  /srv/loop/bin/smoke-critic
 
 # The planner's channel, deliberately separate from the solver's.
 #
