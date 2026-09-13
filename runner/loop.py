@@ -52,6 +52,12 @@ SOLVER_RUN = LOOP / "bin" / "solver-run"
 PLANNER_RUN = LOOP / "bin" / "planner-run"
 PLANNER_BRIEF = LOOP / "planner" / "brief"
 PLANNER_OUT = LOOP / "planner" / "out"
+CRITIC_RUN = LOOP / "bin" / "critic-run"
+CRITIC_BRIEF = LOOP / "critic" / "brief"
+CRITIC_OUT = LOOP / "critic" / "out"
+# The one filename the critic may write, for the same reason the planner has
+# three: a name it was never given is a name the runner refuses to read.
+FINDINGS_NAME = "FINDINGS.json"
 
 # The human's own channel, and the one the planner cannot write. The
 # requirements that start a project arrive here, and later so will the answers
@@ -121,7 +127,7 @@ PYTEST_ARGS = ["-q", "-p", "no:cacheprovider", "--strict-markers"]
 # waste here -- Claude Code writes the files at the end, so a killed planning
 # call yields no partial plan to salvage -- which makes the cost of setting this
 # too low much higher than the cost of setting it too high.
-TIMEOUTS = {"test": 120, "solver": 960, "planner": 1800}
+TIMEOUTS = {"test": 120, "solver": 960, "planner": 1800, "critic": 900}
 # How far above an agent's own ceiling the runner's backstop sits. It only has to
 # cover solver-run/planner-run's `--kill-after=30` plus the time to write output.
 BACKSTOP_MARGIN = 120
@@ -147,7 +153,7 @@ BACKSTOP_MARGIN = 120
 # against a metered solver 3 is right, and against a local one an attempt costs
 # only wall-clock -- so ten of them are cheaper than the single planner call that
 # an escalation buys.
-LIMITS = {"escalations": 1, "revisions": 3, "attempts": 0}
+LIMITS = {"escalations": 1, "revisions": 3, "attempts": 0, "critiques": 2}
 
 # How the next attempt inside a step begins.
 #
@@ -2040,6 +2046,348 @@ def stamp_language(name: str) -> None:
         os.close(fd)
 
 
+# --------------------------------------------------------------------------
+# the critic
+# --------------------------------------------------------------------------
+#
+# A fourth role, and the reason it exists is a measurement rather than a
+# theory. Run 7 finished with ten green steps and forty-two passing tests, and
+# the artifact accepted no input at all: resource started at 0.0, production
+# summed an empty dict, both purchases cost more than zero. Every gate was
+# correct. Every criterion genuinely checked something. Nothing in the machine
+# was positioned to ask whether the result was any good.
+#
+# The gates check the SHAPE OF THE WORK -- were tests written first, do they
+# fail against a stub and fail for the right reason, was anything else touched,
+# did something that passed stop passing. None of that mentions what is being
+# built, and it should not: that is what makes them work for any subject in any
+# language. The critic is the other half. It never decides that anything is
+# finished; it can only say that something is wrong.
+#
+# TWO MODES, because one question does not find both kinds of defect. Measured
+# on run 7's plan, with the findings disjoint:
+#
+#   coverage  found: the reset feature is unreachable from the screen; nothing
+#             verifies the launch command; a required per-generator figure is
+#             not merely absent but actively asserted against, so a correct
+#             implementation would FAIL the criteria
+#   trace     found: the initial state is a fixed point under every available
+#             action; whole modules are dead on arrival; invariants that hold
+#             only because the function they describe is never called
+#
+# Neither found the other's. So they are separate calls with separate briefs
+# rather than one brief with two sections -- a single framing dominated, which
+# is exactly how the first attempt at this missed the fixed point.
+
+CRITIQUE_MODES = ("coverage", "trace")
+
+
+def brief_critique_coverage(requirements: str, tasks: str) -> str:
+    """Does this plan, fully satisfied, give the human what they asked for?"""
+    return f"""You are the critic. Your only job is to answer one question about
+a piece of work that has not been built yet.
+
+# The question
+
+A human wrote requirements for something they want. A planner turned those
+requirements into a plan: a sequence of steps, each with acceptance criteria
+that a machine will check.
+
+**If every acceptance criterion in this plan passed, would the human's
+requirements be satisfied?**
+
+# The requirements, written by the human
+
+{requirements}
+
+# The plan
+
+{tasks}
+
+# How to read the plan
+
+`steps` is a sequence. Each step has:
+
+- `goal` -- prose describing what the step builds
+- `contracts.provides` / `requires` / `invariants` -- the signatures and
+  properties this step hands to later steps
+- `acceptance` -- the criteria a machine will check, as {{case, given, then}}.
+  **These are the only things that will be verified.** `goal` and `invariants`
+  are prose; nothing checks them.
+- `files_write` -- the files this step creates. A file belongs to exactly one
+  step and is never edited by a later step.
+
+# What to look for
+
+Read the requirements as a person who will use the thing, not as someone
+checking boxes. Then work out what the plan actually produces, by reading the
+contracts and criteria as a whole system rather than step by step.
+
+A plan can be wrong in ways no single step is wrong in. Pay attention to what
+the steps produce TOGETHER, and to anything the requirements ask for that no
+criterion anywhere would detect the absence of.
+
+Watch for the sharper case as well: a criterion that does not merely omit
+something the requirements ask for, but asserts an exact result that a correct
+implementation would fail. A plan can test against its own requirements.
+
+{findings_contract()}"""
+
+
+def brief_critique_trace(tasks: str) -> str:
+    """Starting from the initial state, what can a user actually reach?
+
+    Deliberately NOT given the requirements. On run 7's plan this mode derived
+    the deadlock from the criteria alone -- which means it can catch a product
+    that cannot work even when the requirements never said the thing it is
+    missing. Run 7's requirements never mentioned a starting state.
+    """
+    return f"""You are the tracer. You read a plan for something that has not
+been built yet, and you work out what a user of the finished thing would
+actually be able to do.
+
+# The plan
+
+{tasks}
+
+# How to read it
+
+`steps` is a sequence. Each step has:
+
+- `contracts.provides` -- the functions and types this step creates
+- `contracts.requires` -- what it takes from earlier steps
+- `contracts.invariants` -- properties claimed in prose (nothing verifies these)
+- `acceptance` -- {{case, given, then}} triples. These are the only things a
+  machine will check, and they carry concrete values, so they are the most
+  reliable statement of what the code will actually do
+- `goal` -- prose
+- `files_write` -- the files this step owns
+
+# Your task
+
+Work out, from the contracts and the acceptance criteria:
+
+1. **The initial state.** What state does the artifact hold the first time a
+   user opens it, before anything has happened? Quote the criteria that fix it.
+
+2. **The action set.** What can a user of the finished artifact actually do?
+   Not what functions exist -- what a person operating the thing can invoke.
+   Reaching a function requires that something in the plan exposes it to them;
+   a function no exposed surface calls is not an action.
+
+3. **The reachable set.** Starting from the initial state and applying any
+   sequence of those actions, what states can be reached? Derive it, showing
+   the arithmetic where the criteria give you concrete numbers.
+
+Then say plainly:
+
+- Is any state reachable from the initial state at all, or is the initial state
+  fixed under every available action?
+- Are there states the artifact is evidently built to handle that no sequence
+  of user actions can ever reach? Name them and show why.
+
+Show your derivation with the actual numbers from the criteria, so that someone
+can check each step. Do not describe what the plan intends -- describe what it
+specifies. If your derivation contradicts what the prose in `goal` or
+`invariants` claims, trust the acceptance criteria and say that they disagree.
+
+{findings_contract()}"""
+
+
+def findings_contract() -> str:
+    """What the critic writes, and the one filename it may write it to.
+
+    Prose inside structured slots, on purpose. The runner needs to count
+    findings to decide whether to continue; the planner needs to read them to
+    act. A bare number cannot carry "the plan tests against its own
+    requirement", and free prose cannot be counted.
+    """
+    return f"""# What to write
+
+Write exactly one file, named `{FINDINGS_NAME}`, in the current directory.
+Write no other file: a name you were not given is a name the runner deletes
+without reading.
+
+    {{
+      "findings": [
+        {{
+          "title": "one line, the claim itself",
+          "evidence": "which steps, contracts or criteria show it. Be specific
+                       enough that someone can check you. Quote the criteria.",
+          "machine_would_notice": false
+        }}
+      ]
+    }}
+
+`machine_would_notice` is false when every criterion would pass while the
+problem stood. Say so plainly when that is the case -- it is the difference
+between a plan that is incomplete and a plan that cannot be caught.
+
+Order the findings by how badly they hurt the person who asked for this.
+
+**If you find nothing, write the file with an empty `findings` list.** Finding
+nothing is an answer; writing no file is not, and the runner treats a missing
+or unreadable file as a critique that never happened.
+
+You cannot approve anything. Nothing you write makes any of this pass -- the
+gates decide that, and a human looks at the result afterwards. Your only power
+is to say that something is wrong, so do not soften a finding to be agreeable
+and do not invent one to seem useful.
+
+Output nothing but the file. Do not restate the findings in your final message.
+"""
+
+
+def clear_critique() -> None:
+    """Empty out/ before asking for a critique.
+
+    Same reason as clear_proposal: a file left from a previous call would be
+    read as this call's answer, and "the critic found nothing" and "the critic
+    never ran" must never look alike.
+    """
+    CRITIC_OUT.mkdir(parents=True, exist_ok=True)
+    for entry in CRITIC_OUT.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            raise Halt("CRITIQUE",
+                       f"a directory is in the way in {CRITIC_OUT}: {entry.name}",
+                       "Remove it by hand; the runner will not recurse into a "
+                       "tree written by another uid.")
+        entry.unlink()
+
+
+def call_critic(brief: str, mode: str) -> str:
+    """Hand the critic one brief.
+
+    Note what the brief contains and what it does not. It carries the plan,
+    because a critique of a plan needs the plan. It does not carry the tests,
+    the ledger, or anything about what passed -- and the critic could not reach
+    those anyway: tests/ and src/ are 2770 runner:solverw and the critic is in
+    neither. The point is measured, not decorative: a critic that can see what
+    already passed reports that it passed.
+    """
+    CRITIC_BRIEF.mkdir(parents=True, exist_ok=True)
+    brief_path = CRITIC_BRIEF / f"{mode}.md"
+    brief_path.write_text(brief, encoding="utf-8")
+    shutil.chown(brief_path, group="criticw")
+    brief_path.chmod(0o640)
+
+    limit = TIMEOUTS["critic"]
+    try:
+        proc = run(agent_command("critic", CRITIC_RUN, brief_path, limit),
+                   timeout=limit + BACKSTOP_MARGIN)
+    except subprocess.TimeoutExpired:
+        raise Halt("CRITIQUE", f"critic still running after {limit + BACKSTOP_MARGIN}s",
+                   "critic-run's internal timeout did not fire; check with: "
+                   "pgrep -a -u critic")
+    out = proc.stdout + proc.stderr
+    if proc.returncode == 124:
+        raise Halt("CRITIQUE", "critic hit its own timeout in critic-run", out[-4000:])
+    if proc.returncode != 0:
+        raise Halt("CRITIQUE", f"critic exited {proc.returncode}", out[-4000:])
+    return out
+
+
+def read_findings() -> list[dict]:
+    """The findings, read out of the file the critic wrote.
+
+    Anything unreadable is an error and never an absence, for the same reason
+    parse_junit refuses to read a broken report as zero failures: a critique
+    that cannot be read has said nothing about the plan, and treating that as
+    "clean" would let work through on a check that never happened.
+    """
+    removed = [p.name for p in CRITIC_OUT.iterdir() if p.name != FINDINGS_NAME]
+    for name in removed:
+        entry = CRITIC_OUT / name
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
+    if removed:
+        ledger("CRITIQUE_PRUNED", removed=sorted(removed))
+
+    path = CRITIC_OUT / FINDINGS_NAME
+    if not path.is_file():
+        raise Halt("CRITIQUE", f"the critic wrote no {FINDINGS_NAME}",
+                   "A critique that produced no file has said nothing. Re-run it, "
+                   "or read the brief for what it was asked to write.")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise Halt("CRITIQUE", f"{FINDINGS_NAME} is not readable JSON: {error}",
+                   path.read_text(encoding="utf-8", errors="replace")[:2000])
+    findings = value.get("findings") if isinstance(value, dict) else None
+    if not isinstance(findings, list):
+        raise Halt("CRITIQUE", f"{FINDINGS_NAME} has no `findings` list")
+    return [f for f in findings if isinstance(f, dict)]
+
+
+def render_findings(by_mode: dict[str, list[dict]]) -> str:
+    """The findings as the human and the planner read them."""
+    lines = []
+    for mode, findings in by_mode.items():
+        lines.append(f"## {mode}")
+        if not findings:
+            lines.append("(nothing found)")
+        for n, finding in enumerate(findings, 1):
+            title = str(finding.get("title", "(untitled)")).strip()
+            evidence = str(finding.get("evidence", "")).strip()
+            unseen = finding.get("machine_would_notice") is False
+            lines.append(f"{n}. {title}")
+            if unseen:
+                lines.append("   NO GATE WOULD CATCH THIS")
+            if evidence:
+                lines.append("   " + evidence.replace("\n", "\n   "))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_critique(modes: list[str]) -> int:
+    """Ask the critic about the plan on disk, in each mode, and report.
+
+    Returns 0 when nothing was found and 4 when something was. Not 1 or 2:
+    those already mean "the runner could not do its job", and a critique that
+    worked perfectly and found a problem is a different outcome from a critique
+    that failed. `run --all` needs to tell them apart.
+    """
+    tasks_path = PLAN / "tasks.json"
+    if not tasks_path.is_file():
+        print(f"no plan to critique at {tasks_path}", file=sys.stderr)
+        return 1
+    tasks = tasks_path.read_text(encoding="utf-8")
+    load_settings(json.loads(tasks))
+
+    requirements = REQUIREMENTS.read_text(encoding="utf-8") \
+        if REQUIREMENTS.is_file() else ""
+    if not requirements:
+        print(f"no requirements at {REQUIREMENTS}; coverage needs them",
+              file=sys.stderr)
+
+    by_mode: dict[str, list[dict]] = {}
+    for mode in modes:
+        if mode == "coverage" and not requirements:
+            continue
+        brief = (brief_critique_coverage(requirements, tasks) if mode == "coverage"
+                 else brief_critique_trace(tasks))
+        ledger("CRITIQUE", mode=mode)
+        clear_critique()
+        call_critic(brief, mode)
+        findings = read_findings()
+        ledger("FINDINGS", mode=mode, count=len(findings),
+               titles=[str(f.get("title", ""))[:200] for f in findings])
+        by_mode[mode] = findings
+
+    total = sum(len(f) for f in by_mode.values())
+    print(render_findings(by_mode))
+    if total == 0:
+        ledger("CRITIQUE_CLEAN", modes=sorted(by_mode))
+        print("the critic found nothing. That is not approval -- the gates and "
+              "the human decide that.")
+        return 0
+    print(f"{total} finding(s). Nothing is green or not green because of this; "
+          f"decide what to do with them.")
+    return 4
+
+
 def cmd_plan_bootstrap(source: str | None, language: str = "python") -> int:
     """Ask the planner for a first plan, from a requirements file the human wrote.
 
@@ -2762,6 +3110,16 @@ def main() -> int:
     plan_sub.add_parser("show", help="print the pending proposal without applying it")
     plan_sub.add_parser("apply", help="check the pending proposal and apply it if it passes")
 
+    # The critic. A separate verb rather than a step of `plan apply`, for the
+    # reason the planner channel is three verbs: it spends money, and a human
+    # who wants to read a plan before paying for an opinion about it must be
+    # able to.
+    critique_cmd = sub.add_parser(
+        "critique", help="ask the critic what is wrong with the plan on disk")
+    critique_cmd.add_argument("--mode", action="append", choices=list(CRITIQUE_MODES),
+                              help="repeatable; default is every mode, because "
+                                   "the two find disjoint kinds of defect")
+
     args = parser.parse_args()
 
     if os.geteuid() == 0:
@@ -2784,6 +3142,8 @@ def main() -> int:
             if args.plan_cmd == "show":
                 return cmd_plan_show()
             return cmd_plan_apply()
+        if args.cmd == "critique":
+            return cmd_critique(args.mode or list(CRITIQUE_MODES))
         if args.all:
             if args.step_id:
                 print("run takes a step id or --all, not both", file=sys.stderr)
