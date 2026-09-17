@@ -131,5 +131,38 @@ class Reporting(unittest.TestCase):
         self.assertIn("(nothing found)", render_findings({"coverage": []}))
 
 
+class TheRefineLoop(unittest.TestCase):
+    """Findings go back to the planner without a person in between.
+
+    A critique nobody routes is a report, and a report leaves the human inside
+    the cycle at exactly the point the machine was built to handle. The
+    findings are addressed to the planner anyway.
+    """
+
+    def test_the_brief_says_the_criteria_are_still_open(self):
+        # This is the difference from `plan propose`. Nothing is built, nothing
+        # is green, so P5 does not bite and the acceptance criteria can still
+        # change -- which is why the critique happens before `plan apply` and
+        # not after.
+        brief = loop.brief_plan_refine("要件", "{}", "1. something is wrong")
+        self.assertIn("NOTHING HAS BEEN BUILT YET", brief)
+        self.assertIn("still yours to change", brief)
+        self.assertIn("something is wrong", brief)
+
+    def test_the_brief_says_the_critic_may_be_wrong(self):
+        # The first production critique spent two of its five findings on a
+        # file the environment provides. A planner told to satisfy every
+        # finding would have contorted the plan to build something that was
+        # already there.
+        brief = loop.brief_plan_refine("要件", "{}", "1. x")
+        self.assertIn("could be wrong", brief)
+        self.assertIn("already provides", brief)
+
+    def test_deleting_the_criterion_is_named_as_the_move_not_to_make(self):
+        brief = loop.brief_plan_refine("要件", "{}", "1. x")
+        self.assertIn("deleting the criterion", brief)
+        self.assertIn("expected_tests", brief)
+
+
 if __name__ == "__main__":
     unittest.main()

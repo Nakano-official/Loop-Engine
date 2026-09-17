@@ -1825,6 +1825,21 @@ def environment_facts() -> str:
                         else "conftest.py")
     wiring_text = wiring.read_text(encoding="utf-8") if wiring.exists() else "(none)"
 
+    # The launch wiring, shown in full rather than described. The prose version
+    # was enough for a planner writing against it, but not for a critic reading
+    # a finished plan: the first production critique reported twice that nothing
+    # creates index.html or calls start(), because the plan does not create it --
+    # the environment does, and nobody had told the critic that. Two of its five
+    # findings were about a file sitting at the root the whole time.
+    page = PROJECT / "index.html"
+    page_text = ("""
+`index.html` at the root, which the environment provides and no step writes.
+It is what a person opens, and it is already wired:
+
+"""
+                 f"{page.read_text(encoding='utf-8')}"
+                 ) if page.is_file() else ""
+
     # Gathered rather than written down, like everything else here, and for the
     # same reason -- but this one has teeth. A criterion such as "the window
     # opens" produces a test that fails with TclError, which is a real red and
@@ -1898,6 +1913,7 @@ toolchain -- this is the whole of what exists today:
 {wiring.name} at the root, which the test runner loads automatically:
 
 {wiring_text}
+{page_text}
 """
 
 
@@ -1928,7 +1944,25 @@ def proposal_problems(proposal: dict[str, str]) -> list[str]:
     Shared by `plan apply`, `plan show` and the retry loop, so that what the
     planner is told to fix is exactly what would have rejected it -- not a
     second implementation of the same rules that can drift from the first.
+
+    A proposal is judged in ITS OWN language, read from the proposal, because
+    several of the rules are expressed in one. `plan apply` is the verb that
+    settles a plan and it was the one verb that never set this: `bootstrap`
+    takes a flag, and `critique` and `refine` read it from the plan, but apply
+    ran on the default. A TypeScript plan was therefore checked as Python --
+    `modules_of` found no `.py` files, so L15 asked every contract to name a
+    module from an empty list and rejected all twenty-two of them. Correct plan,
+    wrong grammar, again. Setting it here rather than in the callers is the
+    point: the judging happens in one function, so the language does too.
     """
+    try:
+        language = json.loads(proposal["tasks.json"]).get("language")
+    except (KeyError, json.JSONDecodeError, AttributeError):
+        language = None   # other rules report the missing or broken file
+    if language in LANGUAGES:
+        LANGUAGE.clear()
+        LANGUAGE.update(LANGUAGES[language])
+
     existing = PLAN / "tasks.json"
     if existing.exists():
         old = json.loads(existing.read_text(encoding="utf-8"))
@@ -2136,6 +2170,8 @@ requirements be satisfied?**
 
 {tasks}
 
+{environment_facts()}
+
 # How to read the plan
 
 `steps` is a sequence. Each step has:
@@ -2181,6 +2217,8 @@ actually be able to do.
 # The plan
 
 {tasks}
+
+{environment_facts()}
 
 # How to read it
 
@@ -2373,6 +2411,169 @@ def render_findings(by_mode: dict[str, list[dict]]) -> str:
     return "\n".join(lines)
 
 
+def brief_plan_refine(requirements: str, tasks: str, findings: str,
+                      feedback: str = "") -> str:
+    """Hand the planner a critique of its own unapplied plan.
+
+    A different situation from `plan propose`, and the brief says so rather than
+    reusing that one. Nothing has been built, nothing is green, and P5 therefore
+    does not bite: every part of this plan can still change, including the
+    acceptance criteria. That is the whole reason this happens before `plan
+    apply` -- afterwards the criteria are what the loop is measured against and
+    rewriting them is case (b), which belongs to the human.
+    """
+    return f"""You are the planner. A critic read the plan you wrote and found
+problems with it. Revise the plan so those problems are gone.
+
+You do not write code and you cannot reach the repository. You write files into
+the current directory and the runner decides whether to apply them.
+
+# The requirements, written by the human
+{requirements}
+
+# The plan you wrote
+{tasks}
+
+# What the critic found
+{findings}
+
+# What is different about this moment
+
+NOTHING HAS BEEN BUILT YET. This plan has not been applied, no step is green,
+and no test exists. So unlike a revision after a step has failed, **everything
+here is still yours to change** -- the steps, the contracts, and the acceptance
+criteria. This is the last point at which the criteria can change without a
+human deciding it, which is why the critique happens here.
+
+# The critic could be wrong
+
+It was shown the requirements and the plan, and nothing else. It has never seen
+the repository. If a finding is mistaken -- most likely because it assumed
+something must be built that the environment already provides -- then do not
+contort the plan to satisfy it. Leave that part alone and say why in the plan
+itself, where it will survive: put the reason in the `goal` of the step it
+concerns, in one sentence. A finding you silently ignore will simply be found
+again on the next pass.
+
+# What you may write, into the current directory
+- `tasks.json`      the full revised plan, not a diff
+- `CONTEXT.md`      optional, only if the background the solver receives is what
+                    was wrong
+- `SYSTEM_SPEC.md`  optional, only if an agreed decision has to change
+- `{ESCALATE_NAME}`   instead of all of the above; see below
+
+Write no other file. A fourth filename is rejected without being read.
+
+# What is rejected mechanically
+- a plan that fails the linter (RUNNER_SPEC section 8)
+- lowering `expected_tests` or turning `review_gate` off
+- removing a step
+
+Fixing a finding by deleting the criterion that would have caught it is the one
+move that makes the plan worse while appearing to answer. If a requirement
+cannot be met, that is worth saying out loud rather than arranging for nobody
+to notice.
+
+If you conclude the requirements themselves are contradictory, or that what the
+critic wants cannot be done without a decision that is not yours, write a single
+file named `{ESCALATE_NAME}` saying so and write nothing else. That is a correct
+outcome and it is the only route to the human.
+
+{feedback_section(feedback)}
+Output nothing but the files. Do not restate the plan in your final message.
+"""
+
+
+def run_critique(modes: list[str], tasks: str) -> dict[str, list[dict]]:
+    """Every mode, once, against one plan text."""
+    requirements = REQUIREMENTS.read_text(encoding="utf-8") \
+        if REQUIREMENTS.is_file() else ""
+    by_mode: dict[str, list[dict]] = {}
+    for mode in modes:
+        if mode == "coverage" and not requirements:
+            continue
+        brief = (brief_critique_coverage(requirements, tasks) if mode == "coverage"
+                 else brief_critique_trace(tasks))
+        ledger("CRITIQUE", mode=mode)
+        clear_critique()
+        call_critic(brief, mode)
+        findings = read_findings()
+        ledger("FINDINGS", mode=mode, count=len(findings),
+               titles=[str(f.get("title", ""))[:200] for f in findings])
+        by_mode[mode] = findings
+    return by_mode
+
+
+def cmd_plan_refine(modes: list[str]) -> int:
+    """Critique the pending plan, hand the findings back, and do it again.
+
+    This is the outer loop closing. Without it a critique is a report that a
+    person reads and acts on, which leaves the human inside the cycle at exactly
+    the point the machine was built to handle -- and the findings are addressed
+    to the planner anyway, not to them.
+
+    It runs on the PENDING proposal and stops before `plan apply`, so nothing
+    it does can touch a criterion anything has been measured against yet.
+
+    Capped by limits.critiques, counted here rather than from the ledger because
+    this loop lives inside one invocation. The cap is what stops "it could
+    always be a little better" from running forever, and it is not a small
+    consideration: a revision costs a full planner call, which on the
+    TypeScript brief measured twenty-eight minutes.
+    """
+    pending = PLANNER_OUT / "tasks.json"
+    if not pending.is_file():
+        print(f"no pending proposal at {pending}", file=sys.stderr)
+        print("run `plan bootstrap` first; refine works before `plan apply`, "
+              "while the criteria are still a draft", file=sys.stderr)
+        return 1
+
+    requirements = REQUIREMENTS.read_text(encoding="utf-8") \
+        if REQUIREMENTS.is_file() else ""
+    cap = LIMITS["critiques"]
+
+    for round_no in range(1, cap + 2):
+        tasks = pending.read_text(encoding="utf-8")
+        load_settings(json.loads(tasks))
+        language = json.loads(tasks).get("language", "python")
+
+        by_mode = run_critique(modes, tasks)
+        total = sum(len(f) for f in by_mode.values())
+        report = render_findings(by_mode)
+        print(f"\n=== critique {round_no} of at most {cap + 1} ===")
+        print(report)
+
+        if total == 0:
+            ledger("CRITIQUE_CLEAN", round=round_no, modes=sorted(by_mode))
+            print("the critic found nothing left. That is not approval -- the "
+                  "gates and the human decide that.")
+            return 0
+
+        if round_no > cap:
+            ledger("REFINE_CAP", round=round_no, findings=total)
+            print(f"\n{total} finding(s) still standing after {cap} revision(s). "
+                  f"The proposal is left as it is; read it and decide.",
+                  file=sys.stderr)
+            return 4
+
+        ledger("PLAN_REFINE", round=round_no, findings=total)
+        code = plan_with_retry(
+            lambda feedback: brief_plan_refine(requirements, tasks, report, feedback),
+            "PLAN_REFINE_DRAFT")
+        if code != 0:
+            return code
+        if ESCALATE_NAME in read_proposal():
+            print("the planner escalated rather than revising; run `plan apply` "
+                  "to record it", file=sys.stderr)
+            return 3
+        # The planner rewrites the whole file, so the stamp goes back on. It is
+        # the runner's mark, not the planner's, and a plan that lost it would
+        # quietly be read as Python.
+        stamp_language(language)
+
+    return 4   # unreachable; the loop always returns
+
+
 def cmd_critique(modes: list[str]) -> int:
     """Ask the critic about the plan on disk, in each mode, and report.
 
@@ -2405,20 +2606,7 @@ def cmd_critique(modes: list[str]) -> int:
         print(f"no requirements at {REQUIREMENTS}; coverage needs them",
               file=sys.stderr)
 
-    by_mode: dict[str, list[dict]] = {}
-    for mode in modes:
-        if mode == "coverage" and not requirements:
-            continue
-        brief = (brief_critique_coverage(requirements, tasks) if mode == "coverage"
-                 else brief_critique_trace(tasks))
-        ledger("CRITIQUE", mode=mode)
-        clear_critique()
-        call_critic(brief, mode)
-        findings = read_findings()
-        ledger("FINDINGS", mode=mode, count=len(findings),
-               titles=[str(f.get("title", ""))[:200] for f in findings])
-        by_mode[mode] = findings
-
+    by_mode = run_critique(modes, tasks)
     total = sum(len(f) for f in by_mode.values())
     print(render_findings(by_mode))
     if total == 0:
@@ -3163,6 +3351,12 @@ def main() -> int:
                               help="repeatable; default is every mode, because "
                                    "the two find disjoint kinds of defect")
 
+    refine_cmd = plan_sub.add_parser(
+        "refine", help="critique the pending proposal, hand the findings back to "
+                       "the planner, and repeat until it is clean or capped")
+    refine_cmd.add_argument("--mode", action="append", choices=list(CRITIQUE_MODES),
+                            help="repeatable; default is every mode")
+
     args = parser.parse_args()
 
     if os.geteuid() == 0:
@@ -3182,6 +3376,8 @@ def main() -> int:
                 return cmd_plan_bootstrap(args.source, args.language)
             if args.plan_cmd == "propose":
                 return cmd_plan_propose(args.step)
+            if args.plan_cmd == "refine":
+                return cmd_plan_refine(args.mode or list(CRITIQUE_MODES))
             if args.plan_cmd == "show":
                 return cmd_plan_show()
             return cmd_plan_apply()
