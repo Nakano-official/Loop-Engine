@@ -306,5 +306,56 @@ class ReadingTheReport(unittest.TestCase):
         self.assertEqual(run.errors, 1)
 
 
+class AFileThatNeverCompiled(unittest.TestCase):
+    """vitest reports a broken file as one failing test named after the file.
+
+    Which is indistinguishable from a file holding one failing test, unless
+    something looks. pytest has no equivalent case -- a broken module is a
+    collection <error> -- so this could only appear once a second language did.
+    """
+
+    def report(self, body: str) -> loop.TestRun:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "r.xml"
+            path.write_text(body, encoding="utf-8")
+            return loop.parse_junit(path)
+
+    def test_a_transform_failure_counts_as_an_error_not_a_test(self):
+        run = self.report(
+            '<testsuites tests="1" failures="1">'
+            '<testsuite name="tests/e.test.ts" tests="1" failures="1" errors="0" skipped="0">'
+            '<testcase classname="tests/e.test.ts" name="tests/e.test.ts">'
+            '<failure message="Transform failed with 1 error: PARSE_ERROR"/>'
+            '</testcase></testsuite></testsuites>')
+        self.assertEqual((run.tests, run.failures, run.errors), (0, 0, 1))
+        self.assertIn("tests/e.test.ts", run.failed_files)
+        self.assertTrue(any("did not compile" in k for k in run.failure_kinds))
+
+    def test_a_real_failing_test_is_untouched(self):
+        # The signature is name == classname. A real test has a describe/it
+        # name, so it must not be swept up by this.
+        run = self.report(
+            '<testsuites tests="1" failures="1">'
+            '<testsuite name="tests/e.test.ts" tests="1" failures="1" errors="0" skipped="0">'
+            '<testcase classname="tests/e.test.ts" name="engine &gt; adds one">'
+            '<failure message="expected 0 to be 1" type="AssertionError"/>'
+            '</testcase></testsuite></testsuites>')
+        self.assertEqual((run.tests, run.failures, run.errors), (1, 1, 0))
+        self.assertEqual(run.failure_kinds, ["AssertionError"])
+
+
+class TheTestWritingBrief(Language):
+    def test_typescript_is_warned_about_apostrophes_in_names(self):
+        # The criteria are prose and prose has apostrophes. Copying one into a
+        # single-quoted test name ends the string, and the whole file stops
+        # compiling. Run 8's S1 lost all twelve tests to it.
+        self.speak("typescript")
+        self.assertIn("DOUBLE quotes", loop.naming_note())
+
+    def test_python_is_not_told_about_a_trap_it_does_not_have(self):
+        self.speak("python")
+        self.assertEqual(loop.naming_note(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

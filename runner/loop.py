@@ -673,10 +673,25 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
         return TestRun(0, 0, 1, 0, ["<malformed junit report>"], [], output)
 
     kinds: list[str] = []
+    uncompiled: list[str] = []
     passed: list[str] = []
     broken: list[str] = []
     no_verdict: list[str] = []
     for case in root.iter("testcase"):
+        # A test file that never compiled. vitest reports a transform failure as
+        # ONE synthetic testcase whose name is the file path itself, carrying a
+        # <failure> -- so from the outside it is indistinguishable from a file
+        # holding a single failing test, and R1 fires on the count before
+        # anything notices that nothing ran. pytest has no such case: a broken
+        # test module is a collection <error> and R2 catches it.
+        #
+        # Run 8's S1 hit this with an apostrophe inside a single-quoted test
+        # name, copied out of an acceptance criterion written in English prose.
+        # Twelve tests were in the file; the report said one, and the runner was
+        # about to ask the PLANNER to fix a syntax error.
+        if case.get("name") and case.get("name") == case.get("classname"):
+            uncompiled.append(case.get("name"))
+            continue
         failures = case.findall("failure")
         errors = case.findall("error")
         skips = case.findall("skipped")
@@ -692,6 +707,19 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
 
     def total(attribute: str) -> int:
         return sum(int(suite.get(attribute, 0) or 0) for suite in suites)
+
+    # Counted as errors and removed from the test count, which is what they are:
+    # a file that did not compile ran nothing, so reporting it as one failing
+    # test would be a verdict about tests that never existed.
+    if uncompiled:
+        kinds.extend(f"<did not compile: {name}>" for name in uncompiled)
+        return TestRun(
+            tests=max(0, total("tests") - len(uncompiled)),
+            failures=max(0, total("failures") - len(uncompiled)),
+            errors=total("errors") + len(uncompiled),
+            skipped=total("skipped"),
+            failure_kinds=kinds, passed_names=passed, output=output,
+            failed_files=sorted(set(broken + uncompiled)), skipped_names=no_verdict)
 
     return TestRun(
         tests=total("tests"),
@@ -836,6 +864,29 @@ Write nothing outside those paths. The implementation does not exist yet, so
 every test you write must fail when run against a stub that returns a wrong
 value of the right type. Do not weaken a test to make it pass, and do not
 create the module under test.
+{naming_note()}"""
+
+
+def naming_note() -> str:
+    """One trap that is worth naming, because the criteria create it.
+
+    The criteria above are English prose and English prose contains
+    apostrophes. Copying one into a test name is the obvious thing to do, and
+    in a single-quoted string it ends the string. Run 8's S1 wrote twelve tests
+    and none of them ran: `it('... then the result's resource is exactly 1',`.
+
+    The file then failed to compile, which vitest reports as one synthetic
+    failing test named after the file -- so the runner saw "1 test, expected
+    12" and was about to send a syntax error to the planner. The reporting side
+    is fixed too, but a trap the brief can remove is better removed.
+    """
+    if LANGUAGE["source_suffix"] != ".ts":
+        return ""
+    return """
+Name your tests with DOUBLE quotes or backticks, never single quotes. The
+criteria above are prose and contain apostrophes ("the result's resource"),
+and one of those inside a single-quoted name ends the string: the file stops
+compiling and not one of your tests runs.
 """
 
 
@@ -2965,11 +3016,16 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
         red = pytest_run("red", step["files_test"])
         last_run = red
         expected = step["expected_tests"]
-        if red.tests != expected:                                          # R1
-            raise Halt("RED_GATE", f"R1: collected {red.tests} tests, expected {expected}",
-                       red.output[-4000:])
+        # R2 before R1, and the order matters. When a test file does not compile
+        # the count is wrong BECAUSE nothing ran, and saying "collected 1,
+        # expected 12" describes the symptom while hiding the cause -- it reads
+        # like a planning mistake and gets escalated to the planner, who cannot
+        # fix a syntax error.
         if red.errors:                                                     # R2
             raise Halt("RED_GATE", f"R2: {red.errors} test(s) errored instead of failing",
+                       red.output[-4000:])
+        if red.tests != expected:                                          # R1
+            raise Halt("RED_GATE", f"R1: collected {red.tests} tests, expected {expected}",
                        red.output[-4000:])
         if red.skipped:                                                    # R3
             raise Halt("RED_GATE", f"R3: {red.skipped} test(s) were skipped", red.output[-4000:])
