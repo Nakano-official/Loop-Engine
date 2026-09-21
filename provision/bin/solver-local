@@ -81,7 +81,11 @@ TOP_P = float(os.environ.get("LOOP_LLM_TOP_P", "0.9"))
 # Checked against the server's own report at startup, because the failure this
 # prevents is silent: a prompt over the limit comes back as a confidently wrong
 # answer written from half a brief, which looks exactly like a stupid model.
-CTX_TOKENS = int(os.environ.get("LOOP_LLM_CTX", "8192"))
+# Must match llm-serve's default. Two numbers that have to agree and live in
+# two files is a poor arrangement, but the alternative -- asking the server
+# what it was started with -- is a request that can fail, on a path whose
+# job is to refuse before spending minutes on a prompt that will not fit.
+CTX_TOKENS = int(os.environ.get("LOOP_LLM_CTX", "16384"))
 # Half the context was reserved for output, and the loop does not produce that
 # much: run 8's S1 writes two files whose whole content comes to about 960
 # tokens. Reserving 4096 against it meant a brief of 5051 tokens was refused
