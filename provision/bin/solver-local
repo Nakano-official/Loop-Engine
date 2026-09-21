@@ -70,7 +70,17 @@ TOP_P = float(os.environ.get("LOOP_LLM_TOP_P", "0.9"))
 # prevents is silent: a prompt over the limit comes back as a confidently wrong
 # answer written from half a brief, which looks exactly like a stupid model.
 CTX_TOKENS = int(os.environ.get("LOOP_LLM_CTX", "8192"))
-MAX_OUTPUT_TOKENS = int(os.environ.get("LOOP_LLM_MAX_OUTPUT", "4096"))
+# Half the context was reserved for output, and the loop does not produce that
+# much: run 8's S1 writes two files whose whole content comes to about 960
+# tokens. Reserving 4096 against it meant a brief of 5051 tokens was refused
+# with 3000 tokens of the window standing empty.
+#
+# 2560 is measured rather than chosen -- the largest whole-file answer any step
+# has produced so far, with room over it. Under-reserving is safe to be wrong
+# about: a cut-off answer is not valid JSON, so solver-local fails on the parse
+# and says so. Over-reserving fails the other way, by refusing work that would
+# have fit, and that failure looks like a model that cannot do the job.
+MAX_OUTPUT_TOKENS = int(os.environ.get("LOOP_LLM_MAX_OUTPUT", "2560"))
 
 # Rough, and deliberately pessimistic: code and Japanese both run under 3
 # characters per token. Only used to refuse before spending minutes on a
