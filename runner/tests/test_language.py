@@ -357,5 +357,56 @@ class TheTestWritingBrief(Language):
         self.assertEqual(loop.naming_note(), "")
 
 
+class TheStubBrief(unittest.TestCase):
+    def test_a_boolean_has_no_wrong_value_and_the_brief_says_so(self):
+        # Two values, and a correct implementation returns each of them for
+        # some input, so "a wrong value of the right type" does not exist.
+        # Run 8's S1 was rejected twice in a row by R4 on canAfford before the
+        # brief admitted this.
+        step = {"files_write": ["src/pkg/engine.ts"],
+                "contracts": {"provides": [
+                    "src/pkg/engine.ts: function canAfford(s: S, c: C, id: string): boolean"]}}
+        brief = loop.brief_stub(step)
+        self.assertIn("THERE IS NO WRONG BOOLEAN", brief)
+        self.assertIn('return "__stub__" as unknown as boolean', brief)
+        # The cast alone is not the point: the first version of this brief came
+        # back as `false as unknown as boolean`, which is still false.
+        self.assertIn("casting alone does nothing", brief)
+        # and it must still insist on the assertion failure R5 requires
+        self.assertIn("assertion failure", brief)
+
+
+class RewritingTestsThatDoNotCompile(unittest.TestCase):
+    """The one thing TEST_WRITE is retried for, and the reason it is the one.
+
+    A syntax error is the solver's mistake and nobody else can repair it. The
+    planner cannot fix one, and escalating it spends a twenty-eight minute call
+    to be told so -- run 8's S1 did that twice. A test that merely fails, or
+    passes against the stub, is about what was ASKED for, and asking again
+    would pay to sample the same misunderstanding.
+    """
+
+    def test_the_second_brief_carries_the_compiler_output(self):
+        # Worth more than the warning that preceded it: the brief had already
+        # said not to put an apostrophe in a single-quoted test name, and the
+        # solver did it anyway. A rule read before the mistake competes with
+        # everything else in the brief; the error arrives after it, alone.
+        section = loop.compile_failure_section(
+            "<did not compile: tests/engine.test.ts>" + chr(10) * 2
+            + "PARSE_ERROR at 58:92")
+        self.assertIn("DID NOT COMPILE", section)
+        self.assertIn("58:92", section)
+        self.assertIn("check every other line", section)
+
+    def test_a_first_attempt_carries_no_such_section(self):
+        self.assertEqual(loop.compile_failure_section(""), "")
+
+    def test_the_colour_codes_are_stripped(self):
+        # vitest colours its transform errors, and the escapes make the message
+        # unreadable everywhere it is quoted back.
+        coloured = chr(27) + "[31m" + "PARSE_ERROR" + chr(27) + "[0m"
+        self.assertEqual(loop.ANSI.sub("", coloured), "PARSE_ERROR")
+
+
 if __name__ == "__main__":
     unittest.main()

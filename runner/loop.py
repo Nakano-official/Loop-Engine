@@ -153,7 +153,8 @@ BACKSTOP_MARGIN = 120
 # against a metered solver 3 is right, and against a local one an attempt costs
 # only wall-clock -- so ten of them are cheaper than the single planner call that
 # an escalation buys.
-LIMITS = {"escalations": 1, "revisions": 3, "attempts": 0, "critiques": 2}
+LIMITS = {"escalations": 1, "revisions": 3, "attempts": 0, "critiques": 2,
+          "test_writes": 3}
 
 # How the next attempt inside a step begins.
 #
@@ -550,6 +551,9 @@ LANGUAGE = dict(LANGUAGES["python"])
 
 # pytest ends every failure body with "<file>:<line>: <ExceptionName>". That
 # last line is where the exception class is actually legible; see failure_kind.
+# vitest colours its transform errors, and the escape codes make the message
+# unreadable wherever it is quoted back -- a brief, an escalation, a ledger.
+ANSI = re.compile(chr(27) + r"\[[0-9;]*m")
 FAILURE_TAIL = re.compile(r":\s*([A-Za-z_][\w.]*)\s*$")
 
 
@@ -713,6 +717,15 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
     # test would be a verdict about tests that never existed.
     if uncompiled:
         kinds.extend(f"<did not compile: {name}>" for name in uncompiled)
+        # The reason lives in the report, not on stdout, so a caller handed
+        # only `output` sees "JUNIT report written to ..." and nothing else --
+        # which is what the first escalation for this looked like.
+        detail = chr(10).join(
+            ANSI.sub("", f.get("message") or "")
+            for case in root.iter("testcase")
+            if case.get("name") == case.get("classname")
+            for f in case.findall("failure"))
+        output = (output + chr(10) + detail).strip()
         return TestRun(
             tests=max(0, total("tests") - len(uncompiled)),
             failures=max(0, total("failures") - len(uncompiled)),
@@ -836,7 +849,7 @@ def render_invariants(step: dict) -> str:
     return "\n".join(f"- {i}" for i in inv) if inv else "(none stated)"
 
 
-def brief_test_write(step: dict, context: str) -> str:
+def brief_test_write(step: dict, context: str, broken: str = "") -> str:
     # No goal. The tests must come from the acceptance criteria, not from a
     # description of the implementation the solver is about to be asked for.
     acceptance = render_acceptance(step)
@@ -864,7 +877,31 @@ Write nothing outside those paths. The implementation does not exist yet, so
 every test you write must fail when run against a stub that returns a wrong
 value of the right type. Do not weaken a test to make it pass, and do not
 create the module under test.
-{naming_note()}"""
+{naming_note()}{compile_failure_section(broken)}"""
+
+
+def compile_failure_section(broken: str) -> str:
+    """The compiler's own words, handed back verbatim.
+
+    Worth more than the warning that preceded it: the brief had already said
+    not to put an apostrophe in a single-quoted test name, and the solver did
+    it anyway, twice. A rule read before the mistake competes with everything
+    else in the brief; the error message arrives after it, alone, with a line
+    and a column.
+    """
+    if not broken:
+        return ""
+    return f"""
+# YOUR LAST ATTEMPT DID NOT COMPILE
+
+Nothing you wrote ran. The file was discarded and you are writing it again.
+
+{broken}
+
+Read the line and column. Fix that, and check every other line for the same
+mistake before you finish -- whatever produced it once usually produced it in
+several places.
+"""
 
 
 def naming_note() -> str:
@@ -913,6 +950,34 @@ Do NOT return an empty, zero, or default value ("", 0, [], None), and do not
 return an argument unchanged. Those are answers a correct implementation gives
 for some input, so a test covering that input would pass against the stub -- and
 a test that passes here has never shown it can fail, which rejects the step.
+
+# When the type has no wrong value
+
+A boolean has two values and a correct implementation returns each of them for
+some input, so THERE IS NO WRONG BOOLEAN. Returning `false` answers every
+criterion of the form "returns false when ...", and that criterion then passes
+against the stub and stops the step -- run 8's S1 was rejected twice in a row
+for exactly this, on `canAfford`.
+
+For a boolean, and for any other type whose values a correct implementation
+covers exhaustively, THE VALUE YOU RETURN MUST NOT BE A VALUE OF THAT TYPE AT
+ALL. Return the string sentinel and cast it past the type checker:
+
+    TypeScript:  return "__stub__" as unknown as boolean;
+    Python:      return "__stub__"  # type: ignore[return-value]
+
+`"__stub__"` is neither true nor false, so `toBe(true)` and `toBe(false)` both
+fail, and both fail on the comparison -- an assertion failure, the only kind
+RED_GATE accepts.
+
+The cast is not the point and casting alone does nothing. This was written
+exactly once and came back as `return false as unknown as boolean`, which is
+still false and still answered "returns false when ..." correctly. If the value
+you typed is `true` or `false`, you have not done this.
+
+This is the one place the rule above is deliberately broken, and only here: a
+value of the right type cannot be wrong when every value of that type is right
+somewhere.
 
 The sentinel must also have the SHAPE the signature states, because the test
 takes it apart before it asserts anything. A tuple returns exactly as many
@@ -1136,10 +1201,31 @@ def modules_of(files_write: list[str]) -> list[str]:
     return names
 
 
+def adopt_language(tasks: dict) -> None:
+    """Take the language from the plan being judged.
+
+    Several rules are expressed in one language's grammar, so judging a plan
+    means judging it in ITS language -- and leaving that to the caller has now
+    been forgotten three times. `plan apply` ran on the default and rejected
+    all twenty-two of a TypeScript plan's contracts because `modules_of` found
+    no `.py` files; `validate` did the same a moment later. Both were correct
+    plans and the wrong grammar.
+
+    A global that every caller must remember to set is a global that someone
+    will not set. The plan carries the answer, so the function that reads the
+    plan reads it.
+    """
+    language = tasks.get("language") if isinstance(tasks, dict) else None
+    if language in LANGUAGES:
+        LANGUAGE.clear()
+        LANGUAGE.update(LANGUAGES[language])
+
+
 def validate_plan(tasks: dict) -> list[str]:
     """Return every violation. The planner's output is checked before it is
     obeyed -- this is the only objective gate on the planning side, and it runs
     without calling any model."""
+    adopt_language(tasks)
     problems: list[str] = []
     steps = tasks.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -1996,24 +2082,10 @@ def proposal_problems(proposal: dict[str, str]) -> list[str]:
     planner is told to fix is exactly what would have rejected it -- not a
     second implementation of the same rules that can drift from the first.
 
-    A proposal is judged in ITS OWN language, read from the proposal, because
-    several of the rules are expressed in one. `plan apply` is the verb that
-    settles a plan and it was the one verb that never set this: `bootstrap`
-    takes a flag, and `critique` and `refine` read it from the plan, but apply
-    ran on the default. A TypeScript plan was therefore checked as Python --
-    `modules_of` found no `.py` files, so L15 asked every contract to name a
-    module from an empty list and rejected all twenty-two of them. Correct plan,
-    wrong grammar, again. Setting it here rather than in the callers is the
-    point: the judging happens in one function, so the language does too.
+    The language comes from the plan itself; see adopt_language, which
+    validate_plan calls. It is not this function's job and it is not the
+    caller's either -- three callers forgot in a row.
     """
-    try:
-        language = json.loads(proposal["tasks.json"]).get("language")
-    except (KeyError, json.JSONDecodeError, AttributeError):
-        language = None   # other rules report the missing or broken file
-    if language in LANGUAGES:
-        LANGUAGE.clear()
-        LANGUAGE.update(LANGUAGES[language])
-
     existing = PLAN / "tasks.json"
     if existing.exists():
         old = json.loads(existing.read_text(encoding="utf-8"))
@@ -3001,19 +3073,57 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
     last_run: TestRun | None = None
     try:
         # --- TEST_WRITE -------------------------------------------------
-        set_writable(tests=True, src=False)
-        call_solver("TEST_WRITE", brief_test_write(step, context))
-        assert_touched("TEST_WRITE", step["files_test"])
-        ledger("TEST_WRITE", step=step_id, ok=True)
+        #
+        # Retried here, on one condition only: the test file did not compile.
+        # That is the solver's mistake and nobody else can repair it -- the
+        # planner cannot fix a syntax error, and escalating one spends a
+        # twenty-eight minute call to be told so. Run 8's S1 did it twice, both
+        # times on an apostrophe copied out of a criterion into a
+        # single-quoted test name, and the second time the brief had already
+        # warned about exactly that. An instruction the solver can ignore is
+        # worth less than a retry that hands it the compiler's own words.
+        #
+        # Deliberately NOT a retry for anything else. A test that fails, or
+        # that passes against the stub, is about what was asked for, and asking
+        # again would just be paying to sample the same misunderstanding.
+        broken = ""
+        for write_attempt in range(1, LIMITS["test_writes"] + 1):
+            set_writable(tests=True, src=False)
+            call_solver("TEST_WRITE", brief_test_write(step, context, broken))
+            assert_touched("TEST_WRITE", step["files_test"])
+            ledger("TEST_WRITE", step=step_id, ok=True, attempt=write_attempt)
 
-        # --- STUB -------------------------------------------------------
-        set_writable(tests=False, src=True)
-        call_solver("STUB", brief_stub(step))
-        assert_touched("STUB", step["files_test"] + step["files_write"])
-        ledger("STUB", step=step_id, ok=True)
+            # --- STUB ---------------------------------------------------
+            set_writable(tests=False, src=True)
+            call_solver("STUB", brief_stub(step))
+            assert_touched("STUB", step["files_test"] + step["files_write"])
+            ledger("STUB", step=step_id, ok=True)
+
+            red = pytest_run(f"red-{write_attempt}", step["files_test"])
+            broken = chr(10).join(k for k in red.failure_kinds
+                                  if k.startswith("<did not compile"))
+            if not broken:
+                break
+
+            # The compile check has to come AFTER the stub, not before it: the
+            # module under test does not exist yet at TEST_WRITE, so a perfectly
+            # good test file fails to resolve its import and looks exactly like
+            # a syntax error. Checking early threw away correct work and asked
+            # for it again -- which is worse than the problem it was added for.
+            ledger("TEST_WRITE", step=step_id, ok=False, attempt=write_attempt,
+                   reason=broken)
+            broken = broken + chr(10) + chr(10) + red.output[-2000:]
+            set_writable(tests=True, src=True)
+            for path in step["files_test"] + step["files_write"]:
+                (PROJECT / path).unlink(missing_ok=True)
+            run(["git", "checkout", "--"] + step["files_test"] + step["files_write"],
+                check=False)
+        else:
+            raise Halt("TEST_WRITE",
+                       f"the tests still do not compile after "
+                       f"{LIMITS['test_writes']} attempt(s)", broken[:4000])
 
         # --- RED_GATE (RUNNER_SPEC 4-1, R1..R5) --------------------------
-        red = pytest_run("red", step["files_test"])
         last_run = red
         expected = step["expected_tests"]
         # R2 before R1, and the order matters. When a test file does not compile
