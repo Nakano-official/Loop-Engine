@@ -386,6 +386,23 @@ def touched_paths() -> set[str]:
     return paths
 
 
+def assert_written(phase: str, required: list[str]) -> None:
+    """The files the phase was asked for exist and hold something.
+
+    assert_touched checks that nothing OUTSIDE the allowlist was written. It
+    says nothing about whether anything INSIDE it was, and the two are not the
+    same question: run 8's S2 had a TEST_WRITE return with no file at all, and
+    the phase recorded ok=True because the solver had not written anywhere it
+    should not. RED_GATE then read an empty report and called it an error, two
+    phases away from the cause.
+    """
+    missing = [p for p in required
+               if not (PROJECT / p).is_file() or not (PROJECT / p).stat().st_size]
+    if missing:
+        raise Halt(phase, "the files this phase had to produce are missing or empty",
+                   "expected: " + ", ".join(missing))
+
+
 def assert_touched(phase: str, allowed: list[str]) -> None:
     """The solver may have written only where the step said it could.
 
@@ -1085,7 +1102,16 @@ def generate_stub(step: dict, requires: list[str]) -> dict[str, str] | None:
         # way round. Either way the runner does not know enough to write it.
         return None
 
-    types = ts_type_values(declarations)
+    # The type table has to include what earlier steps declared, not only this
+    # step's own. S2 provides `const CATALOG: Catalog`, and Catalog is S1's
+    # `Record<string, GeneratorDef>`: without S1's line the name is unknown, the
+    # sentinel falls back to a cast, and the first test that reads
+    # CATALOG['cursor'].baseCost gets a TypeError instead of a failed
+    # assertion -- which RED_GATE rejects outright (R2/R5). The brief said this
+    # all along: the sentinel must have the SHAPE the signature states, because
+    # the test takes it apart before it asserts anything.
+    inherited = parse_contracts(requires) or []
+    types = ts_type_values(inherited + declarations)
     # Where a name imported from elsewhere lives, so the emitted file can say so.
     elsewhere: dict[str, str] = {}
     for line in requires:
@@ -3320,6 +3346,7 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
             set_writable(tests=True, src=False)
             call_solver("TEST_WRITE", brief_test_write(step, context, broken))
             assert_touched("TEST_WRITE", step["files_test"])
+            assert_written("TEST_WRITE", step["files_test"])
             ledger("TEST_WRITE", step=step_id, ok=True, attempt=write_attempt)
 
             # --- STUB ---------------------------------------------------
@@ -3336,6 +3363,7 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
                 ledger("STUB", step=step_id, ok=True, by="runner",
                        files=sorted(written))
             assert_touched("STUB", step["files_test"] + step["files_write"])
+            assert_written("STUB", step["files_write"])
 
             red = pytest_run(f"red-{write_attempt}", step["files_test"])
             broken = chr(10).join(k for k in red.failure_kinds
@@ -3378,7 +3406,8 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
         # fix a syntax error.
         if red.errors:                                                     # R2
             raise Halt("RED_GATE", f"R2: {red.errors} test(s) errored instead of failing",
-                       red.output[-4000:])
+                       (chr(10).join(red.failure_details)
+                        or ANSI.sub("", red.output))[-4000:])
         if red.tests != expected:                                          # R1
             raise Halt("RED_GATE", f"R1: collected {red.tests} tests, expected {expected}",
                        red.output[-4000:])

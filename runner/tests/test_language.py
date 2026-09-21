@@ -505,6 +505,23 @@ class TheRunnerWritesTheStub(Language):
                       "return {};", "return [];", "return null;"):
             self.assertNotIn(wrong, engine)
 
+    def test_a_type_from_an_earlier_step_is_expanded_not_cast(self):
+        # S2 provides `const CATALOG: Catalog`, and Catalog is S1's
+        # Record<string, GeneratorDef>. Without S1's line the name is unknown,
+        # the sentinel falls back to a cast, and the first test that reads
+        # CATALOG['cursor'].baseCost gets a TypeError rather than a failed
+        # assertion -- which RED_GATE rejects outright. The sentinel has to
+        # carry the SHAPE, because the test takes it apart before it asserts.
+        self.speak("typescript")
+        stub = loop.generate_stub(
+            {"files_write": ["src/idlegame/catalog.ts"],
+             "contracts": {"provides": ["src/idlegame/catalog.ts: const CATALOG: Catalog"]}},
+            ["src/idlegame/model.ts: interface GeneratorDef { id: string; baseCost: number }",
+             "src/idlegame/model.ts: type Catalog = Record<string, GeneratorDef>"])
+        text = stub["src/idlegame/catalog.ts"]
+        self.assertIn("baseCost: -999999", text)
+        self.assertNotIn("as unknown as Catalog", text)
+
     def test_what_it_cannot_parse_goes_back_to_the_solver(self):
         # None is not a failure to be ashamed of. A generated stub that does not
         # compile would be worse than the problem it replaces.
@@ -518,6 +535,43 @@ class TheRunnerWritesTheStub(Language):
         self.assertIsNone(loop.generate_stub(
             {"files_write": ["src/pkg/a.py"],
              "contracts": {"provides": ["src/pkg/a.py: def f() -> int"]}}, []))
+
+
+class APhaseHasToProduceWhatItWasAskedFor(unittest.TestCase):
+    """Subset was checked; superset was not, and they are different questions.
+
+    assert_touched asks whether anything outside the allowlist was written.
+    Run 8's S2 had TEST_WRITE return having written nothing at all, and the
+    phase recorded ok=True because the solver had not written anywhere it
+    should not. RED_GATE then read an empty report and called it an error, two
+    phases away from the cause.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.saved = loop.PROJECT
+        loop.PROJECT = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        loop.PROJECT = self.saved
+        self.temp.cleanup()
+
+    def test_a_missing_file_halts(self):
+        with self.assertRaises(loop.Halt):
+            loop.assert_written("TEST_WRITE", ["tests/catalog.test.ts"])
+
+    def test_an_empty_file_halts(self):
+        path = loop.PROJECT / "tests" / "catalog.test.ts"
+        path.parent.mkdir(parents=True)
+        path.write_text("", encoding="utf-8")
+        with self.assertRaises(loop.Halt):
+            loop.assert_written("TEST_WRITE", ["tests/catalog.test.ts"])
+
+    def test_a_written_file_passes(self):
+        path = loop.PROJECT / "tests" / "catalog.test.ts"
+        path.parent.mkdir(parents=True)
+        path.write_text("it(\"x\", () => {});", encoding="utf-8")
+        loop.assert_written("TEST_WRITE", ["tests/catalog.test.ts"])
 
 
 if __name__ == "__main__":
