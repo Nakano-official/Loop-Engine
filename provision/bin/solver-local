@@ -114,7 +114,35 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM = """You write Python files. You are given one task and the exact list of
+# The language is taken from the paths the brief allows, because those are the
+# one thing here that cannot be wrong about it.
+#
+# This line used to read "You write Python files." always. Run 8 handed the
+# model TypeScript contracts under that system prompt and then spent seven
+# escalations wondering why the local model was bad at TypeScript -- it wrote
+# functions with no `export`, which is exactly right in the language it had
+# been told it was writing, since a module-level def is importable there. The
+# question "is the small model weak at TypeScript" could not be asked, because
+# nothing had ever asked it for TypeScript.
+LANGUAGE_BY_SUFFIX = {
+    ".py": ("Python", ""),
+    ".ts": ("TypeScript", """
+- TypeScript, not Python. A declaration is only visible to another module if it
+  says `export`; write `export function`, `export interface`, `export const`.
+  A function without it exists and cannot be imported, and the test that
+  imports it fails with a TypeError rather than an assertion.
+- Strings in test names: use double quotes or backticks. The text you are given
+  is English prose and contains apostrophes.
+"""),
+}
+
+
+def system_prompt(allowed: list[str]) -> str:
+    suffixes = {os.path.splitext(p)[1] for p in allowed}
+    name, extra = next(
+        (LANGUAGE_BY_SUFFIX[s] for s in (".ts", ".py") if s in suffixes),
+        ("Python", ""))
+    return f"""You write {name} files. You are given one task and the exact list of
 files you may write. Return the COMPLETE final content of each file you change.
 
 Rules:
@@ -122,8 +150,7 @@ Rules:
 - Whole file contents, never a diff, never an excerpt, never "unchanged".
 - No explanation outside the JSON.
 - If a file already has content, your version replaces it entirely, so carry
-  over everything that must survive.
-"""
+  over everything that must survive.{extra}"""
 
 
 def die(code: int, message: str) -> None:
@@ -248,7 +275,8 @@ def main() -> int:
               " you are changing. Only these paths:\n"
             + "\n".join(allowed) + "\n")
 
-    estimated = int((len(SYSTEM) + len(user)) / CHARS_PER_TOKEN)
+    system = system_prompt(allowed)
+    estimated = int((len(system) + len(user)) / CHARS_PER_TOKEN)
     room = CTX_TOKENS - MAX_OUTPUT_TOKENS
     if estimated > room:
         # Refused rather than sent. Over the limit the server either errors or
@@ -264,7 +292,7 @@ def main() -> int:
 
     body = post("/v1/chat/completions", {
         "model": MODEL,
-        "messages": [{"role": "system", "content": SYSTEM},
+        "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "temperature": TEMPERATURE,
         "top_p": TOP_P,

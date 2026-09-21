@@ -959,9 +959,17 @@ criterion of the form "returns false when ...", and that criterion then passes
 against the stub and stops the step -- run 8's S1 was rejected twice in a row
 for exactly this, on `canAfford`.
 
-For a boolean, and for any other type whose values a correct implementation
-covers exhaustively, THE VALUE YOU RETURN MUST NOT BE A VALUE OF THAT TYPE AT
-ALL. Return the string sentinel and cast it past the type checker:
+This applies to BOOLEANS and to nothing else unless the type has the same
+problem -- an enum or a union of two or three members. A number is not such a
+type: -999999 is wrong for every input a correct implementation would see, and
+it still behaves like a number, so a test that rounds it or compares it fails
+on the assertion rather than on the call. The same goes for strings, arrays and
+objects. Asked for this once, a stub came back with every return replaced by a
+string, numbers included, which turns an assertion failure into a TypeError and
+RED_GATE rejects that outright (R5).
+
+For a boolean, THE VALUE YOU RETURN MUST NOT BE A VALUE OF THAT TYPE AT ALL.
+Return the string sentinel and cast it past the type checker:
 
     TypeScript:  return "__stub__" as unknown as boolean;
     Python:      return "__stub__"  # type: ignore[return-value]
