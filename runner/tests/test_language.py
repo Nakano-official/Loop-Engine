@@ -445,5 +445,80 @@ class TellingTheSolverWhatFailed(unittest.TestCase):
         self.assertEqual(run.failure_details, [])
 
 
+class TheRunnerWritesTheStub(Language):
+    """Eight runs asked a model for something that needs no judgement.
+
+    The stub has one job -- right shape, wrong value -- and contracts.provides
+    already carries the signatures, the shape of every type and the file each
+    thing lives in. L14 and L15 exist to make sure of it. Asking cost run 8's
+    S1 four rejections at RED_GATE on stubs that answered a criterion
+    correctly.
+    """
+
+    S1 = {
+        "files_write": ["src/idlegame/model.ts", "src/idlegame/engine.ts"],
+        "contracts": {"provides": [
+            "src/idlegame/model.ts: interface GameState { resource: number; generators: Record<string, number>; lastUpdate: number }",
+            "src/idlegame/model.ts: type Catalog = Record<string, GeneratorDef>",
+            "src/idlegame/model.ts: interface GeneratorDef { id: string; name: string; baseCost: number; costMultiplier: number; rate: number }",
+            "src/idlegame/engine.ts: function createGame(): GameState",
+            "src/idlegame/engine.ts: function canAfford(s: GameState, c: Catalog, id: string): boolean",
+            "src/idlegame/engine.ts: function generatorCost(d: GeneratorDef, owned: number): number",
+        ]},
+    }
+
+    def build(self):
+        self.speak("typescript")
+        return loop.generate_stub(self.S1, [])
+
+    def test_every_declaration_is_exported(self):
+        # What the solver kept forgetting, under a system prompt that told it
+        # it was writing Python -- where a declaration is importable as written.
+        files = self.build()
+        for text in files.values():
+            for line in text.splitlines():
+                if line.startswith(("interface", "type", "function", "const")):
+                    self.fail("not exported: " + line)
+
+    def test_a_boolean_returns_something_that_is_neither(self):
+        # The one type with no wrong value. `toBe(true)` and `toBe(false)` must
+        # both fail, or one criterion passes against the stub and the step stops.
+        engine = self.build()["src/idlegame/engine.ts"]
+        self.assertIn('return "__stub__" as unknown as boolean;', engine)
+
+    def test_a_number_stays_a_number(self):
+        # A string here turns an assertion failure into a TypeError, which
+        # RED_GATE rejects outright (R5).
+        self.assertIn("return -999999;", self.build()["src/idlegame/engine.ts"])
+
+    def test_a_named_type_is_built_from_its_own_fields(self):
+        engine = self.build()["src/idlegame/engine.ts"]
+        self.assertIn("resource: -999999", engine)
+        self.assertIn("lastUpdate: -999999", engine)
+
+    def test_nothing_returns_a_default_value(self):
+        # The rejection that prompted all of this: `{resource: 0, generators:
+        # {}, lastUpdate: 0}` is the correct initial state, and a criterion
+        # about createGame then passes against the stub.
+        engine = self.build()["src/idlegame/engine.ts"]
+        for wrong in ("return 0;", "return true;", "return false;", 'return "";',
+                      "return {};", "return [];", "return null;"):
+            self.assertNotIn(wrong, engine)
+
+    def test_what_it_cannot_parse_goes_back_to_the_solver(self):
+        # None is not a failure to be ashamed of. A generated stub that does not
+        # compile would be worse than the problem it replaces.
+        self.speak("typescript")
+        self.assertIsNone(loop.generate_stub(
+            {"files_write": ["src/a.ts"],
+             "contracts": {"provides": ["src/a.ts: something in prose"]}}, []))
+
+    def test_python_is_left_alone(self):
+        self.speak("python")
+        self.assertIsNone(loop.generate_stub(
+            {"files_write": ["src/pkg/a.py"],
+             "contracts": {"provides": ["src/pkg/a.py: def f() -> int"]}}, []))
+
+
 if __name__ == "__main__":
     unittest.main()

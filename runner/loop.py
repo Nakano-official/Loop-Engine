@@ -839,6 +839,28 @@ def call_solver(phase: str, brief: str, backend: str | None = None) -> str:
 # --------------------------------------------------------------------------
 
 
+def dep_contract_lines(step: dict) -> list[str]:
+    """The provides lines of every step this one depends on, flat.
+
+    dep_contracts renders the same thing for a brief, where the grouping by
+    step is worth having. The stub generator wants only the names and where
+    they live, so it gets the lines.
+    """
+    lines: list[str] = []
+    for dep in step.get("depends_on", []):
+        path = STATE / "contracts" / f"{dep}.json"
+        if not path.exists():
+            continue
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        provides = value.get("provides") if isinstance(value, dict) else value
+        if isinstance(provides, list):
+            lines.extend(str(p) for p in provides)
+    return lines
+
+
 def dep_contracts(step: dict) -> str:
     parts = []
     for dep in step.get("depends_on", []):
@@ -941,6 +963,189 @@ criteria above are prose and contain apostrophes ("the result's resource"),
 and one of those inside a single-quoted name ends the string: the file stops
 compiling and not one of your tests runs.
 """
+
+
+# --------------------------------------------------------------------------
+# building the stub instead of asking for one
+# --------------------------------------------------------------------------
+#
+# The stub has exactly one job: have the right shape and be wrong about every
+# value, so that RED_GATE can see each test fail for want of an implementation.
+# Nothing about that job needs judgement, and `contracts.provides` already
+# carries everything it needs -- the signatures, the shape of every type, and
+# which file each thing lives in. L14 and L15 exist to make sure of it.
+#
+# It was a solver call for eight runs, and asking cost more than it bought.
+# Run 8's S1 was rejected four times at RED_GATE on stubs that answered a
+# criterion correctly: `return false` for a boolean, and then, once the
+# temperature came down and the model stopped drawing badly, `return {resource:
+# 0, generators: {}, lastUpdate: 0}` for createGame -- the most plausible
+# answer, which is also the right one. The brief forbids returning a default in
+# so many words. It arrived intact, it was legible, and it was ignored, twice
+# under different settings.
+#
+# An instruction a model can ignore is worth less than a rule it cannot reach,
+# which is the same argument as taking sudo away rather than watching for
+# chmod 777. So the runner writes the stub.
+#
+# Conservative by construction: anything it cannot parse confidently returns
+# None and the solver is asked, exactly as before. A generated stub that does
+# not compile would be worse than the problem it replaces.
+
+TS_DECLARATION = re.compile(
+    r"^(?P<file>[\w./-]+\.ts)\s*:\s*"
+    r"(?P<kind>interface|type|function|const)\s+(?P<name>\w+)(?P<rest>.*)$")
+TS_SIGNATURE = re.compile(r"^\((?P<args>.*)\)\s*:\s*(?P<returns>.+?)\s*$")
+
+
+def sentinel_for(kind: str, types: dict) -> str:
+    """A value of that type that no correct implementation returns for any input.
+
+    The one exception is a boolean, which has no such value -- every boolean is
+    correct somewhere -- so it gets a string wearing a cast. That is the single
+    place the shape rule is broken, and it is broken deliberately: a value of
+    the right type cannot be wrong when every value of the type is right
+    somewhere.
+    """
+    kind = kind.strip().rstrip(";")
+    if kind in ("void", "undefined"):
+        return ""
+    if kind == "number":
+        return "-999999"
+    if kind == "string":
+        return '"__stub__"'
+    if kind == "boolean":
+        return '"__stub__" as unknown as boolean'
+    if kind.endswith("[]"):
+        return "[" + sentinel_for(kind[:-2], types) + "]"
+    match = re.fullmatch(r"(Array|ReadonlyArray)<(.+)>", kind)
+    if match:
+        return "[" + sentinel_for(match.group(2), types) + "]"
+    match = re.fullmatch(r"(Record|Map)<\s*[^,]+,\s*(.+)>", kind)
+    if match:
+        return '{ "__stub__": ' + sentinel_for(match.group(2), types) + " }"
+    if kind in types:
+        return types[kind]
+    # A union, a generic the table does not know, an imported name from a step
+    # that is not this one. Casting keeps the shape rule from lying about what
+    # this is, and the test still fails on the comparison.
+    return f'"__stub__" as unknown as {kind}'
+
+
+def ts_type_values(declarations: list[dict]) -> dict:
+    """Literal sentinels for every named type this step declares.
+
+    Two passes, because an interface may hold another interface declared after
+    it. Two is enough for anything the linter accepts; a cycle resolves to the
+    cast, which still compiles.
+    """
+    types: dict = {}
+    for _ in range(2):
+        for d in declarations:
+            if d["kind"] == "interface":
+                fields = re.findall(r"(\w+)\s*:\s*([^;}]+)", d["rest"])
+                if not fields:
+                    continue
+                types[d["name"]] = "{ " + ", ".join(
+                    f"{f}: {sentinel_for(t, types)}" for f, t in fields) + " }"
+            elif d["kind"] == "type":
+                rhs = d["rest"].split("=", 1)[-1].strip()
+                if rhs:
+                    types[d["name"]] = sentinel_for(rhs, types)
+    return types
+
+
+def parse_contracts(lines: list[str]) -> list[dict] | None:
+    """Every provides line, split up. None if any line does not fit the form."""
+    declarations = []
+    for line in lines:
+        head = line.split(" -- ")[0].split(chr(8212))[0].strip()
+        match = TS_DECLARATION.match(head)
+        if not match:
+            return None
+        declarations.append(match.groupdict())
+    return declarations
+
+
+def generate_stub(step: dict, requires: list[str]) -> dict[str, str] | None:
+    """The whole stub, or None to ask the solver for it after all.
+
+    None is not a failure mode to be ashamed of. It is what keeps this from
+    being a second, worse parser of a language: anything unfamiliar goes back
+    to the path that handled it before.
+    """
+    if LANGUAGE["source_suffix"] != ".ts":
+        return None   # Python still asks; nothing there has needed this yet
+
+    declarations = parse_contracts(step["contracts"]["provides"])
+    if declarations is None:
+        return None
+    if {d["file"] for d in declarations} != set(step["files_write"]):
+        # A file the step must write that no contract describes, or the other
+        # way round. Either way the runner does not know enough to write it.
+        return None
+
+    types = ts_type_values(declarations)
+    # Where a name imported from elsewhere lives, so the emitted file can say so.
+    elsewhere: dict[str, str] = {}
+    for line in requires:
+        match = TS_DECLARATION.match(line.split(" -- ")[0].split(chr(8212))[0].strip())
+        if match:
+            elsewhere[match.group("name")] = match.group("file")
+
+    files: dict[str, str] = {}
+    for path in step["files_write"]:
+        mine = [d for d in declarations if d["file"] == path]
+        declared_here = {d["name"] for d in mine}
+        body: list[str] = []
+        needed: dict[str, set] = {}
+
+        for d in mine:
+            if d["kind"] in ("interface", "type"):
+                # An interface body needs no semicolon after it and a type
+                # alias does; emitting one after `}` is legal but reads wrong
+                # in a file a person may open.
+                line = f"export {d['kind']} {d['name']}{d['rest']}".rstrip().rstrip(";")
+                body.append(line if line.endswith("}") else line + ";")
+                continue
+            if d["kind"] == "const":
+                kind = d["rest"].split(":", 1)[-1].strip() if ":" in d["rest"] else "unknown"
+                body.append(f"export const {d['name']}: {kind} = "
+                            f"{sentinel_for(kind, types)};")
+                continue
+            signature = TS_SIGNATURE.match(d["rest"].strip())
+            if signature is None:
+                return None
+            returns = signature.group("returns")
+            value = sentinel_for(returns, types)
+            body.append(
+                f"export function {d['name']}({signature.group('args')}): {returns} {{"
+                + (f"{chr(10)}  return {value};{chr(10)}}}" if value else f"{chr(10)}}}"))
+
+        # Imports: every name this file mentions that another file declares.
+        text = chr(10).join(body)
+        for name, source in elsewhere.items():
+            if name in declared_here or not re.search(rf"(?<!\w){name}(?!\w)", text):
+                continue
+            needed.setdefault(relative_module(path, source), set()).add(name)
+        for d in declarations:
+            if d["file"] == path or d["name"] in declared_here:
+                continue
+            if re.search(rf"(?<!\w){d['name']}(?!\w)", text):
+                needed.setdefault(relative_module(path, d["file"]), set()).add(d["name"])
+
+        imports = [f'import {{ {", ".join(sorted(names))} }} from "{module}";'
+                   for module, names in sorted(needed.items())]
+        files[path] = (chr(10).join(imports) + chr(10) * 2 if imports else "") \
+            + text + chr(10)
+    return files
+
+
+def relative_module(importer: str, target: str) -> str:
+    """How `importer` refers to `target`, as TypeScript wants it written."""
+    rel = os.path.relpath(Path(target).with_suffix("").as_posix(),
+                          Path(importer).parent.as_posix()).replace(os.sep, "/")
+    return rel if rel.startswith(".") else "./" + rel
 
 
 def brief_stub(step: dict) -> str:
@@ -3119,9 +3324,18 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
 
             # --- STUB ---------------------------------------------------
             set_writable(tests=False, src=True)
-            call_solver("STUB", brief_stub(step))
+            written = generate_stub(step, dep_contract_lines(step))
+            if written is None:
+                call_solver("STUB", brief_stub(step))
+                ledger("STUB", step=step_id, ok=True, by="solver")
+            else:
+                for rel, text in written.items():
+                    path = PROJECT / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+                ledger("STUB", step=step_id, ok=True, by="runner",
+                       files=sorted(written))
             assert_touched("STUB", step["files_test"] + step["files_write"])
-            ledger("STUB", step=step_id, ok=True)
 
             red = pytest_run(f"red-{write_attempt}", step["files_test"])
             broken = chr(10).join(k for k in red.failure_kinds
