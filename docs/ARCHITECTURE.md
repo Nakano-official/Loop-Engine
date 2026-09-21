@@ -37,6 +37,37 @@ AI に実装させると、**「テストが通りました」が自己申告に
 「全基準を満たしている」と答え、テストを読める critic は「テストは通る」と答える ──
 どちらも真で、どちらも無価値。だから無知を権限で作っています。
 
+```mermaid
+flowchart LR
+  human(["人間"])
+  subgraph box["WSL2 サンドボックス"]
+    direction LR
+    runner["runner<br/>uid 1001<br/>ループを駆動"]
+    planner["planner<br/>uid 1003<br/>基準を作る"]
+    solver["solver<br/>uid 1002<br/>実装を書く"]
+    critic["critic<br/>uid 1004<br/>欠陥を指摘"]
+    plan[("plan/<br/>0700 runner")]
+    code[("src/ tests/<br/>2770 solverw")]
+  end
+  human -->|"要件"| runner
+  runner -->|"ブリーフ"| planner
+  planner -->|"提案"| runner
+  runner -->|"ブリーフ"| solver
+  runner -->|"ブリーフ"| critic
+  critic -->|"FINDINGS"| runner
+  runner --- plan
+  solver --- code
+  runner --- code
+  planner -. "読めない" .-x code
+  solver -. "読めない" .-x plan
+  critic -. "読めない" .-x plan
+  critic -. "読めない" .-x code
+```
+
+**破線が設計の本体です。** 基準を作る者はコードに触れられず、実装する者は基準を読めず、
+批評する者はそのどちらも読めません。矢印は全部ランナーを経由します ──
+役どうしが直接つながる線は1本もありません。
+
 runner は sudo を持ちません。それでも他の uid でプロセスを起こせるのは、
 `/etc/sudoers.d/` に**1役につき1スクリプトだけ**の例外があるからです ──
 横移動であって昇格ではありません（どの役も自前の権限を持たないので、継ぐものが無い）。
@@ -52,6 +83,42 @@ runner は sudo を持ちません。それでも他の uid でプロセスを�
 ```
 PLAN_LOAD → TEST_WRITE → STUB → RED_GATE → FREEZE → IMPL ⇄ VERIFY → GREEN
 ```
+
+```mermaid
+flowchart TD
+  req(["要件"]) --> boot["plan bootstrap"]
+  boot --> refine["critique"]
+  refine -->|"指摘あり"| revise["プランナーが改訂"]
+  revise --> refine
+  refine -->|"指摘なし / 上限"| apply["plan apply<br/>ここで基準が確定"]
+  apply --> step
+
+  subgraph step["ステップごと"]
+    direction TB
+    tw["TEST_WRITE"] --> stub["STUB<br/>(ランナーが書く)"]
+    stub --> red{"RED_GATE"}
+    red -->|"赤が正しい"| frz["FREEZE"]
+    frz --> impl["IMPL"]
+    impl --> ver{"VERIFY"}
+    ver -->|"失敗"| impl
+  end
+
+  ver -->|"緑"| nextstep["次のステップ"]
+  red -->|"通ってしまった"| esc["エスカレーション"]
+  ver -->|"試行を使い切った"| esc
+  esc --> revise2["プランナーが改訂"]
+  revise2 --> tw
+  esc -->|"(b)(c) は人間"| human2(["人間"])
+  nextstep --> allg["ALL_GREEN"]
+  allg --> review{"REVIEW_GATE<br/>人間が遊ぶ"}
+  review -->|"差し戻し"| human2
+```
+
+**外側の輪**（`critique` → 改訂 → `critique`）は `plan apply` の**前**で回ります ──
+そこが「基準がまだ草案である最後の瞬間」だからです。
+**内側の輪**（IMPL ⇄ VERIFY）はステップの中で回ります。
+**破線のない出口**は人間だけ ── (b) 基準の書き換えと (c) 上流からの作り直し、
+そして承認です。
 
 | 関門 | 訊いていること | 潰している不正 |
 |---|---|---|
