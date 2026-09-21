@@ -408,5 +408,42 @@ class RewritingTestsThatDoNotCompile(unittest.TestCase):
         self.assertEqual(loop.ANSI.sub("", coloured), "PARSE_ERROR")
 
 
+class TellingTheSolverWhatFailed(unittest.TestCase):
+    """The assertion, not the path of a file the solver cannot open.
+
+    `last_failure` came from the runner's stdout, which works only because
+    pytest prints failures there. vitest's junit reporter prints the path of
+    the report and nothing else, and the report lives under .runner at 0700
+    runner. So under TypeScript the solver was told a file had failures, never
+    which or why -- and two different backends then made the same mistake six
+    times in a row.
+    """
+
+    def report(self, body):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "r.xml"
+            path.write_text(body, encoding="utf-8")
+            return loop.parse_junit(path)
+
+    def test_the_assertion_comes_back_with_the_test_name(self):
+        run = self.report(
+            '<testsuites tests="1" failures="1">'
+            '<testsuite name="tests/e.test.ts" tests="1" failures="1" errors="0" skipped="0">'
+            '<testcase classname="tests/e.test.ts" name="engine &gt; tick with dt 0">'
+            '<failure message="expected +0 to be 7" type="AssertionError"/>'
+            '</testcase></testsuite></testsuites>')
+        self.assertEqual(len(run.failure_details), 1)
+        self.assertIn("tick with dt 0", run.failure_details[0])
+        self.assertIn("expected +0 to be 7", run.failure_details[0])
+
+    def test_a_passing_run_carries_no_details(self):
+        run = self.report(
+            '<testsuites tests="1" failures="0">'
+            '<testsuite name="tests/e.test.ts" tests="1" failures="0" errors="0" skipped="0">'
+            '<testcase classname="tests/e.test.ts" name="engine &gt; ok"/>'
+            '</testsuite></testsuites>')
+        self.assertEqual(run.failure_details, [])
+
+
 if __name__ == "__main__":
     unittest.main()

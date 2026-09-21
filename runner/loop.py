@@ -418,6 +418,9 @@ class TestRun:
     failure_kinds: list[str]
     passed_names: list[str]
     output: str
+    # The assertions themselves, one per failing test: its name and what the
+    # comparison said. The only part of a failure a solver can act on.
+    failure_details: list[str] = field(default_factory=list)
     # Which test files the failures are in, as pytest reports them
     # ("tests.test_models"). VERIFY runs the whole suite, so it needs to say
     # whether what broke belongs to this step or to one that was already green.
@@ -677,6 +680,7 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
         return TestRun(0, 0, 1, 0, ["<malformed junit report>"], [], output)
 
     kinds: list[str] = []
+    details: list[str] = []
     uncompiled: list[str] = []
     passed: list[str] = []
     broken: list[str] = []
@@ -706,8 +710,18 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
         if skips:
             no_verdict.append(f"{case.get('classname') or '<unknown>'}"
                               f"::{case.get('name') or '<unnamed>'}")
-        for failure in failures:
+        for failure in failures + errors:
             kinds.append(failure_kind(failure))
+            # The assertion itself, which is the only part the solver can act
+            # on. It used to be taken from stdout, and that worked only because
+            # pytest prints failures there: vitest's junit reporter prints the
+            # path of the report and nothing else, so the solver was told that
+            # a file had failures and never which, or why. Two different
+            # backends then made the same mistake five times over.
+            message = ANSI.sub("", failure.get("message") or "").strip()
+            details.append(f"{case.get('name') or '<unnamed>'}"
+                           + (chr(10) + "    " + message.replace(chr(10), chr(10) + "    ")
+                              if message else ""))
 
     def total(attribute: str) -> int:
         return sum(int(suite.get(attribute, 0) or 0) for suite in suites)
@@ -731,7 +745,8 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
             failures=max(0, total("failures") - len(uncompiled)),
             errors=total("errors") + len(uncompiled),
             skipped=total("skipped"),
-            failure_kinds=kinds, passed_names=passed, output=output,
+            failure_kinds=kinds, failure_details=details,
+            passed_names=passed, output=output,
             failed_files=sorted(set(broken + uncompiled)), skipped_names=no_verdict)
 
     return TestRun(
@@ -740,6 +755,7 @@ def parse_junit(xml_path: Path, output: str = "") -> TestRun:
         errors=total("errors"),
         skipped=total("skipped"),
         failure_kinds=kinds,
+        failure_details=details,
         passed_names=passed,
         output=output,
         failed_files=sorted(set(broken)),
@@ -3120,7 +3136,14 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
             # for it again -- which is worse than the problem it was added for.
             ledger("TEST_WRITE", step=step_id, ok=False, attempt=write_attempt,
                    reason=broken)
-            broken = broken + chr(10) + chr(10) + red.output[-2000:]
+            # Stripped here too, not only where the report is read. vitest
+            # wraps transform errors ONE CHARACTER AT A TIME in colour codes,
+            # so `it('given cli` arrives as forty escape sequences and the
+            # tail slice cut the line and column off the front. The solver was
+            # handed three rounds of that and could not fix what it could not
+            # read -- which looked exactly like a model that cannot write
+            # TypeScript.
+            broken = broken + chr(10) + chr(10) + ANSI.sub("", red.output)[-2000:]
             set_writable(tests=True, src=True)
             for path in step["files_test"] + step["files_write"]:
                 (PROJECT / path).unlink(missing_ok=True)
@@ -3180,8 +3203,15 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
 
         # pytest names a test's home as a dotted module path, so this is what
         # "tests/test_models.py" looks like in the report it writes.
+        # Both spellings, because the two test runners name a file differently
+        # in their reports: pytest writes the dotted module path
+        # (tests.test_models) and vitest writes the path as given
+        # (tests/engine.test.ts). Only the dotted form was built, so under
+        # TypeScript a step's OWN failing tests never matched and were all
+        # reported to the solver as regressions -- "tests that passed before
+        # this step are now failing", on the first step, where nothing had.
         own_tests = {Path(p).with_suffix("").as_posix().replace("/", ".")
-                     for p in step["files_test"]}
+                     for p in step["files_test"]} | set(step["files_test"])
 
         while attempt < len(schedule):
             backend = schedule[attempt]
@@ -3241,7 +3271,12 @@ def run_step(step_id: str, unvalidated: bool = False) -> int:
                    regressions=regressions)
             if green.green:
                 break
-            last_failure = green.output[-3000:]
+            # The assertions, not the stdout. vitest's junit reporter prints
+            # only the path of the report it wrote, and the report is under
+            # .runner (0700 runner), so the solver could not have read it
+            # either. It was being asked to fix failures it was never shown.
+            last_failure = (chr(10).join(green.failure_details)
+                            or ANSI.sub("", green.output)[-3000:])
             if green.skipped and not (green.failures or green.errors):
                 # pytest calls this run a success, so the output alone would
                 # leave the solver with nothing to work from.
