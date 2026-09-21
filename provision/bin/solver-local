@@ -62,7 +62,19 @@ MODEL = os.environ.get("LOOP_LLM_MODEL", "local")
 # "resample"` spends the attempt budget on INDEPENDENT DRAWS; at temperature 0
 # every draw is the same draw and the whole budget buys one answer. If you set
 # retry to "repair", low is fine again.
-TEMPERATURE = float(os.environ.get("LOOP_LLM_TEMPERATURE", "0.7"))
+# 0.7 made every retry a fresh draw rather than a second try. Run 8's S1 was
+# rejected nine times from the same brief, and at least five of those are
+# explained by sampling alone: two test files with an apostrophe inside a
+# single-quoted name, three different criteria that happened to pass against
+# the stub. One draw got twelve tests and twelve failures through RED_GATE
+# cleanly; the next draw from the same brief did not.
+#
+# The variety is not wanted here. A test file has to be right once, and
+# policy.retry = "resample" already provides diversity where it is useful --
+# in IMPL attempts, where a second angle on a stuck implementation is the
+# point. Everything before IMPL is transcription, and transcription should be
+# boring.
+TEMPERATURE = float(os.environ.get("LOOP_LLM_TEMPERATURE", "0.2"))
 TOP_P = float(os.environ.get("LOOP_LLM_TOP_P", "0.9"))
 
 # Must match what the server was started with (llm-serve passes --ctx-size).
