@@ -11,7 +11,7 @@ Three ceilings meet here and they are not the same kind of thing:
 
 The property worth pinning down is that a step's total budget is attempts x
 tiers, and that the tier change lands exactly on the boundary -- a handover one
-attempt early spends the metered backend on work the cheap one had not finished
+attempt early spends the rationed backend on work the local one had not finished
 trying.
 
     python3 -m unittest discover -s runner/tests
@@ -72,7 +72,7 @@ class WhichSolverRunsWhichAttempt(Settings):
 
     def test_the_cheap_backend_spends_its_whole_budget_first(self) -> None:
         # Not interleaved. A handover before the attempts are gone would spend
-        # the metered backend on a step the local one had not finished trying.
+        # the rationed backend on a step the local one had not finished trying.
         load_settings({"solver_tiers": ["local", "codex"]})
         self.assertEqual(attempt_schedule(STEP),
                          ["local", "local", "local", "codex", "codex", "codex"])

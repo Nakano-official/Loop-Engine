@@ -150,7 +150,7 @@ BACKSTOP_MARGIN = 120
 # "attempts" is a plan-wide override for every step's max_attempts, and 0 means
 # "leave each step alone". It exists because the right number depends on WHO IS
 # PAYING for an attempt, which the planner cannot know when it writes the plan:
-# against a metered solver 3 is right, and against a local one an attempt costs
+# against a subscription solver 3 is right, and against a local one an attempt costs
 # only wall-clock -- so ten of them are cheaper than the single planner call that
 # an escalation buys.
 LIMITS = {"escalations": 1, "revisions": 3, "attempts": 0, "critiques": 2,
@@ -178,7 +178,7 @@ RETRY_MODES = ("repair", "resample")
 # runner, or for a plan, to choose what runs.
 #
 # One entry is the normal case. Two is the arrangement this was built for: a
-# cheap or local backend does the work, and a metered one is spent only on the
+# cheap or local backend does the work, and a rationed one is spent only on the
 # steps it could not finish. The ordering matters more than it looks, because
 # the alternative on exhaustion is an escalation, and an escalation costs a
 # PLANNER call -- so a second solver tier is not an extra expense, it is the
@@ -188,9 +188,11 @@ RETRY_MODES = ("repair", "resample")
 # than left to tasks.json. A plan cannot name a backend it was never told about:
 # BOOTSTRAP tells the planner that what implements a step is not its concern, so
 # a bootstrapped plan has no solver_tiers at all. With ["codex"] as the default,
-# every such plan would silently run on the metered backend while the free local
-# one sat idle -- a billing decision made by omission. Free first, metered as
-# the fallback; a plan that does say solver_tiers still overrides this.
+# every such plan would silently run on the rationed backend while the local one
+# sat idle. Not a bill -- codex here is a ChatGPT subscription, the same shape as
+# the planner's -- but a quota shared with whatever the human is doing in their
+# own window, spent by omission. Local first, rationed as the fallback; a plan
+# that does say solver_tiers still overrides this.
 SOLVER_TIERS = ["local", "codex"]
 
 
@@ -1015,7 +1017,31 @@ TS_DECLARATION = re.compile(
 TS_SIGNATURE = re.compile(r"^\((?P<args>.*)\)\s*:\s*(?P<returns>.+?)\s*$")
 
 
-def sentinel_for(kind: str, types: dict) -> str:
+def literal_keys(step: dict) -> list[str]:
+    """Identifier-like strings the criteria quote, in the order they appear.
+
+    A keyed container's sentinel has to hold the keys a caller will look up,
+    or the test breaks on the lookup instead of failing on the value --
+    `CATALOG.cursor.rate` throws before it compares, and RED_GATE rejects that
+    as R5. The contract cannot say which keys: `Record<string, GeneratorDef>`
+    is a type, not a census. The criteria can, and they are the runner's to
+    read.
+    This is not the leak the STUB brief guards against. That rule keeps the
+    criteria away from the MODEL, so it cannot hardcode an answer it was shown.
+    Here nothing is shown to anything: the runner takes the key names and fills
+    them with sentinels, so every value is still wrong.
+    Over-collecting is harmless. A key nothing looks up only makes a
+    keys-of-the-container assertion differ, which is the outcome wanted anyway.
+    """
+    text = " ".join(f"{a.get('given', '')} {a.get('then', '')}"
+                    for a in step.get("acceptance", []))
+    seen: dict[str, None] = {}
+    for token in re.findall(r"['\"]([A-Za-z_]\w*)['\"]", text):
+        seen.setdefault(token, None)
+    return list(seen)
+
+
+def sentinel_for(kind: str, types: dict, keys: list[str] | None = None) -> str:
     """A value of that type that no correct implementation returns for any input.
 
     The one exception is a boolean, which has no such value -- every boolean is
@@ -1034,13 +1060,18 @@ def sentinel_for(kind: str, types: dict) -> str:
     if kind == "boolean":
         return '"__stub__" as unknown as boolean'
     if kind.endswith("[]"):
-        return "[" + sentinel_for(kind[:-2], types) + "]"
+        return "[" + sentinel_for(kind[:-2], types, keys) + "]"
     match = re.fullmatch(r"(Array|ReadonlyArray)<(.+)>", kind)
     if match:
-        return "[" + sentinel_for(match.group(2), types) + "]"
+        return "[" + sentinel_for(match.group(2), types, keys) + "]"
     match = re.fullmatch(r"(Record|Map)<\s*[^,]+,\s*(.+)>", kind)
     if match:
-        return '{ "__stub__": ' + sentinel_for(match.group(2), types) + " }"
+        value = sentinel_for(match.group(2), types, keys)
+        # __stub__ stays alongside the real names on purpose: with only the
+        # names the criteria mention, an assertion about the container's keys
+        # would MATCH, and a test that passes against the stub stops the step.
+        names = ["__stub__"] + list(keys or [])
+        return "{ " + ", ".join(f'"{n}": {value}' for n in names) + " }"
     if kind in types:
         return types[kind]
     # A union, a generic the table does not know, an imported name from a step
@@ -1049,7 +1080,7 @@ def sentinel_for(kind: str, types: dict) -> str:
     return f'"__stub__" as unknown as {kind}'
 
 
-def ts_type_values(declarations: list[dict]) -> dict:
+def ts_type_values(declarations: list[dict], keys: list[str] | None = None) -> dict:
     """Literal sentinels for every named type this step declares.
 
     Two passes, because an interface may hold another interface declared after
@@ -1064,11 +1095,11 @@ def ts_type_values(declarations: list[dict]) -> dict:
                 if not fields:
                     continue
                 types[d["name"]] = "{ " + ", ".join(
-                    f"{f}: {sentinel_for(t, types)}" for f, t in fields) + " }"
+                    f"{f}: {sentinel_for(t, types, keys)}" for f, t in fields) + " }"
             elif d["kind"] == "type":
                 rhs = d["rest"].split("=", 1)[-1].strip()
                 if rhs:
-                    types[d["name"]] = sentinel_for(rhs, types)
+                    types[d["name"]] = sentinel_for(rhs, types, keys)
     return types
 
 
@@ -1111,7 +1142,8 @@ def generate_stub(step: dict, requires: list[str]) -> dict[str, str] | None:
     # all along: the sentinel must have the SHAPE the signature states, because
     # the test takes it apart before it asserts anything.
     inherited = parse_contracts(requires) or []
-    types = ts_type_values(inherited + declarations)
+    keys = literal_keys(step)
+    types = ts_type_values(inherited + declarations, keys)
     # Where a name imported from elsewhere lives, so the emitted file can say so.
     elsewhere: dict[str, str] = {}
     for line in requires:
@@ -1137,13 +1169,13 @@ def generate_stub(step: dict, requires: list[str]) -> dict[str, str] | None:
             if d["kind"] == "const":
                 kind = d["rest"].split(":", 1)[-1].strip() if ":" in d["rest"] else "unknown"
                 body.append(f"export const {d['name']}: {kind} = "
-                            f"{sentinel_for(kind, types)};")
+                            f"{sentinel_for(kind, types, keys)};")
                 continue
             signature = TS_SIGNATURE.match(d["rest"].strip())
             if signature is None:
                 return None
             returns = signature.group("returns")
-            value = sentinel_for(returns, types)
+            value = sentinel_for(returns, types, keys)
             body.append(
                 f"export function {d['name']}({signature.group('args')}): {returns} {{"
                 + (f"{chr(10)}  return {value};{chr(10)}}}" if value else f"{chr(10)}}}"))

@@ -522,6 +522,28 @@ class TheRunnerWritesTheStub(Language):
         self.assertIn("baseCost: -999999", text)
         self.assertNotIn("as unknown as Catalog", text)
 
+    def test_a_keyed_container_holds_the_keys_the_criteria_look_up(self):
+        # `CATALOG.cursor.rate` throws before it compares if cursor is not
+        # there, and RED_GATE rejects a thrown call as R5. The contract cannot
+        # say which keys -- Record<string, GeneratorDef> is a type, not a
+        # census -- but the criteria name them, and they are the runner's to
+        # read. Nothing is shown to a model, so nothing can be hardcoded from
+        # it: the runner takes the names and fills them with sentinels.
+        self.speak("typescript")
+        stub = loop.generate_stub(
+            {"files_write": ["src/idlegame/catalog.ts"],
+             "contracts": {"provides": ["src/idlegame/catalog.ts: const CATALOG: Catalog"]},
+             "acceptance": [{"given": "CATALOG.cursor.rate",
+                             "then": "deep-equals exactly ['cursor','farm']"}]},
+            ["src/idlegame/model.ts: interface GeneratorDef { rate: number }",
+             "src/idlegame/model.ts: type Catalog = Record<string, GeneratorDef>"])
+        text = stub["src/idlegame/catalog.ts"]
+        self.assertIn('"cursor": { rate: -999999 }', text)
+        self.assertIn('"farm":', text)
+        # and __stub__ stays, or an assertion about the container's keys would
+        # MATCH -- a test that passes against the stub stops the step.
+        self.assertIn('"__stub__":', text)
+
     def test_what_it_cannot_parse_goes_back_to_the_solver(self):
         # None is not a failure to be ashamed of. A generated stub that does not
         # compile would be worse than the problem it replaces.
