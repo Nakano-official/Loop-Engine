@@ -67,7 +67,10 @@ def canon(value: Any) -> Any:
     if isinstance(value, enum.Enum):
         return value.value
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: canon(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        # A field whose design name is a Python keyword is generated as name_,
+        # and carries the design's name in its metadata.
+        return {f.metadata.get("design", f.name): canon(getattr(value, f.name))
+                for f in dataclasses.fields(value)}
     if isinstance(value, dict):
         return {str(k): canon(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -99,6 +102,59 @@ def equal(expected: Any, actual: Any, rel: float = DEFAULT_REL, abs_: float = DE
         return len(expected) == len(actual) and all(
             equal(e, a, rel, abs_) for e, a in zip(expected, actual))
     return type(expected) is type(actual) and expected == actual
+
+
+# ---- building inputs ------------------------------------------------------
+#
+# A generated test does not spell out its inputs either. It asks for each
+# argument by step and name, and gets the example's value built into the
+# design's types -- records as the generated dataclasses, enums as the
+# generated Enum classes. The registry of those comes from the generated
+# loop_types module, handed over once with use_types().
+
+_types: Any = None
+
+
+def use_types(module: Any) -> None:
+    global _types
+    _types = module
+
+
+def _parse(t: str) -> tuple:
+    t = t.replace(" ", "")
+    for kind in ("list", "optional"):
+        if t.startswith(kind + "<") and t.endswith(">"):
+            return (kind, _parse(t[len(kind) + 1:-1]))
+    if t.startswith("map<string,") and t.endswith(">"):
+        return ("map", _parse(t[len("map<string,"):-1]))
+    return ("prim", t) if t in ("int", "float", "string", "bool") else ("named", t)
+
+
+def decode(value: Any, t: str | tuple) -> Any:
+    """A canonical value, built into the design's type `t`."""
+    value = _resolve(value)
+    kind = _parse(t) if isinstance(t, str) else t
+    if kind[0] == "prim":
+        return {"int": int, "float": float, "string": str, "bool": bool}[kind[1]](value)
+    if kind[0] == "optional":
+        return None if value is None else decode(value, kind[1])
+    if kind[0] == "list":
+        return [decode(v, kind[1]) for v in value]
+    if kind[0] == "map":
+        return {k: decode(v, kind[1]) for k, v in value.items()}
+    name = kind[1]
+    if name in _types.ENUMS:
+        return _types.ENUMS[name](value)
+    cls, fields = _types.RECORDS[name]
+    return cls(**{_types.pyname(f): decode(value[f], ft) for f, ft in fields})
+
+
+def arg(ex: dict, step: int, name: str | None = None) -> Any:
+    """Step `step`'s argument `name`, or a value step's value when `name` is None."""
+    st = ex["steps"][step]
+    if name is None:
+        return decode(st["value"], st["type"])
+    return decode(st["args"][name], st["arg_types"][name])
 
 
 # ---- what a generated test calls ----------------------------------------

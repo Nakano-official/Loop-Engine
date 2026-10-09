@@ -260,4 +260,20 @@ Python は最近接偶数に、JavaScript の `toFixed` は切り上げ側に丸
 - `expected` / `actual` は §2 の正規形。値の例は `then.equals` と同じく**観測する値の並び**、
   エラーの例は `{"raises": 名前}` と、実際に起きたこと（`{"raises": 名前}` か `{"returned": 値}`）
 - 期待値はテストに書かない。比較関数が `LOOP_EXAMPLES`（窓口が用意する例のファイル）から読む
-- Python の実装: `adapters/python/loopcheck.py`（両方向のテスト 17 件）
+- Python の実装: `adapters/python/loopcheck.py`
+
+### 例のファイル
+
+アダプタは作業場の直下に `examples.json` を置き、`exec-run` がそれを `LOOP_EXAMPLES` として渡す
+（全言語共通の決まり）。中身は設計の全部の例で、組み立てモジュールには定義の例が入る。
+各段には、言語に依らない中核（`adapters/design.py` の `examples_file()`）が次を書き足す:
+
+| 書き足すもの | 用途 |
+|---|---|
+| `module` / `function` | `rules.buy` のような修飾を解いた、呼ぶ先 |
+| `arg_types` | 各引数を、どの型として組み立てるか |
+| `returns` | 戻り値の型 |
+
+生成されたテストは、入力も期待値も直書きしない。入力は段と引数名で比較関数に頼み
+（Python では `loopcheck.arg(ex, 段, 名前)`）、型どおりに組み立てられた値を受け取る。
+前の段の結果を指す参照（`$`）だけは、テストの中の変数になる。

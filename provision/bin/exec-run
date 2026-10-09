@@ -31,11 +31,17 @@ cd "$WS"
 # A clean environment: nothing the window's shell had leaks into the run.
 # LOOP_RECORD_DIR is where the comparison function writes its record
 # (REDESIGN 4); it is exec's own out/, which the window reads back.
+# LOOP_EXAMPLES is the examples file every adapter puts at the workspace root
+# (FORMATS 10) -- the expected values the tests compare against.
+# PYTHONDONTWRITEBYTECODE: exec cannot write the workspace, so Python must not
+# try to leave .pyc files in it.
 exec env -i \
   HOME=/home/exec \
   PATH=/usr/local/bin:/usr/bin:/bin \
   LANG=C.UTF-8 \
   LOOP_RECORD_DIR=/srv/loop/roles/exec/out \
+  LOOP_EXAMPLES="$WS/examples.json" \
+  PYTHONDONTWRITEBYTECODE=1 \
   GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=mod \
   CARGO_NET_OFFLINE=true \
   timeout --kill-after=10 "$LIMIT" "$@"
