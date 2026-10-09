@@ -42,9 +42,11 @@ case "$BRIEF" in
 esac
 [ -r "$BRIEF" ] || { echo "$ROLE-run: cannot read brief: $BRIEF" >&2; exit 2; }
 
-# Its own credentials, in its own file, readable by this uid alone: a role that
-# has burned through its quota must not stop another from running, and a breach
-# of one must not hand over the credential of another.
+# Its own credentials, in its own file, readable by this uid alone. The usage
+# quota is per account and shared by every role whatever is in these files;
+# what separate files buy is that a token can be revoked for one role alone,
+# and a breach of one uid hands over that role's token only -- both only if the
+# roles are given different tokens.
 if [ -r "/etc/loop/$ROLE.env" ]; then
   set -a
   . "/etc/loop/$ROLE.env"
