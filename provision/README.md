@@ -173,7 +173,8 @@ ssh -p 2222 maint@127.0.0.1 \
 ループの三者に含めないこと（RUNNER_SPEC §0-1）。
 
 `05-isolation.sh` が WSL 隔離（Windows パス非マウント、WSLg、systemd、NAT）を、
-`35-node.sh` が Node 側の凍結を、`40-perms.sh` が solver 視点の権限モデルを assert する。
+`35-node.sh` が Node 側の凍結を、`36-languages.sh` が各言語のテストの走らせ役を、
+`40-perms.sh` が solver 視点の権限モデルを assert する。
 1つでも落ちたら異常終了する。`05-` を最初に走らせるのは、隔離が効いていないディストロには
 **プロビジョニングする意味が無い**（以降の全ステップが成功しつつ何も意味しなくなる）ため。
 
@@ -188,6 +189,12 @@ sudo -u runner /srv/loop/bin/smoke-dom
 生きた UI は3件通り、run 7 と同じ形の UI（ボタンが最初から全部無効）は2件落ちる ──
 `expected 0 to be greater than 0`。**両方向を見るのが要点**で、何でも通す関門は
 働いている関門と見分けがつかない。
+
+`36-languages.sh` は Python と Node 以外の言語と、そのテストの走らせ役を入れる
+（Go・Rust・Java + JUnit 5・Ruby + minitest・PHP + PHPUnit・Perl + Test::More・C/C++ + GoogleTest）。
+REDESIGN §5 のアダプタが前提にするもので、**各言語で、通るべきテストが通り、落ちるべきテストが
+落ちることを assert する**。Go と cargo はネットワーク無し（`GOPROXY=off`・`--offline`）で走らせる。
+初回の実測（2026-10-09）は16項目すべて期待どおり。
 
 ### 2-6. スナップショット
 
