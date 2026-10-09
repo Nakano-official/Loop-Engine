@@ -105,19 +105,9 @@ class Sentinels:
 
     def __init__(self, d: Design):
         self.d = d
-        leaves = d.leaves()
-        n = -987654.25
-        while n in leaves["number"]:
-            n -= 1.0
-        self.number = n
-        i = -987654
-        while float(i) in leaves["number"]:
-            i -= 1
-        self.integer = i
-        s = "__stub__"
-        while s in leaves["string"]:
-            s += "_"
-        self.string = s
+        s = d.sentinels()
+        self.number, self.integer, self.string = s["float"], s["int"], s["string"]
+        self.unused_enum = s["unused_enum"]
 
     def expr(self, t: tuple) -> str:
         kind = t[0]
@@ -137,7 +127,7 @@ class Sentinels:
             return f"{{{self.string!r}: {self.expr(t[1])}}}"
         decl = self.d.types[t[1]]
         if "enum" in decl:
-            unused = [v for v in decl["enum"] if v not in self.d.leaves()["string"]]
+            unused = self.unused_enum[t[1]]
             return f"loop_types.{classname(t[1])}({unused[0]!r})" if unused else repr(self.string)
         args = ", ".join(f"{pyname(f['name'])}={self.expr(parse_type(f['type']))}"
                          for f in decl["record"])

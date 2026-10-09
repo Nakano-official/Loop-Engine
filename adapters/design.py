@@ -138,6 +138,25 @@ class Design:
                     walk(v)
         return found
 
+    def sentinels(self) -> dict:
+        """The primitives a stub builds everything from: a float, an int and a
+        string that no expected value in the design contains. Every adapter
+        uses these same three, so a stub means the same thing in every
+        language."""
+        leaves = self.leaves()
+        number = -987654.25
+        while number in leaves["number"]:
+            number -= 1.0
+        integer = -987654
+        while float(integer) in leaves["number"]:
+            integer -= 1
+        string = "__stub__"
+        while string in leaves["string"]:
+            string += "_"
+        return {"float": number, "int": integer, "string": string,
+                "unused_enum": {name: [v for v in decl["enum"] if v not in leaves["string"]]
+                                for name, decl in self.types.items() if "enum" in decl}}
+
     def observes_a_result(self, ex: dict) -> bool:
         """Whether an example looks at something a call returned. Only those
         must fail against a stub; one that observes an input it passed in

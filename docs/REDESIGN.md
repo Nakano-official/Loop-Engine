@@ -671,13 +671,22 @@ exec・solver・runner の制限は役の表から生成し、プロビジョン
   - **箱の中でも同じ結果**: runner が作業場を作り、exec が通信なし・書き込み不可で走らせ、
     判定を exec の `out/records.jsonl` から読んだ。exec が作業場に書いたファイルは 0
 
+- **TypeScript のアダプタ**（`adapters/typescript`）:
+  - `loopcheck.ts` ── 比較関数と記録。組み立てた値は深く凍結する（Python の凍結 dataclass に当たる）
+  - `emit.py` ── 型（readonly な interface・文字列の union・Error の派生）、スタブ、テスト、vitest の設定。
+    テストは vitest を import しない（globals）ので、作業場に `node_modules` が要らない
+  - 適合テスト 6 件（`LOOP_VITEST` で vitest を指す。無ければ飛ばす）
+  - **Python と同じ判定**: 正しい実装は 46 例すべて緑、スタブは結果を観測する 45 例が比較で赤、
+    M4.E5 は緑、クラッシュ 0。箱の中で exec として走らせても同じで、作業場に書いたファイルは 0
+  - 箱で初めて走らせたとき、vite が設定を読み込む一時ファイルを**作業場に**書こうとして EACCES で止まった。
+    exec の書き込み禁止が効いた結果で、`--configLoader native` で一時ファイルを作らせない（`emit.run_command`）
+
 **次:**
 
-1. **TypeScript のアダプタ** ── 題材の対象が `browser` / TypeScript なので、次はこれ。中核は共有し、
-   `emit` と比較関数を TypeScript で書く。適合テストは同じ放置ゲームで、同じ結果になること
-2. **出口の関門**（`artifacts.py`）── 試作（FORMATS §7）をリポジトリに作り直す。「同じ入力に違う期待値」の検出も
-3. **窓口の操作**（`loop-window` に名前だけ予約）と、ホストの pipeline・diagnose
-4. 残りの言語のアダプタ、支援モジュール（tester）の経路、上流の3段
+1. **出口の関門**（`artifacts.py`）── 試作（FORMATS §7）をリポジトリに作り直す。「同じ入力に違う期待値」の検出も
+2. **窓口の操作**（`loop-window` に名前だけ予約）と、ホストの pipeline・diagnose。
+   アダプタは揃ったので、「テストを用意する」「検証する」は `build_workspace` と `run_command` を呼ぶだけになる
+3. 残りの言語のアダプタ（Go・Rust・Java・Ruby・PHP・Perl・C/C++）、支援モジュール（tester）の経路、上流の3段
 
 整理の残り: 箱の退避先（run 8 の実物）は、支援モジュールの経路で S5 の形を写すまで残す。
 ホストの旧ミラー（`project`・`runs`）は、粒度と所要時間の材料を台帳から取り出すまで残す。
