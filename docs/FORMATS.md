@@ -237,3 +237,27 @@ Python は最近接偶数に、JavaScript の `toFixed` は切り上げ側に丸
 | 画面の振る舞い（クリックしたら何が出るか） | 外部インターフェースの関数（`view` など）までは例で確かめ、DOM はシェルとして人間が見る |
 | 矛盾の検出 | 「同じ関数・同じ引数に違う期待値」から始める |
 | 要件分析の形 | REDESIGN §10 の 1 が決まってから |
+
+---
+
+## 10. 記録
+
+比較関数が書き出す、判定の元になるもの（REDESIGN §4）。**どの言語でも同じ形**で、
+`$LOOP_RECORD_DIR/records.jsonl` に1行1件、書くたびに flush する。
+
+```json
+{"t": "start", "id": "M2.E1"}
+{"t": "check", "id": "M2.E1", "ok": true,  "expected": [33.75], "actual": [33.75]}
+{"t": "check", "id": "M1.E3", "ok": false, "expected": {"raises": "UnknownGenerator"}, "actual": {"returned": {"name": "x"}}}
+```
+
+| 形 | 意味 |
+|---|---|
+| `start` のあと同じ ID の `check` | 比べた。`ok` が結果 |
+| `start` だけ | 比べる前に落ちた（例外・クラッシュ）。理由はテストフレームワークの出力から読む |
+| どちらも無い | そのテストは走らなかった（ビルドできない、など） |
+
+- `expected` / `actual` は §2 の正規形。値の例は `then.equals` と同じく**観測する値の並び**、
+  エラーの例は `{"raises": 名前}` と、実際に起きたこと（`{"raises": 名前}` か `{"returned": 値}`）
+- 期待値はテストに書かない。比較関数が `LOOP_EXAMPLES`（窓口が用意する例のファイル）から読む
+- Python の実装: `adapters/python/loopcheck.py`（両方向のテスト 17 件）
