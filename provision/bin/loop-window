@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# The window: the only thing the runner key can start (REDESIGN 6 and 7-4).
+#
+# sshd runs this for every login with the runner key, because authorized_keys
+# carries `restrict,command="/srv/loop/bin/loop-window"`. What the client asked
+# for arrives in SSH_ORIGINAL_COMMAND, and it is matched against a fixed list --
+# never handed to a shell. Before this, the runner key opened an ordinary shell,
+# and "the window is the one place data crosses the boundary" was a habit
+# rather than a fact.
+#
+# The operations REDESIGN 6 lists are reserved by name and refuse until they
+# exist. Anything else is refused outright.
+set -euo pipefail
+
+CMD="${SSH_ORIGINAL_COMMAND:-}"
+GIT=/srv/loop/git
+
+refuse() { echo "loop-window: $*" >&2; exit 65; }
+
+case "$CMD" in
+  ping)
+    echo "loop-window: ok"
+    ;;
+
+  list-repos)
+    # One name per line. loop-pull.cmd mirrors each of them to the host.
+    shopt -s nullglob
+    for r in "$GIT"/*.git; do
+      [ -d "$r" ] && basename "$r"
+    done
+    ;;
+
+  "git-upload-pack '$GIT/"*".git'")
+    # Read-only git, for the host's mirrors. Only a plain name directly under
+    # /srv/loop/git: no slashes, no dot-dot, nothing that could walk elsewhere.
+    name="${CMD#"git-upload-pack '$GIT/"}"
+    name="${name%"'"}"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.git$ ]] || refuse "bad repository name"
+    [[ "$name" != *..* ]] || refuse "bad repository name"
+    [ -d "$GIT/$name" ] || refuse "no such repository: $name"
+    exec git-upload-pack "$GIT/$name"
+    ;;
+
+  run-role|run-role\ *|prepare-tests|prepare-tests\ *|freeze|freeze\ *|attempt|attempt\ *|verify|verify\ *)
+    echo "loop-window: '${CMD%% *}' is reserved and not implemented yet" >&2
+    exit 64
+    ;;
+
+  "")
+    refuse "an interactive login is not available on this key"
+    ;;
+
+  *)
+    refuse "refused: ${CMD%% *}"
+    ;;
+esac

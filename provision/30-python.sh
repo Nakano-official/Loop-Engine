@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Python toolchain. The venv is created and owned by runner; solver may read
-# and execute it but never write to it, so a stuck solver cannot pip-install
-# its way out of a problem (RUNNER_SPEC 1-3: environment freeze).
+# Python toolchain: one virtualenv for the whole machine, owned by root.
+# Every role may read and execute it; none may write to it, so nothing that
+# runs under a loop account can pip-install its way out of a problem
+# (RUNNER_SPEC 1-3: environment freeze).
+#
+# Machine only (REDESIGN 7-1). It used to live inside the project, at
+# project/.venv, and the project is no longer provisioning's business: the
+# window builds workspaces, and the Python adapter points at this venv.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -9,20 +14,19 @@ apt-get update -qq
 # python3-tk is not optional even though nothing here opens a window. On Debian
 # tkinter is a separate package, so `import tkinter` raises ModuleNotFoundError
 # -- and a test that imports a module which imports tkinter fails at import
-# time, before any assertion runs. The solver would see a failure with no
-# relation to what it was asked to build and spend every attempt on it. The
-# venv picks this up for free: tkinter lives in the stdlib, not site-packages.
-# There is still no DISPLAY here (WSLg does not reach an sshd session), so the
-# runner can check the logic of a GUI program but never the GUI itself. That is
-# what the host-side review in host/dashboard is for.
+# time, before any assertion runs. The venv picks it up for free: tkinter lives
+# in the stdlib, not site-packages.
 apt-get install -y -qq python3-venv python3-pip python3-tk git
 
-V=/srv/loop/project/.venv
+V=/srv/loop/python/venv
+install -d -o root -g root -m 755 /srv/loop/python
 if [ ! -x "$V/bin/python" ]; then
-  sudo -u runner python3 -m venv "$V"
+  python3 -m venv "$V"
 fi
-sudo -u runner "$V/bin/pip" install -q --upgrade pip
-sudo -u runner "$V/bin/pip" install -q pytest
+"$V/bin/pip" install -q --upgrade pip
+"$V/bin/pip" install -q pytest
+chown -R root:root /srv/loop/python
+chmod -R go-w /srv/loop/python
 
 "$V/bin/python" --version
 "$V/bin/pytest" --version

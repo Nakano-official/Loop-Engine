@@ -4,20 +4,32 @@
 #
 #   sudo ./provision.sh
 #
-# The distro's default (maintenance) user is assumed to be `maint`. If it is
-# named something else:  sudo ADMIN_USER=<name> ./provision.sh
+# Machine only (REDESIGN 7-1): users, toolchains, permissions, network, SSH.
+# Workspaces are built by the window, not here.
 #
-# Order matters. 15-authkeys must precede 50-lockdown (which is what grants
-# runner a login at all), and 40-perms must follow everything that creates
-# files under /srv/loop.
+# The maintenance user is the distro's default user (uid 1000) unless
+# ADMIN_USER names someone else. Rebuilding the old three-role layout in place?
+# Run 95-retire.sh first.
+#
+# Order matters:
+#   05  isolation first -- with no isolation there is nothing to provision into
+#   10  the role table: users, groups, channels, launchers, sudoers
+#   15  the runner key, pinned to loop-window (needs loop-window from 10)
+#   25  egress, before anything below runs code as a restricted role
+#   30/35/36  toolchains; 36 runs its smoke tests as exec, under egress
+#   40  every role against every path, after the toolchains exist
+#   50  last: it is what grants runner a login
 set -euo pipefail
 cd "$(dirname "$0")"
 
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
 
-# 05-isolation runs first: if wsl.conf never took effect there is no sandbox to
-# provision into, and every later step would succeed while meaning nothing.
-for s in 05-isolation.sh 10-users.sh 15-authkeys.sh 20-layout.sh 30-python.sh 35-node.sh 36-languages.sh 40-perms.sh 45-agent-invoke.sh 50-lockdown.sh; do
+ADMIN_USER="${ADMIN_USER:-$(getent passwd 1000 | cut -d: -f1)}"
+[ -n "$ADMIN_USER" ] || { echo "no maintenance user (uid 1000); set ADMIN_USER" >&2; exit 1; }
+export ADMIN_USER
+
+for s in 05-isolation.sh 10-roles.sh 15-authkeys.sh 25-egress.sh 30-python.sh 35-node.sh \
+         36-languages.sh 40-check.sh 50-lockdown.sh; do
   echo
   echo "=== $s ==="
   bash "$s"
@@ -25,13 +37,10 @@ done
 
 echo
 echo "=== provisioning complete ==="
-echo "Next: put a key in /etc/loop/solver.env, then run the first experiment:"
-echo "    sudo -u runner /srv/loop/bin/smoke-solver"
-echo
-echo "60-egress.sh was NOT run: the solver CLI and its API endpoint are still"
-echo "undecided (RUNNER_SPEC section 11, item 1). Until it runs, the solver"
-echo "account has unrestricted outbound network access."
+echo "Still by hand:"
+echo "  - credentials for each Claude role:   sudo -u <role> -H claude setup-token"
+echo "    then paste into /etc/loop/<role>.env"
+echo "  - the local model:                    sudo ./70-local-solver.sh  (LOCAL_SOLVER.md)"
 echo
 echo "Reminder: this sandbox only stays up while a wsl.exe session holds it."
-echo "The keepalive scheduled task on Windows is what does that; unattended"
-echo "runs across a logoff are not possible here (see provision/README 3-1)."
+echo "The keepalive scheduled task on Windows is what does that (README 3-1)."

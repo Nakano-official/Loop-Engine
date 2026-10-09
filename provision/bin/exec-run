@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Run a command inside one workspace, as exec -- the account generated code
+# runs under.
+#
+#     sudo -u exec /srv/loop/bin/exec-run <workspace> <seconds> <command> [args...]
+#
+# Tests run the solver's code in their own process, so whatever runs the tests
+# runs that code too. Before this account existed that was runner -- which can
+# read the plan and write the ledger. exec can do neither: it reads the
+# workspaces (group workr), writes only its own out/ and its home, and has no
+# network at all, loopback included (roles.json: egress none).
+#
+# The command comes from the window, which is fine: runner already owns every
+# workspace, so nothing exec can do here is something runner could not.
+# What exec adds is what it LACKS.
+set -euo pipefail
+
+[ "$(id -un)" = exec ] || { echo "exec-run: must run as exec" >&2; exit 2; }
+[ "$#" -ge 3 ] || { echo "usage: exec-run <workspace> <seconds> <command> [args...]" >&2; exit 2; }
+WS="$(realpath -e -- "$1" 2>/dev/null)" || { echo "exec-run: no such workspace: $1" >&2; exit 2; }
+LIMIT="$2"
+shift 2
+case "$LIMIT" in ""|*[!0-9]*) echo "exec-run: bad time limit: $LIMIT" >&2; exit 2 ;; esac
+case "$WS" in
+  /srv/loop/work/?*) ;;
+  *) echo "exec-run: not a workspace: $WS" >&2; exit 2 ;;
+esac
+[ -d "$WS" ] || { echo "exec-run: not a directory: $WS" >&2; exit 2; }
+
+cd "$WS"
+# A clean environment: nothing the window's shell had leaks into the run.
+# LOOP_RECORD_DIR is where the comparison function writes its record
+# (REDESIGN 4); it is exec's own out/, which the window reads back.
+exec env -i \
+  HOME=/home/exec \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  LANG=C.UTF-8 \
+  LOOP_RECORD_DIR=/srv/loop/roles/exec/out \
+  GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=mod \
+  CARGO_NET_OFFLINE=true \
+  timeout --kill-after=10 "$LIMIT" "$@"

@@ -58,25 +58,30 @@ fi
 # language runs one test that must pass and one that must fail, and both
 # outcomes are checked.
 #
-# They run as runner, the uid the gates use today, from a scratch directory
-# that runner owns -- not from wherever this script was started (README 3-14).
-# Nothing is fetched: Go is told there is no module proxy and cargo is told it
-# is offline, because the code these runners will build is never allowed the
-# network.
-W="$(sudo -u runner mktemp -d /tmp/lang-smoke.XXXXXX)"
+# They run as exec -- the account tests and generated code run under -- from a
+# scratch directory exec owns, not from wherever this script was started
+# (README 3-14). This runs after 25-egress.sh, so exec has no network at all
+# while it does it: Go is told there is no module proxy and cargo that it is
+# offline, and the run proves that is enough.
+#
+# Note for the adapters: exec may READ a workspace but not write one, so
+# anything a build produces (javac -d, g++ -o, cargo's target/, Go's cache)
+# has to go under exec's home or a scratch directory of its own, as it does
+# here.
+W="$(sudo -u exec mktemp -d /tmp/lang-smoke.XXXXXX)"
 trap 'rm -rf "$W"' EXIT
 LOG="$W/.log"
 fail=0
 
-put() {  # put <relative path>  (contents on stdin), owned by runner
-  sudo -u runner install -d "$W/$(dirname "$1")"
-  sudo -u runner tee "$W/$1" >/dev/null
+put() {  # put <relative path>  (contents on stdin), owned by exec
+  sudo -u exec install -d "$W/$(dirname "$1")"
+  sudo -u exec tee "$W/$1" >/dev/null
 }
 
 expect() {  # expect pass|fail <label> <command...>
   local want="$1" label="$2" got
   shift 2
-  if sudo -u runner -H env -C "$W" GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=mod \
+  if sudo -u exec -H env -C "$W" GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=mod \
        CARGO_TARGET_DIR="$W/target" "$@" >"$LOG" 2>&1; then
     got=pass
   else

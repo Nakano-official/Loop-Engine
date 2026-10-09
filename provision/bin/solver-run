@@ -1,111 +1,42 @@
 #!/usr/bin/env bash
-# Start the solver agent, non-interactively, on one brief.
+# Start the solver on one brief.
 #
-# Invoked by the runner as:
-#     sudo -u solver /srv/loop/bin/solver-run <brief-file> <seconds> [backend]
+#     sudo -u solver /srv/loop/bin/solver-run <brief-file> [seconds]
 #
-# The runner has no sudo (10-users.sh asserts that). The single exception in
-# /etc/sudoers.d/91-runner-to-solver names this script and no other, and is
-# limited to Runas (solver) -- sideways, never up.
+# The runner has no sudo; /etc/sudoers.d/91-loop-roles lets it start this
+# script as solver and nothing else. Sideways, never up.
+#
+# The solver is the local model and only the local model (REDESIGN 10, decision
+# on egress: the solver reaches loopback port 8080 and nothing else). The codex
+# tier this script used to fall back to needed the internet, and is gone.
 set -euo pipefail
 
-BRIEF="${1:?usage: solver-run <brief-file>}"
-
-# Seconds before the agent is stopped. Enforced HERE rather than in the runner:
-# the runner belongs to a different uid and cannot signal this process at all,
-# so a ceiling applied only on that side would leave a hung agent running with
-# nothing able to end it. `timeout` exits 124 when it fires.
+[ "$(id -un)" = solver ] || { echo "solver-run: must run as solver" >&2; exit 2; }
+BRIEF="${1:?usage: solver-run <brief-file> [seconds]}"
 LIMIT="${2:-900}"
-[ -r "$BRIEF" ] || { echo "solver-run: cannot read brief: $BRIEF" >&2; exit 2; }
+case "$LIMIT" in ""|*[!0-9]*) echo "solver-run: bad time limit: $LIMIT" >&2; exit 2 ;; esac
 
-# Which backend runs this brief. The runner passes a NAME and never a command:
-# the mapping from name to executable lives HERE, in a root-owned script the
-# runner cannot write. Adding a backend is therefore a deliberate act by someone
-# with sudo, not something a plan or a runner can ask for.
-#
-# The character class is the whole of the validation, and it has to be, because
-# the name goes into a path below.
-BACKEND="${3:-codex}"
-case "$BACKEND" in
-  ""|*[!a-z0-9]*) echo "solver-run: bad backend name: $BACKEND" >&2; exit 4 ;;
+IN=/srv/loop/roles/solver/in
+OUT=/srv/loop/roles/solver/out
+
+BRIEF="$(realpath -e -- "$BRIEF" 2>/dev/null)" || { echo "solver-run: cannot read brief" >&2; exit 2; }
+case "$BRIEF" in
+  "$IN"/*) ;;
+  *) echo "solver-run: the brief must be under $IN" >&2; exit 2 ;;
 esac
 
-# sudo's env_reset does not reliably hand HOME to the target user, and codex
-# resolves its credential directory from HOME. Without these two lines it looks
-# in the RUNNER's home, finds nothing, and reports "Not logged in" -- a failure
-# a long way from its cause. Set both explicitly rather than depending on a
-# sudo flag the runner would have to remember to pass.
+HELPER=/srv/loop/bin/solver-local
+[ -x "$HELPER" ] || {
+  echo "solver-run: $HELPER is missing. Run provision/70-local-solver.sh" >&2
+  exit 4
+}
+
+# sudo does not reliably hand HOME to the target user.
 export HOME=/home/solver
 
-# Anything that is not codex is expected to be dropped in beside this script as
-# /srv/loop/bin/solver-<name>, root-owned and 0755, taking the same <brief>
-# <seconds> arguments and applying its own `timeout`. That is the entire
-# integration surface for a second solver -- a local model, say -- and it stops
-# here on purpose: the write fences, the one-brief channel and the account this
-# runs as are already correct for whatever executes, because they are properties
-# of the uid and the filesystem rather than of the agent.
-#
-# The reason there is a second backend at all: when the cheap one exhausts its
-# attempts, the alternative is an escalation, and an escalation spends a PLANNER
-# call. A second solver is the cheaper of the two things that can happen next.
-if [ "$BACKEND" != codex ]; then
-  helper="/srv/loop/bin/solver-$BACKEND"
-  [ -x "$helper" ] || {
-    echo "solver-run: no backend '$BACKEND' ($helper is not executable)" >&2
-    exit 4
-  }
-  # Into the working tree first, for the reason spelled out at the `cd` below:
-  # sudo hands down the RUNNER's cwd, whose home is 0700, and a process that
-  # cannot traverse its own working directory fails somewhere unrecognisable.
-  cd /srv/loop/project
-  exec "$helper" "$BRIEF" "$LIMIT"
-fi
-
-export CODEX_HOME=/home/solver/.codex
-
-# The solver authenticates with its OWN ChatGPT login, stored under a home at
-# mode 700. No other account can read it, and -- the point of doing it this way
-# -- the solver cannot read anyone else's either. There is deliberately no
-# shared credential file: `sudo -u solver -H codex login --device-auth`.
-if [ ! -r "$CODEX_HOME/auth.json" ]; then
-  echo "solver-run: solver is not logged in. Run:" >&2
-  echo "    sudo -u solver -H codex login --device-auth" >&2
-  echo "Logging in as any other account does NOT work: /home/<other> is 0700." >&2
-  exit 3
-fi
-
-# Move into the working tree before starting the agent. `--cd` below tells codex
-# which directory to treat as the workspace, but it does NOT change the process's
-# own cwd -- sudo hands that down from the caller, and the caller is the runner,
-# whose home is 0700. The solver cannot even traverse it, so the sandbox fails
-# while setting itself up and reports the error against `src/`, a long way from
-# the actual cause.
-cd /srv/loop/project
-
-# --ignore-user-config  auth still uses CODEX_HOME, but config.toml is not read.
-#                       This is what keeps the brief the solver's ONLY input
-#                       (RUNNER_SPEC section 5); without it the agent picks up
-#                       ambient configuration and "one step's worth of
-#                       information" becomes a claim rather than a fact.
-# --ignore-rules        same argument for user and project .rules files.
-# --ephemeral           no session files on disk, so the solver cannot resume a
-#                       previous step. BOOTSTRAP requires the solver to lose its
-#                       memory between steps; this is that requirement as a
-#                       mechanism instead of a promise.
-# --sandbox workspace-write
-#                       codex's own sandbox, a SECOND fence. The load-bearing
-#                       one is the filesystem (RUNNER_SPEC 1-2): src/ is
-#                       group-writable, plan/ and .runner/ are 700 runner. If
-#                       the two ever disagree the filesystem wins, because it is
-#                       the fence the solver cannot talk its way past.
-#
-# The ceiling is applied here, not by the runner: see LIMIT at the top.
-exec timeout --kill-after=30 "$LIMIT" codex exec \
-  --cd /srv/loop/project \
-  --sandbox workspace-write \
-  --skip-git-repo-check \
-  --ignore-user-config \
-  --ignore-rules \
-  --ephemeral \
-  --color never \
-  - < "$BRIEF"
+# solver-local reads the files it may change from its working directory and
+# writes whole files back into it. That directory is out/, not a workspace: the
+# window stages the current contents here, and afterwards checks every path
+# that came back against the allowlist before anything reaches src/.
+cd "$OUT"
+exec "$HELPER" "$BRIEF" "$LIMIT"

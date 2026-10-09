@@ -22,27 +22,48 @@ RUNNER_SPEC.md の実行環境（§1）を再現するための手順とスク�
 | Windows 実行ファイル | **起動不可**（`interop enabled=false`） |
 | WSLg | **無効**（`.wslconfig` `guiApplications=false`。2026-08-17 適用・反映確認済み。§3-8） |
 
-アカウント:
+アカウントは **`roles.json`（役の表）が正本**で、`roles.py` がそこから全部を作り、全部を検査する
+（REDESIGN §7-2）。2026-10-09 時点:
 
-| ユーザー | uid | sudo | SSH | 用途 |
+| ユーザー | uid | 担い手 | SSH | 用途 |
 |---|---|---|---|---|
-| 保守用（既定ユーザー） | 1000 | あり | 鍵のみ | プロビジョニングと保守。VS Code Remote-SSH はここに繋ぐ |
-| `runner` | 1001 | **なし** | 鍵のみ | ループの実行主体。ホストからの git push を受ける |
-| `solver` | 1002 | **なし** | **不可**（`AllowUsers` に載せない + `DenyUsers`） | 実装を書くだけ |
-| `planner` | 1003 | **なし** | **不可** | 受け入れ基準を書く。コードには触れない（BOOTSTRAP 1-1） |
-| `critic` | 1004 | **なし** | **不可** | 計画の欠陥を指摘する。**計画もテストも読めない**（2026-09-13 追加） |
+| 保守用（既定ユーザー） | 1000 | 人間 | 鍵のみ | プロビジョニングと保守。VS Code Remote-SSH はここに繋ぐ。**ループの外** |
+| `runner` | 1001 | ── | 鍵のみ。**`loop-window` しか開かない** | 窓口。役を起動し、作業場を作る。作業場に書けるのはここだけ |
+| `solver` | 1002 | ローカルの 9B | 不可 | 実装。自分の `out/` にだけ書く。通信は loopback の 8080 だけ |
+| `critic` | 1004 | Claude | 不可 | 欠陥を指摘する。**読めないことが役の価値** |
+| `tester` | 1005 | Claude | 不可 | 支援モジュール（偽物・ヘルパ）だけを書く。テストは機械が生成する |
+| `exec` | 1006 | ── | 不可 | テストと生成コードの実行。作業場を**読むだけ**。通信は一切なし |
+| `definer` | 1007 | Claude | 不可 | 要件定義（と、決まるまでは要件分析） |
+| `designer` | 1008 | Claude | 不可 | モジュール設計 |
+| `llm` | system | ── | 不可 | ローカルモデルのサーバ（`70-local-solver.sh`）。通信なし |
 
-保守用アカウントは VirtualBox 構成での `admin` に相当する。WSL2 のディストロには
-既定ユーザーが必ず1人いるので、それを保守用として使い、ループ用の4人を足す形にした。
+`planner`（1003）は 2026-10-09 に廃止した（定義と設計に分けた。REDESIGN §10 決定 5）。
 
-**名前はこのリポジトリでは決め打ちにしていない。** スクリプトは `ADMIN_USER` で受け取り、
-既定は `maint`。この機械の実際の既定ユーザーは `yoshito` なので、手で叩くときは
-`ADMIN_USER=yoshito` を渡す。**`maint` を前提に書くと落ちる**（2026-09-13 に踏んだ）。
+**sudo を持つのは保守用だけ。** runner が持つのは「各役の起動スクリプトをその役として起動する」
+許可だけで（`/etc/sudoers.d/91-loop-roles`、表から生成）、横移動であって昇格ではない。
 
-`critic` の uid が分かれている理由は、他の3人とは毛色が違う。solver と planner は
-「書けるものを制限する」ための分離だが、critic は**読めるものを制限する**ための分離で、
-役の価値そのものがそこにある ── 計画を読める critic は「全基準を満たしている」と答え、
-テストを読める critic は「テストは通る」と答える。どちらも真で、どちらも無価値。
+**名前はこのリポジトリでは決め打ちにしていない。** 保守用ユーザーは `ADMIN_USER` で受け取り、
+省略時は uid 1000 の既定ユーザー（この機械では `yoshito`）。以前の既定 `maint` を前提に書いて
+落ちたことがある（2026-09-13）。
+
+`critic` が別 uid なのは、critic は**読めるものを制限する**ための分離だから ──
+計画を読める critic は「全基準を満たしている」と答え、テストを読める critic は
+「テストは通る」と答える。どちらも真で、どちらも無価値。
+
+### 置き場
+
+| パス | 持ち主・モード | 中身 |
+|---|---|---|
+| `/srv/loop/bin` | root 755 | 起動スクリプト（`<役>-run`）と `loop-window` |
+| `/srv/loop/lib/roles.py` | root 644 | 起動時の通信制限に使う写し |
+| `/srv/loop/roles/<役>/in` | runner:`<役>w` 2750 + 既定 ACL | ブリーフ。runner が書き、役が読む |
+| `/srv/loop/roles/<役>/out` | runner:`<役>w` 3770（sticky） | 役の出力。役が書き、runner が読む |
+| `/srv/loop/work` | runner:workr 2750 + 既定 ACL | 作業場。窓口が作る。exec は読むだけ |
+| `/srv/loop/git` | runner 700 | ホストが引くベアリポジトリ（`loop-window` の git 経由） |
+| `/srv/loop/python` `/srv/loop/node` | root 755 | ツールチェーン。全役が実行でき、誰も変えられない |
+| `/srv/loop/models` | root:llm 2750 | ローカルモデルの重み |
+| `/etc/loop/roles.json` | root 644 | 役の表の写し |
+| `/etc/loop/<役>.env` | root:`<役>` 640 | Claude の役ごとの認証情報。**その uid だけが読める**（runner も読めない） |
 
 ホスト側の付属物（詳細と再作成手順は `host/README.md`）:
 
@@ -145,7 +166,7 @@ sudo systemctl enable --now ssh
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
-sudo npm i -g @anthropic-ai/claude-code @openai/codex   # 導入済みの構成に合わせる
+sudo npm i -g @anthropic-ai/claude-code
 ```
 
 **必ず `sudo npm i -g`（prefix が `/usr`）にすること。** ユーザーローカル prefix に入れて
@@ -157,44 +178,48 @@ interop を切ると Windows 側の `npm`/`node` が PATH から消えるので�
 
 ### 2-5. スクリプトを送り込んでプロビジョニング
 
-`/mnt/c` が無いので、ファイルの受け渡しは **scp** で行う。
+`/mnt/c` が無いので、ファイルの受け渡しは **scp** で行う（保守用ユーザーで）。
 
 ```bash
-ssh -p 2222 maint@127.0.0.1 'mkdir -p /tmp/loop-provision'
-scp -P 2222 provision/*.sh /c/Users/<you>/.ssh/loop-runner_ed25519.pub \
-    maint@127.0.0.1:/tmp/loop-provision/
-ssh -p 2222 maint@127.0.0.1 \
-    "cd /tmp/loop-provision && sed -i 's/\r\$//' *.sh && sudo bash provision.sh"
+ssh loop-dev 'rm -rf /tmp/loop-provision && mkdir -p /tmp/loop-provision'
+scp -r -P 2222 provision /c/Users/<you>/.ssh/loop-runner_ed25519.pub \
+    <maint>@127.0.0.1:/tmp/loop-provision/
+ssh loop-dev "cd /tmp/loop-provision/provision && \
+    sed -i 's/\r\$//' *.sh bin/* roles.py && sudo bash provision.sh"
 ```
 
-最後の行が非対話で通るのは、WSL の既定ユーザーに `NOPASSWD` の sudoers
-（`/etc/sudoers.d/90-maint`）が入っているから。VirtualBox 構成でパスワードを
-`sudo -S` に流し込んでいたのは不要になった。**`maint` は実質 root** なので、
-ループの三者に含めないこと（RUNNER_SPEC §0-1）。
+最後の行が非対話で通るのは、WSL の既定ユーザーに `NOPASSWD` の sudoers が入っているから。
+**保守用ユーザーは実質 root** なので、ループの役に含めないこと（RUNNER_SPEC §0-1）。
 
-`05-isolation.sh` が WSL 隔離（Windows パス非マウント、WSLg、systemd、NAT）を、
-`35-node.sh` が Node 側の凍結を、`36-languages.sh` が各言語のテストの走らせ役を、
-`40-perms.sh` が solver 視点の権限モデルを assert する。
-1つでも落ちたら異常終了する。`05-` を最初に走らせるのは、隔離が効いていないディストロには
-**プロビジョニングする意味が無い**（以降の全ステップが成功しつつ何も意味しなくなる）ため。
+**今の箱をその場で作り替えるときは、先に `95-retire.sh` を一度だけ走らせる。**
+新しい構成が知らないもの（旧 run の作業場・ベアリポジトリ・ログ、planner アカウント、
+古い起動スクリプトと sudoers）を `/var/backups/loop-retired-<日時>` に**移す**。
+何も消さないので、中身を確かめてから手で消す。2026-10-09 の作り替えでは77項目を移した。
 
-`35-node.sh` は vitest と happy-dom を `/srv/loop/node` に入れて凍結し、
-`project/node_modules` からシンボリックリンクで見えるようにする。**画面の無い機械で
-UI を検査するための土台**で、主張の検算は:
+`provision.sh` が流す順番と、それぞれが assert すること:
+
+| | やること | assert |
+|---|---|---|
+| `05-isolation.sh` | ── | WSL の隔離（Windows パス非マウント、WSLg、systemd、NAT）。**最初に走らせる** ── 隔離が効いていないディストロには、プロビジョニングする意味が無い |
+| `10-roles.sh` | 役の表から、ユーザー・グループ・置き場・既定 ACL・認証情報の雛形・起動スクリプト・sudoers | ── |
+| `15-authkeys.sh` | runner の鍵を `restrict,command="/srv/loop/bin/loop-window"` 付きで置く | 全行が窓口に固定されていること |
+| `25-egress.sh` | 役ごとの通信制限（iptables / ip6tables）と、起動のたびに当てる `loop-egress.service` | サービスが動いていること |
+| `30-python.sh` `35-node.sh` | ツールチェーン（root 所有、プロジェクトの外） | ── |
+| `36-languages.sh` | Go・Rust・Java + JUnit 5・Ruby + minitest・PHP + PHPUnit・Perl + Test::More・C/C++ + GoogleTest | **各言語で、通るべきテストが通り、落ちるべきテストが落ちる**。exec として、通信の無い状態で |
+| `40-check.sh` | ── | **全部の役 × 全部の場所**を読み・書き・通過で総当たり、あとから runner が作るもの、sudo の許可、sticky、通信（実際に接続して） |
+| `50-lockdown.sh` | sshd：表の `login` の役と保守用だけを許し、残りの役を名指しで拒む | 実際に効いた設定（`sshd -T`） |
+
+1つでも落ちたら異常終了する。**検査は両方向を見るのが要点**で、何でも通す関門は働いている関門と
+見分けがつかない。2026-10-09 の初回は、わざと開けた穴（認証情報を誰でも読める、余計なグループ、
+余計な sudo 許可、exec の通信、sticky 無し）を5つとも拒み、あとから作られる作業場の穴（§3-20）を
+1つ見つけた。
+
+ホストから窓口を確かめるには:
 
 ```bash
-sudo -u runner /srv/loop/bin/smoke-dom
+ssh loop-runner ping          # loop-window: ok
+ssh loop-runner ls            # loop-window: refused: ls   （シェルは開かない）
 ```
-
-生きた UI は3件通り、run 7 と同じ形の UI（ボタンが最初から全部無効）は2件落ちる ──
-`expected 0 to be greater than 0`。**両方向を見るのが要点**で、何でも通す関門は
-働いている関門と見分けがつかない。
-
-`36-languages.sh` は Python と Node 以外の言語と、そのテストの走らせ役を入れる
-（Go・Rust・Java + JUnit 5・Ruby + minitest・PHP + PHPUnit・Perl + Test::More・C/C++ + GoogleTest）。
-REDESIGN §5 のアダプタが前提にするもので、**各言語で、通るべきテストが通り、落ちるべきテストが
-落ちることを assert する**。Go と cargo はネットワーク無し（`GOPROXY=off`・`--offline`）で走らせる。
-初回の実測（2026-10-09）は16項目すべて期待どおり。
 
 ### 2-6. スナップショット
 
@@ -212,6 +237,10 @@ export は数 GB になるのでリポジトリには入れない（`.gitignore`
 ---
 
 ## 3. 落とし穴
+
+> **ここは記録である。** 3-1〜3-19 は旧構成（3役・`10-users.sh`〜`60-egress.sh`）で踏んだもので、
+> スクリプト名とパスは当時のもの。今も効く教訓は `roles.py` と各スクリプトに組み込んである
+> （たとえば 3-12・3-16・3-18 は、in/ の setgid、out/ の sticky、総当たりの検査になった）。
 
 ### 3-1. keepalive タスクが無いと VM がアイドルで落ちる（最重要）
 
@@ -573,57 +602,41 @@ node_modules/        ← 全ての深さで無視する（これを書くと穴�
 ツールチェーン本体を `/srv/loop/node` に置いて**プロジェクトの外**に出しているのは
 このため。中に置くと `node_modules/` を無視するしかなくなる。
 
-## 4. 未適用
+### 3-20. runner の umask では、あとから作った作業場がグループに書ける（2026-10-09）
 
-`70-local-solver.sh` は**ソルバーをローカルモデルに差し替えると決めたときだけ**当てる
-（`60-egress.sh` と同じ理由で `provision.sh` からは呼ばない）。手順と失敗表は
-`LOCAL_SOLVER.md`。sudoers は変更しない ── `solver-run` が持つ Runas(solver) の許可1つで
-足り、バックエンドは同じ uid で exec されるため。
+`/srv/loop/work` 自体は `2750` でも、その下に runner が `mkdir` した作業場は、runner の umask
+（002）のせいで `2770` になる。setgid でグループは `workr` になり、**exec はそのグループにいる**
+── テストしている当のコードに書き込めた。`in/` のブリーフも同じ理由で役から書き換えられた。
 
-`60-egress.sh` は**意図的に実行していない**（2026-08-18 判断）。
+総当たりの検査は通っていた。見ていたのが `work/` そのもので、**あとから作られるもの**を
+見ていなかったからである。runner から exec を起動して試して見つかった。
 
-当初は「これを当てて初めて環境凍結が成立する」と書いていたが、**それは誤りだった**。
-ネットワークを全開にしたまま測ったところ、4経路すべてが既に塞がっている:
+→ `work/` と各 `in/` に**既定 ACL**（`d:g::r-x,d:o::---`）を付けた。既定 ACL のあるディレクトリでは、
+新しいものはグループのビットをそこから取り、umask は効かない。窓口の作り方への注意ではなく、
+ディレクトリの性質になる。検査にも「runner が umask 002 で作ったもの」を加えた。
+直す前の箱でこの検査は8件を指摘し、直した後は通った。
 
-| 試みたこと | 結果 | 効いている機構 |
-|---|---|---|
-| `.venv/bin/pip install requests` | Permission denied | `.venv` が runner 所有・`go-w` |
-| `pip install --user requests` | externally-managed-environment | PEP 668 |
-| `--user` で入れたものを `.venv/bin/python` から import | 見えない | venv は user site を無視する |
-| `apt-get install` | dpkg lock: are you root? | sudo なし |
+## 4. 手で行うこと
 
-3つ目が要。**テストは必ず `.venv/bin/pytest` で走らせること** ── 素の `python3` に変えると
-user site が復活し、この防御だけが崩れる。
+- **Claude の役の認証情報。** 役ごとに1回:
 
-そのうえで、egress 制限が買うのは環境凍結ではなく**持ち込みと持ち出し**の遮断であり、
-ループの前提条件ではない。当てるかどうかはその脅威をどう見るかで決める。
+  ```bash
+  sudo -u <役> -H claude setup-token     # 表示されたトークンを
+  sudoedit /etc/loop/<役>.env              # CLAUDE_CODE_OAUTH_TOKEN= の後に貼る
+  ```
 
-**当てるなら IP 固定ではなくプロキシで作ること。** 観測したソルバーの宛先は
-`chatgpt.com` の1つだけだが（`api.openai.com` は使われない ── あれは API キー経路）、
-Cloudflare の後ろにあり複数アドレスに解決される。IP 固定は黙って陳腐化し、
-WSL2 では VM が頻繁に止まるので規則の永続化が要る ──
-**永続化した固定 IP は時限爆弾**（ローテーション後、原因の分かりにくい停止として出る）。
+  役ごとにファイルを分けているのは、ある役が枠を使い切っても他の役が止まらないように、
+  また1つの認証情報の事故が他の役を巻き込まないように。
 
-観測の手順（推測でドメインを並べないこと）:
+- **ローカルモデル。** `70-local-solver.sh` と `LOCAL_SOLVER.md`。llama-server のビルドと
+  重みのダウンロードはスクリプトに任せない。sudoers は変えない ── solver-run が持つ
+  Runas(solver) の許可1つで足りる。
 
-```bash
-# DROP ではなく LOG を1本入れて、実際に叩かれた宛先だけを採る
-iptables -I OUTPUT 1 -m owner --uid-owner "$(id -u solver)" \
-  -m conntrack --ctstate NEW -j LOG --log-prefix "LOOPOBS "
-sudo -u runner /srv/loop/bin/smoke-solver
-dmesg | grep LOOPOBS
-```
+- **keepalive タスク**（§3-1、`host/README.md`）。
 
-### 認証（2026-08-18 時点）
-
-- **`solver` = Codex CLI + ChatGPT サブスクリプション**。API キーは使わない。
-  `sudo -u solver -H codex login --device-auth`（ブラウザはホスト側でよい）。
-  **必ず `solver` として実行すること** ── 他アカウントでログインしても
-  `/home/<other>` が 700 なので solver からは読めない。認証情報が
-  `/home/solver/.codex` に入ることが、そのまま隔離になっている
-- **`planner` = Claude の API キー**。`/etc/loop/planner.env`（`root:planner 0640`）。
-  ベンダを分けているのは、基準を書く側と満たす側の相関した盲点を避けるためと、
-  片方の枠・認証情報の事故がもう片方を巻き込まないようにするため
+solver は **ローカルモデルだけ**になった（2026-10-09）。以前の予備だった Codex CLI は外へ通信する
+必要があり、solver の通信を loopback に閉じた今は使えない。`/home/solver/.codex` に古いログインが
+残っていても使われない。
 
 ---
 
@@ -636,7 +649,7 @@ WSL2 でよいのは「人が張り付いている間だけ回す」用途に限
 - ホストの再起動を挟んで自動復帰する
 - ループ実行中に Windows 側で重い作業をしても影響を受けない
 
-ディストロ内の構成（`provision/` の 10〜60）は**そのまま持っていける**。
+ディストロ内の構成（`provision/` の全部）は**そのまま持っていける**。
 変わるのはホスト側の起動・接続まわりと、スナップショットの取り方だけ。
 
 ## 6. なぜ VirtualBox をやめたか

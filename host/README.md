@@ -120,7 +120,8 @@ Host loop-dev
     ServerAliveCountMax 6
 ```
 
-`runner` へ push するための別エントリ（git 経路専用、鍵も別）:
+`runner` の別エントリ（鍵も別）。**この鍵で開くのは `loop-window` だけ**で、シェルは開かない
+（`provision/15-authkeys.sh`）。受け付けるのは `ping`・`list-repos`・読み取り専用の git だけ:
 
 ```
 Host loop-runner
@@ -137,21 +138,22 @@ Host loop-runner
 
 | 段 | どこへ | 何から守るか |
 |---|---|---|
-| 1 | `project` → `/srv/loop/repo.git` | `reset` / `clean`。**同じ VHDX の中**なので、それ以上は守らない |
+| 1 | 作業場 → `/srv/loop/git/repo.git` | `reset` / `clean`。**同じ VHDX の中**なので、それ以上は守らない |
 | 2 | `repo.git` → `C:\dev\Loop-Engine\project`、過去run → `runs\run-NNN` | **VHDX の消失**。ここで初めて別のディスクに乗る |
 | 3 | ミラー → GitHub など | ホストの故障。やるなら**鍵はホストだけが持つ** |
 
-段1 はランナーが自動でやる（`loop.py` の `publish()`、GREEN と `plan apply` の直後）。
-段2 が `loop-pull.cmd`。**引数も事前のクローンも要らない** ── サンドボックスにある
-`repo*.git` を全部列挙し、無ければクローン、有れば fetch する。
+段1 は窓口がやる（作り直し中。旧構成では `loop.py` の `publish()` だった）。
+段2 が `loop-pull.cmd`。**引数も事前のクローンも要らない** ── 窓口に `list-repos` で
+`/srv/loop/git` のリポジトリを訊き、無ければクローン、有れば fetch する。窓口ができる前に
+クローンしたミラーは古い場所を指しているので、fetch の前に毎回 `origin` を付け直す。
 1件でも clone / fetch / reset / clean / fast-forward に失敗すれば、その場で非ゼロ終了する。
 不変アーカイブをすべて確認してから最後にライブミラーへ進むため、アーカイブ同期に失敗した
 状態でライブを作り直さない。成功済みの独立アーカイブは巻き戻さないが、部分成功を
 「done」と表示してはならない。
 
 ```
-/srv/loop/repo.runN.git  ->  C:\dev\Loop-Engine\runs\run-NNN  （不変。ff のみ）
-/srv/loop/repo.git       ->  C:\dev\Loop-Engine\project        （現行。毎回作り直す）
+/srv/loop/git/repo.runN.git  ->  C:\dev\Loop-Engine\runs\run-NNN  （不変。ff のみ）
+/srv/loop/git/repo.git       ->  C:\dev\Loop-Engine\project        （現行。毎回作り直す）
 ```
 
 **run ごとにディレクトリを分けるのは整頓ではなく保存のため。** どの run も

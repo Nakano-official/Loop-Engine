@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "The role table (REDESIGN 7-2). Users, groups, channels, credentials, sudoers,",
+    "sshd, egress and the access checks are all generated from this file by",
+    "roles.py. Whatever is written here is checked; whatever is not is refused.",
+    "",
+    "model     who does the judging: claude, local, or null (no model at all)",
+    "invoked   true: runner may start it, through /srv/loop/bin/<role>-run only",
+    "tools     claude roles: the only tools the CLI is started with",
+    "egress    open | none | {\"loopback_tcp\": [ports]}  (REDESIGN 7-3)",
+    "work      read: may read the workspaces under /srv/loop/work. Nobody but",
+    "          runner writes there -- every role writes to its own out/ only,",
+    "          and the window copies what passes into the workspace",
+    "login     ssh-window: may log in over SSH, into loop-window and nothing else"
+  ],
+  "roles": {
+    "runner":   {"uid": 1001, "model": null,     "invoked": false, "egress": "none", "login": "ssh-window"},
+    "solver":   {"uid": 1002, "model": "local",  "invoked": true,  "egress": {"loopback_tcp": [8080]}},
+    "critic":   {"uid": 1004, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write"},
+    "tester":   {"uid": 1005, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
+    "exec":     {"uid": 1006, "model": null,     "invoked": true,  "egress": "none", "work": "read"},
+    "definer":  {"uid": 1007, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
+    "designer": {"uid": 1008, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
+    "llm":      {"uid": null, "system": true, "model": null, "invoked": false, "egress": "none"}
+  }
+}

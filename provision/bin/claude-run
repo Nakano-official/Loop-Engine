@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Start a Claude role, non-interactively, on one brief.
+#
+#     sudo -u <role> /srv/loop/bin/<role>-run <brief-file> [seconds]
+#
+# One script for every Claude role (definer, designer, tester, critic, ...),
+# installed once per role by roles.py. The runner has no sudo; the only thing
+# /etc/sudoers.d/91-loop-roles lets it do is start <role>-run as <role>.
+# Sideways, never up.
+#
+# WHICH role this is comes from the uid, not from an argument. The runner
+# chooses which launcher to start and sudo decides who it runs as; nothing the
+# runner passes can make a definer run with a designer's tools or credentials.
+set -euo pipefail
+
+ROLE="$(id -un)"
+BRIEF="${1:?usage: $ROLE-run <brief-file> [seconds]}"
+# Seconds before the agent is stopped. Enforced here rather than by the runner,
+# which belongs to a different uid and cannot signal this process at all.
+LIMIT="${2:-900}"
+case "$LIMIT" in ""|*[!0-9]*) echo "$ROLE-run: bad time limit: $LIMIT" >&2; exit 2 ;; esac
+
+IN="/srv/loop/roles/$ROLE/in"
+OUT="/srv/loop/roles/$ROLE/out"
+
+# The tools come from the role table, and only a Claude role has any.
+TOOLS="$(python3 - "$ROLE" <<'EOF'
+import json, sys
+role = json.load(open("/etc/loop/roles.json"))["roles"].get(sys.argv[1], {})
+if role.get("model") != "claude" or not role.get("invoked"):
+    sys.exit(1)
+print(role["tools"])
+EOF
+)" || { echo "$ROLE-run: $ROLE is not an invoked Claude role in /etc/loop/roles.json" >&2; exit 2; }
+
+# The brief has to be one the window put in this role's own in/. A path
+# anywhere else would be a second input channel beside the brief.
+BRIEF="$(realpath -e -- "$BRIEF" 2>/dev/null)" || { echo "$ROLE-run: cannot read brief" >&2; exit 2; }
+case "$BRIEF" in
+  "$IN"/*) ;;
+  *) echo "$ROLE-run: the brief must be under $IN" >&2; exit 2 ;;
+esac
+[ -r "$BRIEF" ] || { echo "$ROLE-run: cannot read brief: $BRIEF" >&2; exit 2; }
+
+# Its own credentials, in its own file, readable by this uid alone: a role that
+# has burned through its quota must not stop another from running, and a breach
+# of one must not hand over the credential of another.
+if [ -r "/etc/loop/$ROLE.env" ]; then
+  set -a
+  . "/etc/loop/$ROLE.env"
+  set +a
+fi
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  if [ -n "${ANTHROPIC_API_KEY_CONSOLE:-}" ]; then
+    export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_CONSOLE"
+    echo "$ROLE-run: no subscription token; falling back to Console credit" >&2
+  else
+    echo "$ROLE-run: no credentials in /etc/loop/$ROLE.env" >&2
+    echo "    subscription (preferred): sudo -u $ROLE -H claude setup-token" >&2
+    exit 3
+  fi
+fi
+unset ANTHROPIC_API_KEY_CONSOLE
+
+# A throwaway HOME for every invocation: no settings, no memory, no session to
+# resume. Two runs on the same brief must not be able to agree by remembering.
+HOME="$(mktemp -d)"
+export HOME
+trap 'rm -rf "$HOME"' EXIT
+
+# out/ is the one place this role writes. The window reads it, checks it, and
+# copies what passes into the workspace -- no role writes a workspace itself.
+cd "$OUT"
+
+# --safe-mode / --setting-sources "" / --no-session-persistence
+#     the brief is the only input.
+# --allowedTools
+#     from the table. Read, Write, Edit at most: no Bash and no WebFetch, which
+#     is why the Claude roles need no egress list (REDESIGN 7-3). Add either
+#     here and that line has to be revisited.
+set +e
+timeout --kill-after=30 "$LIMIT" claude -p \
+  --safe-mode \
+  --setting-sources "" \
+  --no-session-persistence \
+  --allowedTools "$TOOLS" \
+  < "$BRIEF"
+rc=$?
+set -e
+exit "$rc"

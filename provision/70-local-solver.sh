@@ -4,27 +4,25 @@
 #
 #     sudo ./70-local-solver.sh
 #
-# NOT run by provision.sh, for the same reason as 60-egress.sh: it is only
-# correct once you have decided to run a local model at all.
+# NOT run by provision.sh: it needs a llama-server binary that has to be built
+# by hand (below) and weights that have to be downloaded, neither of which a
+# script should do blind.
 #
 # No sudoers change is needed and none is made. solver-run already holds the one
-# Runas(solver) grant, and it exec's this backend as the SAME uid -- the runner
-# gains nothing it did not have, which is the property that made naming backends
-# rather than commands worth the extra file.
+# Runas(solver) grant, and it exec's this backend as the SAME uid.
+#
+# The account the server runs as, `llm`, is in roles.json and made by
+# 10-roles.sh -- so the egress rules (none) and the access checks cover it like
+# every other role.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 [ "$(id -u)" -eq 0 ] || { echo "run with sudo" >&2; exit 1; }
 
-# A fourth account, deliberately. The model server is neither the solver nor the
-# runner: the solver reaches it over loopback and cannot restart it, read the
-# weights, or change how it was started. Same reasoning as every other uid here
-# -- the fence is the account, not an agreement about who calls what.
-if ! id -u llm >/dev/null 2>&1; then
-  useradd --system --create-home --home-dir /home/llm --shell /usr/sbin/nologin llm
-  chmod 700 /home/llm
-  echo "created uid llm"
-fi
+# The model server is neither the solver nor the runner: the solver reaches it
+# over loopback and cannot restart it, read the weights, or change how it was
+# started. The fence is the account, not an agreement about who calls what.
+id -u llm >/dev/null 2>&1 || { echo "FATAL: no llm account -- run 10-roles.sh first" >&2; exit 1; }
 
 # Weights and the server log. Root-owned; llm reads, nobody else needs to.
 install -d -o root -g root -m 755 /srv/loop/models
@@ -38,7 +36,7 @@ install -o root -g root -m 755 bin/smoke-local  /srv/loop/bin/smoke-local
 echo
 echo "installed:"
 echo "  /srv/loop/bin/llm-serve      (run as llm)"
-echo "  /srv/loop/bin/solver-local   (exec'd by solver-run when a plan names it)"
+echo "  /srv/loop/bin/solver-local   (exec'd by solver-run)"
 echo "  /srv/loop/bin/smoke-local    (run as solver)"
 
 # --------------------------------------------------------------------------
@@ -123,17 +121,11 @@ EOF
 fi
 
 cat <<'EOF'
-
 Next:
     sudo -u solver /srv/loop/bin/smoke-local
 
-Then, in plan/tasks.json:
-    "solver_tiers": ["local", "codex"],
-    "policy": {"retry": "resample"},
-    "limits": {"attempts": 8}
-
-WARNING about 60-egress.sh: with "codex" still in solver_tiers the solver needs
-its outbound API host. Tightening egress to loopback-only breaks the fallback
-tier, and it breaks it as a timeout rather than as an error. Tighten only once
-the tier list is local-only.
+The solver is the local model only (roles.json: egress loopback port 8080).
+If llm-serve is moved to another port, change roles.json to match and re-run
+10-roles.sh and 25-egress.sh -- otherwise the solver is refused at the rule,
+and that shows up as EHOSTUNREACH rather than as a model error.
 EOF

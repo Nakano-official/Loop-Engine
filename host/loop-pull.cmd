@@ -2,7 +2,7 @@
 REM Refresh the host-side copies of EVERY repository the sandbox holds.
 REM
 REM Until this runs, everything the loop has produced lives only inside the
-REM distro's VHDX. The runner pushes to /srv/loop/repo.git, but that bare repo
+REM distro's VHDX. The runner pushes to /srv/loop/git/repo.git, but that bare repo
 REM is in the same VHDX -- it protects a green step from `reset` and `clean`,
 REM not from losing the disk. This is the step that puts it on another one.
 REM
@@ -18,8 +18,8 @@ REM pointing at them. Unreachable objects are what `git gc` deletes, and gc runs
 REM on its own inside ordinary commands. The backup would stop existing at a
 REM moment nobody observed. So:
 REM
-REM     /srv/loop/repo.runN.git  ->  C:\dev\Loop-Engine\runs\run-NNN  (immutable)
-REM     /srv/loop/repo.git       ->  C:\dev\Loop-Engine\project        (the live one)
+REM     /srv/loop/git/repo.runN.git  ->  C:\dev\Loop-Engine\runs\run-NNN  (immutable)
+REM     /srv/loop/git/repo.git       ->  C:\dev\Loop-Engine\project        (the live one)
 REM
 REM which is the shape the sandbox already uses for project.runN. A copy should
 REM look like the thing it is a copy of.
@@ -45,13 +45,14 @@ if not exist "%ARCHIVEROOT%" (
   )
 )
 
-REM One line, space separated, straight from the shell's own glob: no pipes, so
-REM nothing here needs batch escaping.
+REM The runner key opens loop-window and nothing else (provision/15-authkeys.sh),
+REM so this asks the window by name instead of running a shell glob. It answers
+REM one repository per line; they are joined into one space-separated list.
 set "REPOS="
-for /f "delims=" %%L in ('ssh -o BatchMode^=yes %SSHHOST% "cd /srv/loop && echo repo*.git"') do set "REPOS=%%L"
+for /f "delims=" %%L in ('ssh -o BatchMode^=yes %SSHHOST% list-repos') do set "REPOS=!REPOS! %%L"
 
 if not defined REPOS (
-  echo cannot reach %SSHHOST%, or /srv/loop holds no repository.
+  echo cannot reach %SSHHOST%, or /srv/loop/git holds no repository.
   echo   is the distro up?   loop-dev
   exit /b 1
 )
@@ -104,12 +105,16 @@ if /i "%NAME%"=="repo.git" (
 
 if not exist "%DEST%\.git" (
   echo   %NAME%  ^-^>  %DEST%   [clone]
-  git clone --quiet "ssh://%SSHHOST%/srv/loop/%NAME%" "%DEST%"
+  git clone --quiet "ssh://%SSHHOST%/srv/loop/git/%NAME%" "%DEST%"
   if errorlevel 1 exit /b 1
   exit /b 0
 )
 
 echo   %NAME%  ^-^>  %DEST%   [fetch]
+REM Mirrors cloned before the window existed point at /srv/loop/<name>, which
+REM the window refuses. Re-point every time: cheap, and always right.
+git -C "%DEST%" remote set-url origin "ssh://%SSHHOST%/srv/loop/git/%NAME%"
+if errorlevel 1 exit /b 1
 git -C "%DEST%" fetch --prune --prune-tags --tags --force origin
 if errorlevel 1 exit /b 1
 
