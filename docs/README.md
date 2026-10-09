@@ -10,4 +10,9 @@ Loop Engine の設計・運用ドキュメントをまとめています。
 4. [LOCAL_SOLVER.md](LOCAL_SOLVER.md) — ローカルソルバーの導入と運用
 5. [HANDOFF.md](HANDOFF.md) — 現在地、未完了項目、再開時の注意
 
+作り直しの設計（未実装）:
+
+- [REDESIGN.md](REDESIGN.md) — 定義と設計を深くして、実装を弱いモデルに任せる。これから何を変えるか
+- [FORMATS.md](FORMATS.md) — 定義と設計の形（たたき台）。例は [formats/examples/](formats/examples/)
+
 環境別の手順は、それぞれ [provision/README.md](../provision/README.md) と [host/README.md](../host/README.md) を参照してください。

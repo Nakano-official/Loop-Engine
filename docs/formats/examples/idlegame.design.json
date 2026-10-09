@@ -1,0 +1,400 @@
+{
+  "format": "loop/design@1",
+  "definition": "idlegame.definition.json",
+  "target": {"language": "typescript", "platform": "browser"},
+  "types": {
+    "GameState": {
+      "record": [
+        {"name": "resource", "type": "float"},
+        {"name": "owned", "type": "map<string,int>"},
+        {"name": "last_update", "type": "float"}
+      ]
+    },
+    "Row": {
+      "record": [
+        {"name": "name", "type": "string"},
+        {"name": "label", "type": "string"},
+        {"name": "button_label", "type": "string"},
+        {"name": "affordable", "type": "bool"}
+      ]
+    },
+    "View": {
+      "record": [
+        {"name": "resource_text", "type": "string"},
+        {"name": "rate_text", "type": "string"},
+        {"name": "rows", "type": "list<Row>"}
+      ]
+    },
+    "GeneratorSpec": {
+      "record": [
+        {"name": "name", "type": "string"},
+        {"name": "base_cost", "type": "float"},
+        {"name": "base_rate", "type": "float"},
+        {"name": "cost_scale", "type": "float"}
+      ]
+    }
+  },
+  "errors": {
+    "NotEnough": "資源が値段に足りない",
+    "UnknownGenerator": "その名前の生産設備は無い",
+    "TimeWentBackwards": "与えられた時刻が、最後に更新した時刻より前",
+    "CorruptSave": "保存データとして読めない",
+    "NegativeAmount": "表示する量が負"
+  },
+  "fixtures": {
+    "CATALOG": {
+      "type": "list<GeneratorSpec>",
+      "value": [
+        {"name": "cursor", "base_cost": 15.0, "base_rate": 0.25, "cost_scale": 1.5},
+        {"name": "grandma", "base_cost": 100.0, "base_rate": 2.0, "cost_scale": 1.5}
+      ]
+    },
+    "CURSOR": {
+      "type": "GeneratorSpec",
+      "value": {"name": "cursor", "base_cost": 15.0, "base_rate": 0.25, "cost_scale": 1.5}
+    }
+  },
+  "modules": [
+    {
+      "id": "M1",
+      "name": "catalog",
+      "kind": "pure",
+      "depends_on": [],
+      "functions": {
+        "default_catalog": {"params": [], "returns": "list<GeneratorSpec>"},
+        "find_spec": {
+          "params": [{"name": "catalog", "type": "list<GeneratorSpec>"}, {"name": "name", "type": "string"}],
+          "returns": "GeneratorSpec",
+          "raises": ["UnknownGenerator"]
+        }
+      },
+      "examples": [
+        {
+          "id": "M1.E1",
+          "steps": [{"let": "c", "call": "default_catalog", "args": {}}],
+          "then": {"observe": ["c"], "equals": [{"$": "CATALOG"}]}
+        },
+        {
+          "id": "M1.E2",
+          "steps": [{"let": "g", "call": "find_spec", "args": {"catalog": {"$": "CATALOG"}, "name": "grandma"}}],
+          "then": {"observe": ["g"], "equals": [{"name": "grandma", "base_cost": 100.0, "base_rate": 2.0, "cost_scale": 1.5}]}
+        },
+        {
+          "id": "M1.E3",
+          "steps": [{"let": "g", "call": "find_spec", "args": {"catalog": {"$": "CATALOG"}, "name": "dragon"}}],
+          "then": {"raises": "UnknownGenerator"}
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "name": "economy",
+      "kind": "pure",
+      "depends_on": [],
+      "functions": {
+        "current_cost": {
+          "params": [{"name": "spec", "type": "GeneratorSpec"}, {"name": "owned", "type": "int"}],
+          "returns": "float"
+        },
+        "production_rate": {
+          "params": [{"name": "owned", "type": "map<string,int>"}, {"name": "catalog", "type": "list<GeneratorSpec>"}],
+          "returns": "float",
+          "raises": ["UnknownGenerator"]
+        }
+      },
+      "examples": [
+        {
+          "id": "M2.E1",
+          "from": "D3",
+          "steps": [{"let": "p", "call": "current_cost", "args": {"spec": {"$": "CURSOR"}, "owned": 2}}],
+          "then": {"observe": ["p"], "equals": [33.75]}
+        },
+        {
+          "id": "M2.E2",
+          "steps": [{"let": "p", "call": "current_cost", "args": {"spec": {"$": "CURSOR"}, "owned": 0}}],
+          "then": {"observe": ["p"], "equals": [15.0]}
+        },
+        {
+          "id": "M2.E3",
+          "from": "D4",
+          "steps": [{"let": "r", "call": "production_rate", "args": {"owned": {"cursor": 3, "grandma": 2}, "catalog": {"$": "CATALOG"}}}],
+          "then": {"observe": ["r"], "equals": [4.75]}
+        },
+        {
+          "id": "M2.E4",
+          "steps": [{"let": "r", "call": "production_rate", "args": {"owned": {}, "catalog": {"$": "CATALOG"}}}],
+          "then": {"observe": ["r"], "equals": [0.0]}
+        },
+        {
+          "id": "M2.E5",
+          "steps": [{"let": "r", "call": "production_rate", "args": {"owned": {"dragon": 1}, "catalog": {"$": "CATALOG"}}}],
+          "then": {"raises": "UnknownGenerator"}
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "name": "format",
+      "kind": "pure",
+      "depends_on": [],
+      "functions": {
+        "format_amount": {
+          "params": [{"name": "value", "type": "float"}],
+          "returns": "string",
+          "raises": ["NegativeAmount"]
+        },
+        "format_rate": {
+          "params": [{"name": "value", "type": "float"}],
+          "returns": "string",
+          "raises": ["NegativeAmount"]
+        }
+      },
+      "examples": [
+        {
+          "id": "M3.E1",
+          "from": "D5",
+          "steps": [{"let": "s", "call": "format_amount", "args": {"value": 2500.0}}],
+          "then": {"observe": ["s"], "equals": ["2.50K"]}
+        },
+        {
+          "id": "M3.E2",
+          "steps": [{"let": "s", "call": "format_amount", "args": {"value": 0.0}}],
+          "then": {"observe": ["s"], "equals": ["0.00"]}
+        },
+        {
+          "id": "M3.E3",
+          "steps": [{"let": "s", "call": "format_amount", "args": {"value": 999.99}}],
+          "then": {"observe": ["s"], "equals": ["999.99"]}
+        },
+        {
+          "id": "M3.E4",
+          "steps": [{"let": "s", "call": "format_amount", "args": {"value": 1000.0}}],
+          "then": {"observe": ["s"], "equals": ["1.00K"]}
+        },
+        {
+          "id": "M3.E5",
+          "steps": [{"let": "s", "call": "format_amount", "args": {"value": 1500000.0}}],
+          "then": {"observe": ["s"], "equals": ["1.50M"]}
+        },
+        {
+          "id": "M3.E6",
+          "steps": [{"let": "s", "call": "format_amount", "args": {"value": -1.0}}],
+          "then": {"raises": "NegativeAmount"}
+        },
+        {
+          "id": "M3.E7",
+          "steps": [{"let": "s", "call": "format_rate", "args": {"value": 0.5}}],
+          "then": {"observe": ["s"], "equals": ["0.50/s"]}
+        },
+        {
+          "id": "M3.E8",
+          "steps": [{"let": "s", "call": "format_rate", "args": {"value": 2500.0}}],
+          "then": {"observe": ["s"], "equals": ["2.50K/s"]}
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "name": "rules",
+      "kind": "pure",
+      "depends_on": ["M1", "M2"],
+      "functions": {
+        "click": {
+          "params": [{"name": "state", "type": "GameState"}],
+          "returns": "GameState"
+        },
+        "buy": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "catalog", "type": "list<GeneratorSpec>"}, {"name": "name", "type": "string"}],
+          "returns": "GameState",
+          "raises": ["NotEnough", "UnknownGenerator"]
+        },
+        "tick": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "catalog", "type": "list<GeneratorSpec>"}, {"name": "now", "type": "float"}],
+          "returns": "GameState",
+          "raises": ["TimeWentBackwards"]
+        }
+      },
+      "examples": [
+        {
+          "id": "M4.E1",
+          "from": "D2",
+          "steps": [{"let": "c", "call": "click", "args": {"state": {"resource": 0.0, "owned": {}, "last_update": 5.0}}}],
+          "then": {"observe": ["c"], "equals": [{"resource": 1.0, "owned": {}, "last_update": 5.0}]}
+        },
+        {
+          "id": "M4.E2",
+          "from": "D3",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 15.0, "owned": {}, "last_update": 0.0}, "catalog": {"$": "CATALOG"}, "name": "cursor"}}],
+          "then": {"observe": ["b"], "equals": [{"resource": 0.0, "owned": {"cursor": 1}, "last_update": 0.0}]}
+        },
+        {
+          "id": "M4.E3",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 22.5, "owned": {"cursor": 1}, "last_update": 0.0}, "catalog": {"$": "CATALOG"}, "name": "cursor"}}],
+          "then": {"observe": ["b"], "equals": [{"resource": 0.0, "owned": {"cursor": 2}, "last_update": 0.0}]}
+        },
+        {
+          "id": "M4.E4",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 10.0, "owned": {}, "last_update": 0.0}, "catalog": {"$": "CATALOG"}, "name": "cursor"}}],
+          "then": {"raises": "NotEnough"}
+        },
+        {
+          "id": "M4.E5",
+          "steps": [
+            {"let": "s", "value": {"resource": 15.0, "owned": {}, "last_update": 0.0}, "type": "GameState"},
+            {"let": "b", "call": "buy", "args": {"state": {"$": "s"}, "catalog": {"$": "CATALOG"}, "name": "cursor"}}
+          ],
+          "then": {"observe": ["s"], "equals": [{"resource": 15.0, "owned": {}, "last_update": 0.0}]}
+        },
+        {
+          "id": "M4.E6",
+          "from": "D4",
+          "steps": [{"let": "t", "call": "tick", "args": {
+            "state": {"resource": 0.0, "owned": {"cursor": 3, "grandma": 2}, "last_update": 0.0}, "catalog": {"$": "CATALOG"}, "now": 10.0}}],
+          "then": {"observe": ["t"], "equals": [{"resource": 47.5, "owned": {"cursor": 3, "grandma": 2}, "last_update": 10.0}]}
+        },
+        {
+          "id": "M4.E7",
+          "steps": [{"let": "t", "call": "tick", "args": {
+            "state": {"resource": 5.0, "owned": {"cursor": 1}, "last_update": 10.0}, "catalog": {"$": "CATALOG"}, "now": 10.0}}],
+          "then": {"observe": ["t"], "equals": [{"resource": 5.0, "owned": {"cursor": 1}, "last_update": 10.0}]}
+        },
+        {
+          "id": "M4.E8",
+          "steps": [{"let": "t", "call": "tick", "args": {
+            "state": {"resource": 0.0, "owned": {}, "last_update": 10.0}, "catalog": {"$": "CATALOG"}, "now": 9.0}}],
+          "then": {"raises": "TimeWentBackwards"}
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "name": "save",
+      "kind": "pure",
+      "depends_on": [],
+      "functions": {
+        "encode": {
+          "params": [{"name": "state", "type": "GameState"}],
+          "returns": "string"
+        },
+        "decode": {
+          "params": [{"name": "text", "type": "string"}],
+          "returns": "GameState",
+          "raises": ["CorruptSave"]
+        }
+      },
+      "examples": [
+        {
+          "id": "M5.E1",
+          "from": "D6",
+          "steps": [
+            {"let": "t", "call": "encode", "args": {"state": {"resource": 12.5, "owned": {"cursor": 1}, "last_update": 100.0}}},
+            {"let": "r", "call": "decode", "args": {"text": {"$": "t"}}}
+          ],
+          "then": {"observe": ["r"], "equals": [{"resource": 12.5, "owned": {"cursor": 1}, "last_update": 100.0}]}
+        },
+        {
+          "id": "M5.E2",
+          "steps": [{"let": "r", "call": "decode", "args": {"text": "{\"resource\":1.5,\"owned\":{\"cursor\":2},\"last_update\":3.0}"}}],
+          "then": {"observe": ["r"], "equals": [{"resource": 1.5, "owned": {"cursor": 2}, "last_update": 3.0}]}
+        },
+        {
+          "id": "M5.E3",
+          "steps": [{"let": "r", "call": "decode", "args": {"text": "not a save"}}],
+          "then": {"raises": "CorruptSave"}
+        },
+        {
+          "id": "M5.E4",
+          "steps": [{"let": "r", "call": "decode", "args": {"text": "{\"resource\":1.5}"}}],
+          "then": {"raises": "CorruptSave"}
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "name": "view",
+      "kind": "pure",
+      "depends_on": ["M2", "M3"],
+      "functions": {
+        "render": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "catalog", "type": "list<GeneratorSpec>"}],
+          "returns": "View"
+        }
+      },
+      "examples": [
+        {
+          "id": "M6.E1",
+          "from": "D5",
+          "steps": [{"let": "v", "call": "render", "args": {
+            "state": {"resource": 2500.0, "owned": {"cursor": 2}, "last_update": 0.0}, "catalog": {"$": "CATALOG"}}}],
+          "then": {"observe": ["v"], "equals": [{
+            "resource_text": "2.50K",
+            "rate_text": "0.50/s",
+            "rows": [
+              {"name": "cursor", "label": "cursor x2", "button_label": "Buy cursor (33.75)", "affordable": true},
+              {"name": "grandma", "label": "grandma x0", "button_label": "Buy grandma (100.00)", "affordable": true}
+            ]
+          }]}
+        },
+        {
+          "id": "M6.E2",
+          "steps": [{"let": "v", "call": "render", "args": {
+            "state": {"resource": 0.0, "owned": {}, "last_update": 0.0}, "catalog": [{"name": "cursor", "base_cost": 15.0, "base_rate": 0.25, "cost_scale": 1.5}]}}],
+          "then": {"observe": ["v"], "equals": [{
+            "resource_text": "0.00",
+            "rate_text": "0.00/s",
+            "rows": [
+              {"name": "cursor", "label": "cursor x0", "button_label": "Buy cursor (15.00)", "affordable": false}
+            ]
+          }]}
+        }
+      ]
+    },
+    {
+      "id": "M7",
+      "name": "game",
+      "kind": "assembly",
+      "depends_on": ["M1", "M4", "M5", "M6"],
+      "functions": {
+        "new_game": {
+          "params": [{"name": "now", "type": "float"}],
+          "returns": "GameState"
+        },
+        "click": {
+          "params": [{"name": "state", "type": "GameState"}],
+          "returns": "GameState"
+        },
+        "buy": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "name", "type": "string"}],
+          "returns": "GameState",
+          "raises": ["NotEnough", "UnknownGenerator"]
+        },
+        "tick": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "now", "type": "float"}],
+          "returns": "GameState",
+          "raises": ["TimeWentBackwards"]
+        },
+        "view": {
+          "params": [{"name": "state", "type": "GameState"}],
+          "returns": "View"
+        },
+        "save": {
+          "params": [{"name": "state", "type": "GameState"}],
+          "returns": "string"
+        },
+        "load": {
+          "params": [{"name": "saved", "type": "optional<string>"}, {"name": "now", "type": "float"}],
+          "returns": "GameState",
+          "raises": ["CorruptSave", "TimeWentBackwards"]
+        }
+      },
+      "examples": []
+    }
+  ],
+  "shell": {
+    "calls": "M7",
+    "note": "定義の shell.duties を満たす。localStorage と時計と DOM はここにしか無い。中身は人間のレビューで確かめる"
+  }
+}

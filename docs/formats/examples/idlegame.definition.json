@@ -1,0 +1,237 @@
+{
+  "format": "loop/definition@1",
+  "title": "放置ゲーム",
+  "types": {
+    "GameState": {
+      "record": [
+        {"name": "resource", "type": "float"},
+        {"name": "owned", "type": "map<string,int>"},
+        {"name": "last_update", "type": "float"}
+      ]
+    },
+    "Row": {
+      "record": [
+        {"name": "name", "type": "string"},
+        {"name": "label", "type": "string"},
+        {"name": "button_label", "type": "string"},
+        {"name": "affordable", "type": "bool"}
+      ]
+    },
+    "View": {
+      "record": [
+        {"name": "resource_text", "type": "string"},
+        {"name": "rate_text", "type": "string"},
+        {"name": "rows", "type": "list<Row>"}
+      ]
+    }
+  },
+  "errors": {
+    "NotEnough": "資源が値段に足りない",
+    "UnknownGenerator": "その名前の生産設備は無い",
+    "TimeWentBackwards": "与えられた時刻が、最後に更新した時刻より前",
+    "CorruptSave": "保存データとして読めない"
+  },
+  "interface": {
+    "new_game": {
+      "params": [{"name": "now", "type": "float"}],
+      "returns": "GameState"
+    },
+    "click": {
+      "params": [{"name": "state", "type": "GameState"}],
+      "returns": "GameState"
+    },
+    "buy": {
+      "params": [{"name": "state", "type": "GameState"}, {"name": "name", "type": "string"}],
+      "returns": "GameState",
+      "raises": ["NotEnough", "UnknownGenerator"]
+    },
+    "tick": {
+      "params": [{"name": "state", "type": "GameState"}, {"name": "now", "type": "float"}],
+      "returns": "GameState",
+      "raises": ["TimeWentBackwards"]
+    },
+    "view": {
+      "params": [{"name": "state", "type": "GameState"}],
+      "returns": "View"
+    },
+    "save": {
+      "params": [{"name": "state", "type": "GameState"}],
+      "returns": "string"
+    },
+    "load": {
+      "params": [{"name": "saved", "type": "optional<string>"}, {"name": "now", "type": "float"}],
+      "returns": "GameState",
+      "raises": ["CorruptSave", "TimeWentBackwards"]
+    }
+  },
+  "items": [
+    {
+      "id": "D1",
+      "title": "新しいゲーム",
+      "statement": "新しいゲームは資源0・設備なしで始まり、開始時刻を最後の更新時刻として持つ。",
+      "examples": [
+        {
+          "id": "D1.E1",
+          "steps": [{"let": "s", "call": "new_game", "args": {"now": 100.0}}],
+          "then": {"observe": ["s"], "equals": [{"resource": 0.0, "owned": {}, "last_update": 100.0}]}
+        }
+      ]
+    },
+    {
+      "id": "D2",
+      "title": "クリックで資源を得る",
+      "statement": "クリック1回で資源が1増える。最初の資源を得る手段はこれしかない。元の状態は変わらない。",
+      "examples": [
+        {
+          "id": "D2.E1",
+          "steps": [
+            {"let": "s", "call": "new_game", "args": {"now": 0.0}},
+            {"let": "c", "call": "click", "args": {"state": {"$": "s"}}}
+          ],
+          "then": {"observe": ["c"], "equals": [{"resource": 1.0, "owned": {}, "last_update": 0.0}]}
+        },
+        {
+          "id": "D2.E2",
+          "steps": [
+            {"let": "s", "call": "new_game", "args": {"now": 0.0}},
+            {"let": "c", "call": "click", "args": {"state": {"$": "s"}}}
+          ],
+          "then": {"observe": ["s"], "equals": [{"resource": 0.0, "owned": {}, "last_update": 0.0}]}
+        }
+      ]
+    },
+    {
+      "id": "D3",
+      "title": "生産設備を買う",
+      "statement": "設備は cursor（基本価格15・毎秒0.25）と grandma（基本価格100・毎秒2.0）。値段は基本価格 × 1.5 の所有数乗。資源が足りなければ買えない。",
+      "examples": [
+        {
+          "id": "D3.E1",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 15.0, "owned": {}, "last_update": 0.0}, "name": "cursor"}}],
+          "then": {"observe": ["b"], "equals": [{"resource": 0.0, "owned": {"cursor": 1}, "last_update": 0.0}]}
+        },
+        {
+          "id": "D3.E2",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 33.75, "owned": {"cursor": 2}, "last_update": 0.0}, "name": "cursor"}}],
+          "then": {"observe": ["b"], "equals": [{"resource": 0.0, "owned": {"cursor": 3}, "last_update": 0.0}]}
+        },
+        {
+          "id": "D3.E3",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 10.0, "owned": {}, "last_update": 0.0}, "name": "cursor"}}],
+          "then": {"raises": "NotEnough"}
+        },
+        {
+          "id": "D3.E4",
+          "steps": [{"let": "b", "call": "buy", "args": {
+            "state": {"resource": 1000.0, "owned": {}, "last_update": 0.0}, "name": "dragon"}}],
+          "then": {"raises": "UnknownGenerator"}
+        }
+      ]
+    },
+    {
+      "id": "D4",
+      "title": "時間で資源が増える",
+      "statement": "経過秒数 × 毎秒の生産量だけ資源が増える。時刻は戻らない。",
+      "examples": [
+        {
+          "id": "D4.E1",
+          "steps": [{"let": "t", "call": "tick", "args": {
+            "state": {"resource": 0.0, "owned": {"cursor": 3, "grandma": 2}, "last_update": 0.0}, "now": 10.0}}],
+          "then": {"observe": ["t"], "equals": [{"resource": 47.5, "owned": {"cursor": 3, "grandma": 2}, "last_update": 10.0}]}
+        },
+        {
+          "id": "D4.E2",
+          "steps": [{"let": "t", "call": "tick", "args": {
+            "state": {"resource": 0.0, "owned": {}, "last_update": 10.0}, "now": 9.0}}],
+          "then": {"raises": "TimeWentBackwards"}
+        }
+      ]
+    },
+    {
+      "id": "D5",
+      "title": "画面に出すもの",
+      "statement": "資源と毎秒の生産量を、1000ごとに K・M・B・T を付けて小数2桁で表示する。設備は cursor・grandma の順に、所有数・次の値段・買えるかを出す。",
+      "examples": [
+        {
+          "id": "D5.E1",
+          "steps": [{"let": "v", "call": "view", "args": {
+            "state": {"resource": 2500.0, "owned": {"cursor": 2}, "last_update": 0.0}}}],
+          "then": {"observe": ["v"], "equals": [{
+            "resource_text": "2.50K",
+            "rate_text": "0.50/s",
+            "rows": [
+              {"name": "cursor", "label": "cursor x2", "button_label": "Buy cursor (33.75)", "affordable": true},
+              {"name": "grandma", "label": "grandma x0", "button_label": "Buy grandma (100.00)", "affordable": true}
+            ]
+          }]}
+        },
+        {
+          "id": "D5.E2",
+          "steps": [{"let": "v", "call": "view", "args": {
+            "state": {"resource": 20.0, "owned": {}, "last_update": 0.0}}}],
+          "then": {"observe": ["v"], "equals": [{
+            "resource_text": "20.00",
+            "rate_text": "0.00/s",
+            "rows": [
+              {"name": "cursor", "label": "cursor x0", "button_label": "Buy cursor (15.00)", "affordable": true},
+              {"name": "grandma", "label": "grandma x0", "button_label": "Buy grandma (100.00)", "affordable": false}
+            ]
+          }]}
+        }
+      ]
+    },
+    {
+      "id": "D6",
+      "title": "保存と再開",
+      "statement": "状態を文字列に保存し、あとで読み戻せる。読み戻したときは、離れていたあいだの生産も加わる。保存が無ければ新しいゲームになる。",
+      "examples": [
+        {
+          "id": "D6.E1",
+          "steps": [
+            {"let": "t", "call": "save", "args": {"state": {"resource": 12.5, "owned": {"cursor": 1}, "last_update": 100.0}}},
+            {"let": "r", "call": "load", "args": {"saved": {"$": "t"}, "now": 100.0}}
+          ],
+          "then": {"observe": ["r"], "equals": [{"resource": 12.5, "owned": {"cursor": 1}, "last_update": 100.0}]}
+        },
+        {
+          "id": "D6.E2",
+          "steps": [
+            {"let": "t", "call": "save", "args": {"state": {"resource": 12.5, "owned": {"cursor": 1}, "last_update": 100.0}}},
+            {"let": "r", "call": "load", "args": {"saved": {"$": "t"}, "now": 110.0}}
+          ],
+          "then": {"observe": ["r"], "equals": [{"resource": 15.0, "owned": {"cursor": 1}, "last_update": 110.0}]}
+        },
+        {
+          "id": "D6.E3",
+          "steps": [{"let": "r", "call": "load", "args": {"saved": null, "now": 50.0}}],
+          "then": {"observe": ["r"], "equals": [{"resource": 0.0, "owned": {}, "last_update": 50.0}]}
+        },
+        {
+          "id": "D6.E4",
+          "steps": [{"let": "r", "call": "load", "args": {"saved": "not a save", "now": 0.0}}],
+          "then": {"raises": "CorruptSave"}
+        },
+        {
+          "id": "D6.E5",
+          "steps": [
+            {"let": "t", "call": "save", "args": {"state": {"resource": 0.0, "owned": {}, "last_update": 100.0}}},
+            {"let": "r", "call": "load", "args": {"saved": {"$": "t"}, "now": 90.0}}
+          ],
+          "then": {"raises": "TimeWentBackwards"}
+        }
+      ]
+    }
+  ],
+  "shell": {
+    "platform": "browser",
+    "duties": [
+      "起動時に localStorage から保存を読み、load(saved, 現在時刻) を呼ぶ",
+      "1秒ごとに tick(state, 現在時刻) を呼び、view の結果を描く",
+      "クリックの場所で click、各行のボタンで buy を呼ぶ。NotEnough は何もしない",
+      "状態が変わるたびに save の結果を localStorage に書く"
+    ]
+  }
+}
