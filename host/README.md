@@ -63,7 +63,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:8443
 ```powershell
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $action = New-ScheduledTaskAction -Execute "C:\Windows\System32\wscript.exe" `
-  -Argument '"C:\dev\roop-engin\roop\host\wsl-keepalive.vbs"'
+  -Argument '"C:\dev\Loop-Engine\Loop\host\wsl-keepalive.vbs"'
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -138,7 +138,7 @@ Host loop-runner
 | 段 | どこへ | 何から守るか |
 |---|---|---|
 | 1 | `project` → `/srv/loop/repo.git` | `reset` / `clean`。**同じ VHDX の中**なので、それ以上は守らない |
-| 2 | `repo.git` → `C:\dev\roop-engin\project`、過去run → `runs\run-NNN` | **VHDX の消失**。ここで初めて別のディスクに乗る |
+| 2 | `repo.git` → `C:\dev\Loop-Engine\project`、過去run → `runs\run-NNN` | **VHDX の消失**。ここで初めて別のディスクに乗る |
 | 3 | ミラー → GitHub など | ホストの故障。やるなら**鍵はホストだけが持つ** |
 
 段1 はランナーが自動でやる（`loop.py` の `publish()`、GREEN と `plan apply` の直後）。
@@ -150,8 +150,8 @@ Host loop-runner
 「done」と表示してはならない。
 
 ```
-/srv/loop/repo.runN.git  ->  C:\dev\roop-engin\runs\run-NNN  （不変。ff のみ）
-/srv/loop/repo.git       ->  C:\dev\roop-engin\project        （現行。毎回作り直す）
+/srv/loop/repo.runN.git  ->  C:\dev\Loop-Engine\runs\run-NNN  （不変。ff のみ）
+/srv/loop/repo.git       ->  C:\dev\Loop-Engine\project        （現行。毎回作り直す）
 ```
 
 **run ごとにディレクトリを分けるのは整頓ではなく保存のため。** どの run も

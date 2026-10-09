@@ -18,15 +18,18 @@ REM pointing at them. Unreachable objects are what `git gc` deletes, and gc runs
 REM on its own inside ordinary commands. The backup would stop existing at a
 REM moment nobody observed. So:
 REM
-REM     /srv/loop/repo.runN.git  ->  C:\dev\roop-engin\runs\run-NNN  (immutable)
-REM     /srv/loop/repo.git       ->  C:\dev\roop-engin\project        (the live one)
+REM     /srv/loop/repo.runN.git  ->  C:\dev\Loop-Engine\runs\run-NNN  (immutable)
+REM     /srv/loop/repo.git       ->  C:\dev\Loop-Engine\project        (the live one)
 REM
 REM which is the shape the sandbox already uses for project.runN. A copy should
 REM look like the thing it is a copy of.
 
 setlocal enabledelayedexpansion
 
-set "MIRRORROOT=C:\dev\roop-engin"
+REM The mirrors sit next to this checkout (host\..\..), so the root is taken
+REM from where this script is rather than written down: after a rename of the
+REM directory a fixed path would clone every run into a tree nobody looks at.
+for %%I in ("%~dp0..\..") do set "MIRRORROOT=%%~fI"
 set "ARCHIVEROOT=%MIRRORROOT%\runs"
 set "SSHHOST=loop-runner"
 
