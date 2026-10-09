@@ -1,5 +1,9 @@
 # ARCHITECTURE.md — この機械は何でできているか
 
+> **旧設計の記録（2026-10-09 まで）。** 今の設計は [REDESIGN.md](../REDESIGN.md) と [FORMATS.md](../FORMATS.md)。
+> この文書は、旧い形（プランナー・ランナー・ソルバー・クリティック、`tasks.json`、`runner/loop.py`）で何を学んだかの記録として残している。
+> ここに書かれた手順・パス・スクリプト名は、今の箱では動かない。
+
 `HANDOFF.md` は日誌、`RUNNER_SPEC.md` は規則の一覧です。この文書は**形**を述べます。
 
 **書いてあるのは変わらないものだけ**です。上限値、ファイル一覧、リンタ規則の全文は
@@ -259,4 +263,4 @@ REVIEW_GATE の不在は run 8 で3回顕在化しました ── 期待値リ�
 2. [BOOTSTRAP.md](BOOTSTRAP.md) ── 設計思想とプランナー向けの手順
 3. [RUNNER_SPEC.md](RUNNER_SPEC.md) ── 関門の判定条件とリンタ規則
 4. [HANDOFF.md](HANDOFF.md) ── 現在地と再開点
-5. [provision/README.md](../provision/README.md) ── 箱の作り方と落とし穴
+5. [provision/README.md](../../provision/README.md) ── 箱の作り方と落とし穴

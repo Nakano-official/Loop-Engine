@@ -3,7 +3,13 @@
 ソルバーを Codex からローカルモデル（Qwen3.5-9B / nonthinking）に差し替えるための手順書。
 **Claude を介さずに最後まで進める**ことを目的に書いてある。
 
-設計の根拠は RUNNER_SPEC §4-4-1、判断の経緯は HANDOFF §5。ここは操作だけ。
+設計の根拠は archive/RUNNER_SPEC §4-4-1、判断の経緯は archive/HANDOFF §5。ここは操作だけ。
+
+> **今の位置づけ（2026-10-09）。** §1-1〜§1-5（llama.cpp のビルド、重み、サーバ、配管の確認）は
+> 今もそのまま有効。§1-6 以降に出てくる `plan/tasks.json`・`solver_tiers`・ランナーの動詞は
+> 旧いランナー（`runner/loop.py`）のもので、今は動かない。
+> **solver はローカルモデルだけ**になった（REDESIGN §10 決定 11）。codex の段は無く、solver の
+> 通信は loopback の 8080 だけに閉じてある（`provision/roles.json`）。
 
 ---
 
@@ -174,9 +180,10 @@ sudo -u runner python3 /srv/loop/runner/loop.py run --all
 GPU に載っていない。`nvidia-smi` と `--n-gpu-layers`。載せられないなら設計は変わらないが、
 `timeouts.solver` を大きく取り直し、1本の実時間の見積もりを作り直す。
 
-**codex 段に落ちた瞬間に固まる**
-`60-egress.sh` を loopback のみに締めた状態で `solver_tiers` に `codex` が残っている。
-締めるのは**ローカル単独運用に切り替えてから**。
+**サーバに繋がらず `EHOSTUNREACH`（No route to host）で落ちる**
+llama-server のポートが、`provision/roles.json` の solver の `loopback_tcp` と違う。solver は
+表に書いたポートにしか出られない。表を直して `10-roles.sh` と `25-egress.sh` を当て直す。
+`ECONNREFUSED`（Connection refused）なら規則は通っていて、サーバが上がっていない。
 
 ---
 

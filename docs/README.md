@@ -1,18 +1,25 @@
 # ドキュメント
 
-Loop Engine の設計・運用ドキュメントをまとめています。
+Loop Engine の設計・運用ドキュメントです。
 
-初めて読む場合は、次の順番を推奨します。
+## 今の設計
 
-1. [ARCHITECTURE.md](ARCHITECTURE.md) — **この機械は何でできているか**（役、位相、輪、繰り返す失敗の形）
-2. [BOOTSTRAP.md](BOOTSTRAP.md) — 設計思想とプランナー向けの開始手順
-3. [RUNNER_SPEC.md](RUNNER_SPEC.md) — ランナーの仕様
-4. [LOCAL_SOLVER.md](LOCAL_SOLVER.md) — ローカルソルバーの導入と運用
-5. [HANDOFF.md](HANDOFF.md) — 現在地、未完了項目、再開時の注意
+1. [REDESIGN.md](REDESIGN.md) — **何を作っているか。** 定義と設計を深くして、実装を弱いモデルに任せる。
+   落ちた場所で悪い段が分かるデバッグ、言語のアダプタ、役と窓口、プロビジョン。
+   §10 に決まったことと、**再開点**がある
+2. [FORMATS.md](FORMATS.md) — 定義と設計の形、記録の形。例は [formats/examples/](formats/examples/)
+3. [LOCAL_SOLVER.md](LOCAL_SOLVER.md) — ローカルモデルをソルバーに据える手順と失敗表
 
-作り直しの設計（未実装）:
+環境別の手順は [provision/README.md](../provision/README.md)（サンドボックス）と
+[host/README.md](../host/README.md)（Windows ホスト）。
 
-- [REDESIGN.md](REDESIGN.md) — 定義と設計を深くして、実装を弱いモデルに任せる。これから何を変えるか
-- [FORMATS.md](FORMATS.md) — 定義と設計の形（たたき台）。例は [formats/examples/](formats/examples/)
+## 旧設計の記録
 
-環境別の手順は、それぞれ [provision/README.md](../provision/README.md) と [host/README.md](../host/README.md) を参照してください。
+2026-10-09 に設計を作り直した。それまでの形（プランナー・ランナー・ソルバー・クリティック、
+`tasks.json`、`runner/loop.py`）の文書は [archive/](archive/) にある。手順としては今の箱で
+動かないが、規則の一つ一つに run が1本ずつ紐づいており、なぜ今の形になったかはそこにある。
+
+- [archive/ARCHITECTURE.md](archive/ARCHITECTURE.md) — 旧い形の全体像と、繰り返し出てきた失敗の形
+- [archive/BOOTSTRAP.md](archive/BOOTSTRAP.md) — 旧い設計思想とプランナー向けの手順
+- [archive/RUNNER_SPEC.md](archive/RUNNER_SPEC.md) — 旧いランナーの関門とリンタ規則
+- [archive/HANDOFF.md](archive/HANDOFF.md) — run 1〜8 の日誌
