@@ -22,6 +22,15 @@ case "$CMD" in
     echo "loop-window: ok"
     ;;
 
+  status)
+    # For the dashboard: whether the services a run needs are up. Read-only,
+    # and nothing a runner needs privilege for.
+    printf '{"window": "ok", "llm": "%s", "egress": "%s", "work": "%s"}\n' \
+      "$(systemctl is-active loop-llm 2>/dev/null || true)" \
+      "$(systemctl is-active loop-egress 2>/dev/null || true)" \
+      "$(df -h --output=avail /srv/loop/work 2>/dev/null | tail -1 | tr -d ' ')"
+    ;;
+
   list-repos)
     # One name per line. loop-pull.cmd mirrors each of them to the host.
     shopt -s nullglob

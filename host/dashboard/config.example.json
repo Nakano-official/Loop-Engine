@@ -1,15 +1,4 @@
 {
-  "launchers": {
-    "game": {
-      "label": "アイドルゲーム",
-      "argv": [
-        "python",
-        "-m",
-        "idlegame"
-      ],
-      "cwd": "C:\\dev\\Loop-Engine\\project\\src"
-    }
-  },
   "remote": {
     "host": "<machine>.<tailnet>.ts.net:8443",
     "users": [

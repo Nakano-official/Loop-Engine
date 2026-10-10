@@ -41,6 +41,18 @@ def cmd_new(store: apps.Store, args) -> int:
 
 def cmd_run(store: apps.Store, args) -> int:
     app = store.app(args.name)
+    try:
+        store.acquire(app.name, os.getpid())     # one run at a time, across all apps
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    try:
+        return _run(store, app, args)
+    finally:
+        store.release(os.getpid())
+
+
+def _run(store: apps.Store, app: "apps.App", args) -> int:
     run = app.new_run()
     (run.dir / "run.pid").write_text(str(os.getpid()))
     ledger = pipeline.Ledger(run.dir / "ledger.jsonl")

@@ -58,7 +58,7 @@ def test_status_is_read_from_the_files(store):
     dead = write_run(app, [{"event": "RED_GATE", "module": "catalog", "stage": "red"}])
     assert done.status() == "done" and done.output()
     assert failed.status() == "failed"
-    assert dead.status() == "failed"       # no outcome and no process
+    assert dead.status() == "interrupted"  # no outcome and no process: it died
     assert failed.modules() == [{"module": "format", "attempts": 0, "state": "exhausted",
                                  "reason": "granularity"}]
 
@@ -119,3 +119,29 @@ def test_runs_started_in_the_same_second_do_not_collide(store):
     app = store.app("idle")
     ids = [app.new_run().id for _ in range(3)]
     assert len(set(ids)) == 3
+
+
+def test_only_one_run_at_a_time_across_all_apps(store):
+    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        store.acquire("idle", p.pid)
+        with pytest.raises(RuntimeError):
+            store.acquire("other", 12345)
+        assert store.running()["app"] == "idle"
+    finally:
+        p.kill()
+        p.wait()
+    # The holder is gone: the lock is stale and the next run may start.
+    assert store.running() is None
+    store.acquire("other", subprocess.os.getpid())
+    store.release(subprocess.os.getpid())
+    assert store.running() is None
+
+
+def test_the_newest_run_is_first_whatever_its_name(store):
+    app = store.app("idle")
+    old = app.dir / "runs" / "real-5"
+    old.mkdir(parents=True)
+    (old / "ledger.jsonl").write_text(json.dumps({"t": 1.0, "event": "GATES_PASSED"}) + "\n", encoding="utf-8")
+    new = app.new_run()
+    assert [r.id for r in app.runs()][0] == new.id

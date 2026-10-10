@@ -80,6 +80,18 @@ class Run:
         """The workspace in the box: one per run, named after both."""
         return f"{self.app.name}-{self.id}"
 
+    def started(self) -> float:
+        """When the run began: run.json, written at creation; for a run made
+        before that existed, the first ledger entry, else the directory."""
+        try:
+            return float(json.loads((self.dir / "run.json").read_text(encoding="utf-8"))["started"])
+        except (OSError, ValueError, KeyError):
+            pass
+        first = self.ledger()[:1]
+        if first and "t" in first[0]:
+            return float(first[0]["t"])
+        return self.dir.stat().st_mtime
+
     def ledger(self) -> list[dict]:
         return _read_jsonl(self.dir / "ledger.jsonl")
 
@@ -99,7 +111,10 @@ class Run:
             return None
 
     def status(self) -> str:
-        """running | done | stopped | failed -- from the files, never remembered."""
+        """running | done | stopped | failed | interrupted -- from the files,
+        never remembered. "failed" is a run that ended and said where it went
+        back to; "interrupted" is one that ended without saying anything --
+        its process died."""
         out = self.outcome()
         if out is not None:
             if out.get("stage") == "done":
@@ -108,7 +123,7 @@ class Run:
         pid = self.pid()
         if pid and _alive(pid):
             return "running"
-        return "failed"                   # no outcome and no process: it died
+        return "interrupted"
 
     def modules(self) -> list[dict]:
         """Per module, in the order the ledger met them: attempts and where it ended."""
@@ -157,9 +172,13 @@ class App:
         return self.dir / "design.json"
 
     def runs(self) -> list[Run]:
+        """Newest first, by when each run started -- not by its id, which is a
+        name: an id given by hand ("real-5") sorts after every timestamp."""
         d = self.dir / "runs"
-        ids = sorted((p.name for p in d.iterdir() if p.is_dir()), reverse=True) if d.exists() else []
-        return [Run(self, i) for i in ids]
+        if not d.exists():
+            return []
+        return sorted((Run(self, p.name) for p in d.iterdir() if p.is_dir() and NAME.match(p.name)),
+                      key=lambda r: r.started(), reverse=True)
 
     def run(self, run_id: str) -> Run:
         if not NAME.match(run_id) or not (self.dir / "runs" / run_id).is_dir():
@@ -178,6 +197,8 @@ class App:
                 (self.dir / "runs" / run_id).mkdir()
             except FileExistsError:
                 continue
+            (self.dir / "runs" / run_id / "run.json").write_text(json.dumps({"started": time.time()}),
+                                                                 encoding="utf-8")
             return Run(self, run_id)
         raise RuntimeError("too many runs started in one second")
 
@@ -216,6 +237,45 @@ class App:
 class Store:
     def __init__(self, root: Path | str = ROOT):
         self.root = Path(root)
+
+    # ---- one run at a time ---------------------------------------------------
+    #
+    # Across every app, not per app: the box has one solver, and its staging
+    # directory (the solver's out/) is one place. Two runs attempting at once
+    # would overwrite each other's candidates.
+
+    @property
+    def lock_path(self) -> Path:
+        return self.root / ".running"
+
+    def running(self) -> dict | None:
+        """The run holding the lock, or None. A lock whose process is gone is
+        stale and is cleared."""
+        try:
+            held = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if _alive(int(held.get("pid", 0))):
+            return held
+        self.lock_path.unlink(missing_ok=True)
+        return None
+
+    def acquire(self, app: str, pid: int) -> None:
+        """Take the lock atomically, or raise if another run holds it."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.running()                        # clears a stale lock
+        try:
+            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            held = self.running() or {}
+            raise RuntimeError(f"another run is going: {held.get('app')} (pid {held.get('pid')})") from None
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"app": app, "pid": pid, "t": time.time()}, f)
+
+    def release(self, pid: int) -> None:
+        held = self.running()
+        if held and int(held.get("pid", 0)) == pid:
+            self.lock_path.unlink(missing_ok=True)
 
     def apps(self) -> list[App]:
         if not self.root.exists():
