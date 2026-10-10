@@ -72,7 +72,8 @@ class RemoteWindow:
 
 def run(design_path: Path | str, solver: Solver, window, ws: str,
         max_attempts: int = 3, ledger: Ledger | None = None,
-        output: Path | str | None = None, build: bool = True) -> Outcome:
+        output: Path | str | None = None, build: bool = True,
+        should_stop: Callable[[], bool] = lambda: False) -> Outcome:
     log = ledger or Ledger(None)
     design_path = Path(design_path)
 
@@ -91,6 +92,9 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
     # 2. Module by module, dependencies first.
     for module in d.order():
         name = module["name"]
+        if should_stop():
+            log("STOPPED", module=name)
+            return Outcome("stopped", "stopped by a person", [m["name"] for m in green])
 
         # 2a. Generate the tests and run them against the stub.
         red = window.call("prepare-tests", ws, name, payload)
@@ -105,6 +109,9 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
         feedback: tuple = ()
         for n in range(1, max_attempts + 1):
             names = [m["name"] for m in green]
+            if should_stop():
+                log("STOPPED", module=name, n=n)
+                return Outcome("stopped", "stopped by a person", names)
             if solver == "box":
                 # The solver role, in the box: the brief is composed here, on
                 # the host, and the window stages, solves and verifies.
