@@ -114,8 +114,14 @@ def c5_constrained():
                   "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                   "required": ["path", "content"], "additionalProperties": False}}},
               "required": ["files"], "additionalProperties": False}
+    # Thinking off, exactly as solver-local sends it. With it on, the thinking
+    # channel ate 246 of the 256 tokens on 2026-10-10 and, on an earlier draw,
+    # all of them -- the content came back empty and this check failed while
+    # the constraint itself was working. It vouches for what the solver
+    # actually sends, so it sends the same.
     body = call("/v1/chat/completions", {
         "model": "local", "max_tokens": 256, "temperature": 0.7,
+        "chat_template_kwargs": {"enable_thinking": False},
         "messages": [{"role": "user",
                       "content": "Return a file named a.py containing: x = 1"}],
         "response_format": {"type": "json_schema",
