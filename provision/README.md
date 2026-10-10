@@ -182,7 +182,7 @@ interop を切ると Windows 側の `npm`/`node` が PATH から消えるので�
 
 ```bash
 ssh loop-dev 'rm -rf /tmp/loop-provision && mkdir -p /tmp/loop-provision'
-scp -r -P 2222 provision /c/Users/<you>/.ssh/loop-runner_ed25519.pub \
+scp -r -P 2222 provision adapters engine /c/Users/<you>/.ssh/loop-runner_ed25519.pub \
     <maint>@127.0.0.1:/tmp/loop-provision/
 ssh loop-dev "cd /tmp/loop-provision/provision && \
     sed -i 's/\r\$//' *.sh bin/* roles.py && sudo bash provision.sh"
@@ -206,6 +206,7 @@ ssh loop-dev "cd /tmp/loop-provision/provision && \
 | `25-egress.sh` | 役ごとの通信制限（iptables / ip6tables）と、起動のたびに当てる `loop-egress.service` | サービスが動いていること |
 | `30-python.sh` `35-node.sh` | ツールチェーン（root 所有、プロジェクトの外） | ── |
 | `36-languages.sh` | Go・Rust・Java + JUnit 5・Ruby + minitest・PHP + PHPUnit・Perl + Test::More・C/C++ + GoogleTest | **各言語で、通るべきテストが通り、落ちるべきテストが落ちる**。exec として、通信の無い状態で |
+| `45-engine.sh` | 窓口の操作（`engine/window.py`）とアダプタを `/srv/loop/lib` に配る。root の持ち物 | runner として読み込めること |
 | `40-check.sh` | ── | **全部の役 × 全部の場所**を読み・書き・通過で総当たり、あとから runner が作るもの、sudo の許可、sticky、通信（実際に接続して） |
 | `50-lockdown.sh` | sshd：表の `login` の役と保守用だけを許し、残りの役を名指しで拒む | 実際に効いた設定（`sshd -T`） |
 

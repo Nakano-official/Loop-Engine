@@ -29,7 +29,7 @@ ADMIN_USER="${ADMIN_USER:-$(getent passwd 1000 | cut -d: -f1)}"
 export ADMIN_USER
 
 for s in 05-isolation.sh 10-roles.sh 15-authkeys.sh 25-egress.sh 30-python.sh 35-node.sh \
-         36-languages.sh 40-check.sh 50-lockdown.sh; do
+         36-languages.sh 45-engine.sh 40-check.sh 50-lockdown.sh; do
   echo
   echo "=== $s ==="
   bash "$s"

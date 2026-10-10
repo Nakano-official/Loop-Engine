@@ -189,6 +189,17 @@ def emit_tests(d: Design, module: dict) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+# ---- running ---------------------------------------------------------------
+
+def run_command(python: str, ws: Path, modules: list[str] | None = None) -> list[str]:
+    """How exec runs a workspace's tests: all of them, or those of `modules`."""
+    targets = [f"tests/test_{m}.py" for m in modules] if modules else ["tests"]
+    return [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *targets]
+
+
+EXTENSION = ".py"
+
+
 # ---- the workspace -------------------------------------------------------
 
 def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) -> None:

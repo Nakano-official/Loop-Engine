@@ -191,16 +191,21 @@ export default {
 """
 
 
-def run_command(vitest: str, ws: Path, only: str | None = None) -> list[str]:
-    """How exec runs a workspace's tests.
+EXTENSION = ".ts"
+
+
+def run_command(vitest: str, ws: Path, modules: list[str] | str | None = None) -> list[str]:
+    """How exec runs a workspace's tests: all of them, or those of `modules`.
 
     --configLoader native: by default vite bundles the config and writes a
     temporary .timestamp-*.mjs beside it -- in the workspace, which exec may not
     write. The first run in the box stopped there with EACCES. The config
     imports only node builtins, so Node can load it as it is.
     """
+    if isinstance(modules, str):
+        modules = [modules]
     return [vitest, "run", "--root", str(ws), "--configLoader", "native"] + \
-        ([f"tests/{only}.test.ts"] if only else [])
+        [f"tests/{m}.test.ts" for m in modules or []]
 
 
 def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) -> None:
