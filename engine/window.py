@@ -45,6 +45,11 @@ NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 TOOLS = {
     "python": os.environ.get("LOOP_PYTHON", "/srv/loop/python/venv/bin/python"),
     "typescript": os.environ.get("LOOP_VITEST", "/srv/loop/node/node_modules/.bin/vitest"),
+    # Building and checking the app (build-app): the bundler vite itself uses,
+    # node, and happy-dom -- all from the frozen toolchain.
+    "rolldown": os.environ.get("LOOP_ROLLDOWN", "/srv/loop/node/node_modules/.bin/rolldown"),
+    "node": os.environ.get("LOOP_NODE", "/usr/bin/node"),
+    "happy-dom": os.environ.get("LOOP_HAPPY_DOM", "/srv/loop/node/node_modules/happy-dom/lib/index.js"),
 }
 
 Runner = Callable[[Path, list], dict]   # (workspace, argv) -> {"records", "output"}
@@ -101,11 +106,31 @@ SOLVER_IN = Path("/srv/loop/roles/solver/in")
 SOLVER_OUT = Path("/srv/loop/roles/solver/out")
 
 
+def exec_tool(ws: Path, argv: list) -> tuple[int, str, Path]:
+    """In the box: run a tool as exec. What it writes goes to exec's out/."""
+    proc = subprocess.run(["sudo", "-n", "-u", "exec", "/srv/loop/bin/exec-run", str(ws), "300", *argv],
+                          capture_output=True, text=True, cwd="/")
+    return proc.returncode, (proc.stdout + proc.stderr)[-20000:], Path("/srv/loop/roles/exec/out")
+
+
+def local_tool(ws: Path, argv: list) -> tuple[int, str, Path]:
+    out = ws / ".loop"
+    proc = subprocess.run(argv, cwd=ws, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", shell=sys.platform == "win32")
+    return proc.returncode, (proc.stdout + proc.stderr)[-20000:], out
+
+
+def tool_out(tool) -> Path:
+    """Where a tool runner lets the tool write: exec's out/ in the box."""
+    return Path("/srv/loop/roles/exec/out") if tool is exec_tool else None
+
+
 class Window:
     def __init__(self, root: Path, runner: Runner, solve=solver_runner,
-                 solver_in: Path = SOLVER_IN, solver_out: Path = SOLVER_OUT):
+                 solver_in: Path = SOLVER_IN, solver_out: Path = SOLVER_OUT, tool=exec_tool):
         self.root = Path(root)
         self.runner = runner
+        self.tool = tool
         self.solve = solve
         self.solver_in = Path(solver_in)
         self.solver_out = Path(solver_out)
@@ -204,6 +229,49 @@ class Window:
         result["solver"] = output
         return result
 
+    def build_app(self, ws_name: str, module: str) -> dict:
+        """The output (REDESIGN 1): the assembly and its platform's generic
+        shell bundled into one script, put into the platform's page, and the
+        page opened once in happy-dom to see that it boots, draws, and survives
+        its own buttons. Bundling and the boot check run as exec -- the boot
+        check runs the generated code."""
+        ws = self._ws(ws_name)
+        d, emit = self._build(ws)
+        if self._module(d, module) is not d.assembly:
+            raise ValueError(f"{module} is not the assembly")
+        name = d.data["target"]["platform"]
+        plat = ADAPTERS / "platforms" / name
+        if not (plat / "platform.json").exists():
+            raise ValueError(f"no platform {name!r}")
+        shutil.copyfile(plat / "shell.ts", ws / "shell.ts")
+        title = d.definition.get("title", "app")
+        key = "loop:" + title
+        (ws / "entry.ts").write_text(
+            f'import * as app from "./app/{module}";\n'
+            'import { mount } from "./shell";\n'
+            f'mount(app as any, {json.dumps(key, ensure_ascii=False)}, document.getElementById("app")!);\n',
+            encoding="utf-8")
+
+        out = tool_out(self.tool) or ws / ".loop"
+        bundle = out / "app.js"
+        bundle.unlink(missing_ok=True)
+        code, output, _ = self.tool(ws, [TOOLS["rolldown"], "entry.ts", "--format", "iife",
+                                         "--file", str(bundle)])
+        if code != 0 or not bundle.exists():
+            return {"error": "the bundler failed", "output": output}
+        js = bundle.read_text(encoding="utf-8").replace("</script", "<\\/script")
+        page = (plat / "page.html").read_text(encoding="utf-8")
+        html = page.replace("__TITLE__", _escape(title)).replace("__BUNDLE__", js)
+        app = ws / ".loop" / "app.html"
+        app.write_text(html, encoding="utf-8")
+
+        code, output, _ = self.tool(ws, [TOOLS["node"], str(plat / "boot.mjs"), str(app), TOOLS["happy-dom"]])
+        try:
+            boot = json.loads(output.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            boot = {"ok": False, "errors": [f"the boot check printed no verdict: {output[-2000:]}"]}
+        return {"html": html, "boot": boot}
+
     def accept(self, ws_name: str, module: str) -> dict:
         ws = self._ws(ws_name)
         d, emit = self._load(ws)
@@ -222,7 +290,13 @@ class Window:
             return self.attempt(ws, module, payload)
         if op == "accept":
             return self.accept(ws, module)
+        if op == "build-app":
+            return self.build_app(ws, module)
         raise ValueError(f"unknown operation {op!r}")
+
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def main(argv: list[str]) -> int:

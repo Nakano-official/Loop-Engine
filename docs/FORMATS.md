@@ -161,7 +161,30 @@
 
 **出力は1つの HTML ファイル**（REDESIGN §1 の目的）。作業場のモジュールとシェルを1つにまとめ、
 開けば画面が出る形にする。シェルはアプリごとに書かず、**プラットフォームごとに機械側が用意する汎用の
-シェル**にする方針で、アプリは画面の記述（データ）を返す。画面の記述の形は未決（REDESIGN §10）。
+シェル**が描く。アプリは画面の記述（データ）を返す。
+
+### browser-dom（固定、2026-10-10）
+
+正本は `adapters/platforms/browser-dom/platform.json`。定義がこのプラットフォームを宣言したら、関門が次を確かめる:
+
+- 型 `NodeKind`（enum: `heading`・`text`・`button`）、`Node`、`Screen` を**プラットフォームの宣言と同じ形で**持つ
+- 外部インターフェースに次の5つを持つ。`$State` は `start` が返す record 型で、5つを通して同じ型
+- 設計の対象言語は TypeScript
+
+| 関数 | シェルがいつ呼ぶか |
+|---|---|
+| `start(now: float, saved: optional<string>) -> $State` | 開いたとき。localStorage の保存を渡す。保存が読めずに投げたら、`saved` 無しでやり直す |
+| `step(state: $State, now: float) -> $State` | 1秒ごと |
+| `act(state: $State, action: string, now: float) -> $State` | ボタンが押されたとき。**投げたら状態はそのまま**（買えない、など） |
+| `screen(state: $State) -> Screen` | 状態が変わるたび。`Screen {title, nodes: list<Node>}`、`Node {kind, text, action, enabled}` |
+| `save(state: $State) -> string` | 状態が変わるたび。localStorage に書く |
+
+シェルは `nodes` を縦に並べる（見出しは `h1`、文は `p`、ボタンは `button`。`enabled` が false なら押せない。
+押すと `act(state, action, now)`）。`now` は秒（`Date.now() / 1000`）。保存の鍵は `loop:<定義の title>`。
+
+出力は窓口の `build-app` が作る: 組み立てとシェルを rolldown で1つのスクリプトにまとめて `page.html` に埋め込み、
+happy-dom で一度開いて、何かが描かれること・押せるボタンを全部押しても壊れないことを確かめる（`boot.mjs`）。
+どちらも exec として走る。見た目と操作感は人間が開いて確かめる。
 
 ---
 

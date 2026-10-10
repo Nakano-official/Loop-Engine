@@ -3,6 +3,21 @@
   "definition": "idlegame.definition.json",
   "target": {"language": "typescript", "platform": "browser-dom"},
   "types": {
+    "NodeKind": {"enum": ["heading", "text", "button"]},
+    "Node": {
+      "record": [
+        {"name": "kind", "type": "NodeKind"},
+        {"name": "text", "type": "string"},
+        {"name": "action", "type": "string"},
+        {"name": "enabled", "type": "bool"}
+      ]
+    },
+    "Screen": {
+      "record": [
+        {"name": "title", "type": "string"},
+        {"name": "nodes", "type": "list<Node>"}
+      ]
+    },
     "GameState": {
       "record": [
         {"name": "resource", "type": "float"},
@@ -468,6 +483,29 @@
           "returns": "GameState",
           "raises": ["CorruptSave", "TimeWentBackwards"],
           "doc": "saved が null なら new_game(now) を返す。そうでなければ save.decode(saved) で状態を読み、rules.tick(読んだ状態, catalog.default_catalog(), now) で now まで進めて返す。これで離れていたあいだの生産が加わり、時刻が戻っていれば TimeWentBackwards になる。"
+        },
+        "start": {
+          "params": [{"name": "now", "type": "float"}, {"name": "saved", "type": "optional<string>"}],
+          "returns": "GameState",
+          "raises": ["CorruptSave", "TimeWentBackwards"],
+          "doc": "load(saved, now) を返す。"
+        },
+        "step": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "now", "type": "float"}],
+          "returns": "GameState",
+          "raises": ["TimeWentBackwards"],
+          "doc": "tick(state, now) を返す。"
+        },
+        "act": {
+          "params": [{"name": "state", "type": "GameState"}, {"name": "action", "type": "string"}, {"name": "now", "type": "float"}],
+          "returns": "GameState",
+          "raises": ["NotEnough", "UnknownGenerator"],
+          "doc": "action が \"click\" なら click(state) を返す。\"buy:\" で始まるなら、その後ろを設備名として buy(state, 設備名) を返す。それ以外の action なら state をそのまま返す。now は使わない。"
+        },
+        "screen": {
+          "params": [{"name": "state", "type": "GameState"}],
+          "returns": "Screen",
+          "doc": "v = view(state) として Screen を返す。title は \"放置ゲーム\"。nodes は順に: heading \"放置ゲーム\"、text \"資源 \" + v.resource_text、text \"生産 \" + v.rate_text、button \"Click\"（action \"click\"）、そして v.rows の各行について text row.label と button row.button_label（action は \"buy:\" + row.name、enabled は row.affordable）。heading と text は action が \"\"、enabled が true。"
         }
       },
       "examples": []

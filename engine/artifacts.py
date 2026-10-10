@@ -28,7 +28,15 @@ from design import PRIMITIVES, is_ref, parse_type  # noqa: E402
 DEFINITION = "要件定義"
 DESIGN = "モジュール設計"
 
-PLATFORMS = {"browser-dom", "browser-3d"}                     # REDESIGN 1
+PLATFORM_DIR = Path(__file__).resolve().parents[1] / "adapters" / "platforms"
+# The platforms that exist: a directory with a platform.json. REDESIGN 1 names
+# browser-dom and browser-3d as the target; only what is built is accepted.
+PLATFORMS = {p.name for p in PLATFORM_DIR.glob("*") if (p / "platform.json").exists()}
+
+
+def platform(name: str) -> dict | None:
+    path = PLATFORM_DIR / name / "platform.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 LANGUAGES = {"python", "typescript"}                          # adapters/ that exist
 KINDS = {"pure", "assembly", "support"}                       # FORMATS 5
 SNAKE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -310,7 +318,36 @@ def check_definition(d: Any) -> list[Finding]:
     shell = d.get("shell", {})
     if shell.get("platform") not in PLATFORMS:
         g.bad("shell.platform", f"{shell.get('platform')!r} is not one of {sorted(PLATFORMS)}")
+    else:
+        _platform_ok(g, d, platform(shell["platform"]))
     return g.findings
+
+
+def _platform_ok(g: _Gate, d: dict, plat: dict) -> None:
+    """The definition offers what its platform's shell calls (REDESIGN 1): the
+    platform's types, declared exactly, and its functions, with the app's state
+    type ($State) the same record throughout."""
+    name = plat["name"]
+    for tname, decl in plat["types"].items():
+        if d.get("types", {}).get(tname) != decl:
+            g.bad(f"types.{tname}", f"{name} requires this type exactly as its platform declares it")
+    interface = d.get("interface", {})
+    start = interface.get("start", {})
+    state = start.get("returns") if isinstance(start, dict) else None
+    if not (isinstance(state, str) and "record" in d.get("types", {}).get(state, {})):
+        g.bad("interface.start", f"{name} requires start to return the app's state, a record type")
+        return
+    for fn, want in plat["interface"].items():
+        got = interface.get(fn)
+        if not isinstance(got, dict):
+            g.bad(f"interface.{fn}", f"{name}'s shell calls {fn}; the interface does not have it")
+            continue
+        want_params = [(p["name"], p["type"].replace("$State", state)) for p in want["params"]]
+        got_params = [(p.get("name"), p.get("type")) for p in got.get("params", [])]
+        if got_params != want_params or got.get("returns") != want["returns"].replace("$State", state):
+            sig = ", ".join(f"{n}: {t}" for n, t in want_params)
+            g.bad(f"interface.{fn}",
+                  f"{name} requires {fn}({sig}) -> {want['returns'].replace('$State', state)}")
 
 
 # ---- the design ----------------------------------------------------------
@@ -323,6 +360,9 @@ def check_design(ds: Any, definition: dict) -> list[Finding]:
     target = ds.get("target", {})
     if target.get("language") not in LANGUAGES:
         g.bad("target.language", f"no adapter for {target.get('language')!r} ({sorted(LANGUAGES)})")
+    plat = platform(str(target.get("platform")))
+    if plat and target.get("language") != plat["language"]:
+        g.bad("target.language", f"{plat['name']} is built from {plat['language']}, not {target.get('language')}")
     if target.get("platform") != definition.get("shell", {}).get("platform"):
         g.bad("target.platform", "differs from the platform the definition declares")
 

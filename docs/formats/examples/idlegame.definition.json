@@ -2,6 +2,21 @@
   "format": "loop/definition@1",
   "title": "放置ゲーム",
   "types": {
+    "NodeKind": {"enum": ["heading", "text", "button"]},
+    "Node": {
+      "record": [
+        {"name": "kind", "type": "NodeKind"},
+        {"name": "text", "type": "string"},
+        {"name": "action", "type": "string"},
+        {"name": "enabled", "type": "bool"}
+      ]
+    },
+    "Screen": {
+      "record": [
+        {"name": "title", "type": "string"},
+        {"name": "nodes", "type": "list<Node>"}
+      ]
+    },
     "GameState": {
       "record": [
         {"name": "resource", "type": "float"},
@@ -62,6 +77,25 @@
       "params": [{"name": "saved", "type": "optional<string>"}, {"name": "now", "type": "float"}],
       "returns": "GameState",
       "raises": ["CorruptSave", "TimeWentBackwards"]
+    },
+    "start": {
+      "params": [{"name": "now", "type": "float"}, {"name": "saved", "type": "optional<string>"}],
+      "returns": "GameState",
+      "raises": ["CorruptSave", "TimeWentBackwards"]
+    },
+    "step": {
+      "params": [{"name": "state", "type": "GameState"}, {"name": "now", "type": "float"}],
+      "returns": "GameState",
+      "raises": ["TimeWentBackwards"]
+    },
+    "act": {
+      "params": [{"name": "state", "type": "GameState"}, {"name": "action", "type": "string"}, {"name": "now", "type": "float"}],
+      "returns": "GameState",
+      "raises": ["NotEnough", "UnknownGenerator"]
+    },
+    "screen": {
+      "params": [{"name": "state", "type": "GameState"}],
+      "returns": "Screen"
     }
   },
   "items": [
@@ -223,15 +257,82 @@
           "then": {"raises": "TimeWentBackwards"}
         }
       ]
+    },
+    {
+      "id": "D7",
+      "title": "画面と操作",
+      "statement": "ブラウザで開くと画面が出る。資源と生産量、クリックのボタン、設備ごとの所有数と購入ボタンを並べる。買えない設備のボタンは押せない。押せる操作は click と buy:<設備名> で、それ以外の操作では何も変わらない。保存があれば、開いたときに読み戻す。",
+      "examples": [
+        {
+          "id": "D7.E1",
+          "steps": [
+            {"let": "s", "call": "start", "args": {"now": 100.0, "saved": null}}
+          ],
+          "then": {"observe": ["s"], "equals": [{"resource": 0.0, "owned": {}, "last_update": 100.0}]}
+        },
+        {
+          "id": "D7.E2",
+          "steps": [
+            {"let": "s", "call": "start", "args": {"now": 0.0, "saved": null}},
+            {"let": "a", "call": "act", "args": {"state": {"$": "s"}, "action": "click", "now": 0.0}}
+          ],
+          "then": {"observe": ["a"], "equals": [{"resource": 1.0, "owned": {}, "last_update": 0.0}]}
+        },
+        {
+          "id": "D7.E3",
+          "steps": [
+            {"let": "a", "call": "act", "args": {"state": {"resource": 15.0, "owned": {}, "last_update": 0.0}, "action": "buy:cursor", "now": 0.0}}
+          ],
+          "then": {"observe": ["a"], "equals": [{"resource": 0.0, "owned": {"cursor": 1}, "last_update": 0.0}]}
+        },
+        {
+          "id": "D7.E4",
+          "steps": [
+            {"let": "a", "call": "act", "args": {"state": {"resource": 10.0, "owned": {}, "last_update": 0.0}, "action": "buy:cursor", "now": 0.0}}
+          ],
+          "then": {"raises": "NotEnough"}
+        },
+        {
+          "id": "D7.E5",
+          "steps": [
+            {"let": "a", "call": "act", "args": {"state": {"resource": 10.0, "owned": {}, "last_update": 0.0}, "action": "dance", "now": 0.0}}
+          ],
+          "then": {"observe": ["a"], "equals": [{"resource": 10.0, "owned": {}, "last_update": 0.0}]}
+        },
+        {
+          "id": "D7.E6",
+          "steps": [
+            {"let": "t", "call": "step", "args": {"state": {"resource": 0.0, "owned": {"cursor": 3, "grandma": 2}, "last_update": 0.0}, "now": 10.0}}
+          ],
+          "then": {"observe": ["t"], "equals": [{"resource": 47.5, "owned": {"cursor": 3, "grandma": 2}, "last_update": 10.0}]}
+        },
+        {
+          "id": "D7.E7",
+          "steps": [
+            {"let": "t", "call": "save", "args": {"state": {"resource": 12.5, "owned": {"cursor": 1}, "last_update": 100.0}}},
+            {"let": "r", "call": "start", "args": {"now": 110.0, "saved": {"$": "t"}}}
+          ],
+          "then": {"observe": ["r"], "equals": [{"resource": 15.0, "owned": {"cursor": 1}, "last_update": 110.0}]}
+        },
+        {
+          "id": "D7.E8",
+          "steps": [
+            {"let": "v", "call": "screen", "args": {"state": {"resource": 2500.0, "owned": {"cursor": 2}, "last_update": 0.0}}}
+          ],
+          "then": {"observe": ["v"], "equals": [{"title": "放置ゲーム", "nodes": [{"kind": "heading", "text": "放置ゲーム", "action": "", "enabled": true}, {"kind": "text", "text": "資源 2.50K", "action": "", "enabled": true}, {"kind": "text", "text": "生産 0.50/s", "action": "", "enabled": true}, {"kind": "button", "text": "Click", "action": "click", "enabled": true}, {"kind": "text", "text": "cursor x2", "action": "", "enabled": true}, {"kind": "button", "text": "Buy cursor (33.75)", "action": "buy:cursor", "enabled": true}, {"kind": "text", "text": "grandma x0", "action": "", "enabled": true}, {"kind": "button", "text": "Buy grandma (100.00)", "action": "buy:grandma", "enabled": true}]}]}
+        },
+        {
+          "id": "D7.E9",
+          "steps": [
+            {"let": "v", "call": "screen", "args": {"state": {"resource": 20.0, "owned": {}, "last_update": 0.0}}}
+          ],
+          "then": {"observe": ["v"], "equals": [{"title": "放置ゲーム", "nodes": [{"kind": "heading", "text": "放置ゲーム", "action": "", "enabled": true}, {"kind": "text", "text": "資源 20.00", "action": "", "enabled": true}, {"kind": "text", "text": "生産 0.00/s", "action": "", "enabled": true}, {"kind": "button", "text": "Click", "action": "click", "enabled": true}, {"kind": "text", "text": "cursor x0", "action": "", "enabled": true}, {"kind": "button", "text": "Buy cursor (15.00)", "action": "buy:cursor", "enabled": true}, {"kind": "text", "text": "grandma x0", "action": "", "enabled": true}, {"kind": "button", "text": "Buy grandma (100.00)", "action": "buy:grandma", "enabled": false}]}]}
+        }
+      ]
     }
   ],
   "shell": {
     "platform": "browser-dom",
-    "duties": [
-      "起動時に localStorage から保存を読み、load(saved, 現在時刻) を呼ぶ",
-      "1秒ごとに tick(state, 現在時刻) を呼び、view の結果を描く",
-      "クリックの場所で click、各行のボタンで buy を呼ぶ。NotEnough は何もしない",
-      "状態が変わるたびに save の結果を localStorage に書く"
-    ]
+    "duties": ["browser-dom の汎用シェルが描く（adapters/platforms/browser-dom）。アプリ固有のシェルは無い", "開いたときに start(現在時刻, localStorage の保存)、1秒ごとに step、ボタンで act を呼ぶ", "状態が変わるたびに screen を描き直し、save の結果を localStorage に書く"]
   }
 }

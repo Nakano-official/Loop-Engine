@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "The browser-dom platform (REDESIGN 1): one HTML file, drawn by a generic shell.",
+    "A definition that declares this platform must declare these types exactly, and",
+    "its interface must contain these five functions. $State is the record type",
+    "start returns; the other functions must use that same type. Which errors each",
+    "function raises is the app's to declare. The shell calls these and nothing else."
+  ],
+  "name": "browser-dom",
+  "language": "typescript",
+  "types": {
+    "NodeKind": {"enum": ["heading", "text", "button"]},
+    "Node": {
+      "record": [
+        {"name": "kind", "type": "NodeKind"},
+        {"name": "text", "type": "string"},
+        {"name": "action", "type": "string"},
+        {"name": "enabled", "type": "bool"}
+      ]
+    },
+    "Screen": {
+      "record": [
+        {"name": "title", "type": "string"},
+        {"name": "nodes", "type": "list<Node>"}
+      ]
+    }
+  },
+  "interface": {
+    "start": {"params": [{"name": "now", "type": "float"}, {"name": "saved", "type": "optional<string>"}], "returns": "$State"},
+    "step": {"params": [{"name": "state", "type": "$State"}, {"name": "now", "type": "float"}], "returns": "$State"},
+    "act": {"params": [{"name": "state", "type": "$State"}, {"name": "action", "type": "string"}, {"name": "now", "type": "float"}], "returns": "$State"},
+    "screen": {"params": [{"name": "state", "type": "$State"}], "returns": "Screen"},
+    "save": {"params": [{"name": "state", "type": "$State"}], "returns": "string"}
+  }
+}

@@ -71,7 +71,8 @@ class RemoteWindow:
 
 
 def run(design_path: Path | str, solver: Solver, window, ws: str,
-        max_attempts: int = 3, ledger: Ledger | None = None) -> Outcome:
+        max_attempts: int = 3, ledger: Ledger | None = None,
+        output: Path | str | None = None, build: bool = True) -> Outcome:
     log = ledger or Ledger(None)
     design_path = Path(design_path)
 
@@ -138,6 +139,29 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
             return Outcome(verdict.stage, f"{name}: {verdict.reason}", [m["name"] for m in green],
                            detail=verdict.for_design())
 
-    log("ALL_GREEN", modules=[m["name"] for m in green])
-    return Outcome("done", "every module green, the definition's examples included",
-                   [m["name"] for m in green])
+    names = [m["name"] for m in green]
+    log("ALL_GREEN", modules=names)
+    if not build:
+        return Outcome("done", "every module green (no output built)", names)
+
+    # 3. The output (REDESIGN 1): one HTML file that opens as the app. The
+    #    window bundles it with the platform's generic shell and opens it once
+    #    in happy-dom. Every example is green here, so an app that does not
+    #    boot points at the shell or the bundling -- the engine.
+    built = window.call("build-app", ws, d.assembly["name"], None)
+    if "error" in built:
+        log("OUTPUT_FAILED", reason=built["error"])
+        return Outcome(diagnose.ENGINE, f"building the app: {built['error']}", names,
+                       detail={"output": built.get("output", "")[-3000:]})
+    boot = built["boot"]
+    if not boot.get("ok"):
+        log("OUTPUT_FAILED", reason="the app did not boot", boot=boot)
+        return Outcome(diagnose.ENGINE, "the app did not boot", names, detail={"boot": boot})
+    path = None
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(built["html"], encoding="utf-8")
+    log("OUTPUT", path=str(path) if path else None, boot=boot)
+    return Outcome("done", "every module green, and the app boots", names,
+                   detail={"output": str(path) if path else None, "boot": boot})

@@ -22,7 +22,9 @@ rm -rf "$LIB/adapters" "$LIB/engine"
 install -d -o root -g root -m 755 "$LIB/adapters" "$LIB/engine"
 # The adapters without their tests: the box needs what builds a workspace,
 # not the conformance suite.
-(cd "$REPO/adapters" && find . -type f \( -name '*.py' -o -name '*.ts' \) \
+# The platforms' files too: platform.json, the page, the boot check.
+(cd "$REPO/adapters" && find . -type f \( -name '*.py' -o -name '*.ts' -o -name '*.json' \
+   -o -name '*.html' -o -name '*.mjs' \) \
    -not -path './*/tests/*' -not -path '*/__pycache__/*' -print0) |
 while IFS= read -r -d '' f; do
   install -D -o root -g root -m 644 "$REPO/adapters/$f" "$LIB/adapters/$f"

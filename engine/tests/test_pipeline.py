@@ -25,6 +25,12 @@ CORRECT = {p.stem: p.read_text(encoding="utf-8")
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     monkeypatch.setitem(window_mod.TOOLS, "python", sys.executable)
+    # These tests run the idle game in Python to skip vitest; its platform is
+    # built from TypeScript, so the gate's language rule is read as Python here.
+    # The output stage is skipped (build=False) -- it has its own test.
+    real = pipeline.artifacts.platform
+    monkeypatch.setattr(pipeline.artifacts, "platform",
+                        lambda name: {**real(name), "language": "python"} if real(name) else None)
     design = json.loads((EX / "idlegame.design.json").read_text(encoding="utf-8"))
     design["target"]["language"] = "python"
     src = tmp_path / "design"
@@ -46,7 +52,7 @@ def events(ledger):
 
 def test_the_reference_solver_takes_every_module_to_green(setup):
     path, win, ledger = setup
-    out = pipeline.run(path, reference, win, "run1", ledger=pipeline.Ledger(ledger))
+    out = pipeline.run(path, reference, win, "run1", ledger=pipeline.Ledger(ledger), build=False)
     assert out.stage == "done"
     assert out.green == ["catalog", "economy", "scale", "format", "rules", "save", "view", "game"]
     ev = events(ledger)
@@ -65,7 +71,7 @@ def test_a_failed_attempt_is_retried_with_what_failed(setup):
                 "spec.base_cost * spec.cost_scale ** owned", "spec.base_cost")}
         return reference(d, module, feedback)
 
-    out = pipeline.run(path, flaky, win, "run2", ledger=pipeline.Ledger(ledger))
+    out = pipeline.run(path, flaky, win, "run2", ledger=pipeline.Ledger(ledger), build=False)
     assert out.stage == "done"
     second = [f for name, f in seen if name == "economy"][1]
     assert any("M2.E1: expected [33.75], got [15.0]" in line for line in second)
@@ -79,7 +85,7 @@ def test_attempts_used_up_go_back_to_the_design_without_its_values(setup):
             return {"app/rules.py": CORRECT["rules"].replace("state.resource + 1.0", "state.resource + 2.0")}
         return reference(d, module, feedback)
 
-    out = pipeline.run(path, stuck, win, "run3", max_attempts=2, ledger=pipeline.Ledger(ledger))
+    out = pipeline.run(path, stuck, win, "run3", max_attempts=2, ledger=pipeline.Ledger(ledger), build=False)
     assert out.stage == "モジュール設計" and "granularity" in out.reason
     assert out.green == ["catalog", "economy", "scale", "format"]
     assert out.detail["examples"] == ["M4.E1"]
@@ -97,7 +103,7 @@ def test_a_candidate_writing_outside_its_file_is_refused_and_retried(setup):
             files["tests/test_format.py"] = "def test_nothing(): pass\n"
         return files
 
-    out = pipeline.run(path, sneaky, win, "run4", ledger=pipeline.Ledger(ledger))
+    out = pipeline.run(path, sneaky, win, "run4", ledger=pipeline.Ledger(ledger), build=False)
     assert out.stage == "done"
     assert calls.count("format") == 2
 
@@ -107,7 +113,7 @@ def test_a_design_that_fails_its_gate_never_reaches_the_box(setup):
     broken = json.loads(path.read_text(encoding="utf-8"))
     broken["shell"]["calls"] = "M6"
     path.write_text(json.dumps(broken), encoding="utf-8")
-    out = pipeline.run(path, reference, win, "run5", ledger=pipeline.Ledger(ledger))
+    out = pipeline.run(path, reference, win, "run5", ledger=pipeline.Ledger(ledger), build=False)
     assert out.stage == "モジュール設計"
     assert events(ledger) == ["GATE_FAILED"]
     assert not (win.root / "run5").exists()
@@ -144,7 +150,7 @@ def test_the_attempt_operation_stages_solves_and_verifies(setup, tmp_path):
     win.solve, win.solver_in, win.solver_out = solve, tmp_path / "solver_in", solve.out
     win.solver_in.mkdir()
     win.solver_out.mkdir()
-    out = pipeline.run(path, "box", win, "run6", ledger=pipeline.Ledger(ledger))
+    out = pipeline.run(path, "box", win, "run6", ledger=pipeline.Ledger(ledger), build=False)
     assert out.stage == "done", (out.reason, out.detail)
     # The second brief for economy carries what failed, expected and actual.
     economy = [b for b in solve.briefs if "app/economy.py" in b]

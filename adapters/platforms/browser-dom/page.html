@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  #app { display: flex; flex-direction: column; gap: .5rem; align-items: flex-start; }
+  h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+  p { margin: 0; }
+  button { font: inherit; padding: .4rem .9rem; border-radius: .4rem; border: 1px solid #888; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+__BUNDLE__
+</script>
+</body>
+</html>
