@@ -226,7 +226,7 @@
     }
   ],
   "shell": {
-    "platform": "browser",
+    "platform": "browser-dom",
     "duties": [
       "起動時に localStorage から保存を読み、load(saved, 現在時刻) を呼ぶ",
       "1秒ごとに tick(state, 現在時刻) を呼び、view の結果を描く",

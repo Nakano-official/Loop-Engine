@@ -743,15 +743,17 @@ exec・solver・runner の制限は役の表から生成し、プロビジョン
   - 箱で初めて走らせたとき、vite が設定を読み込む一時ファイルを**作業場に**書こうとして EACCES で止まった。
     exec の書き込み禁止が効いた結果で、`--configLoader native` で一時ファイルを作らせない（`emit.run_command`）
 
+- **出口の関門**（`engine/artifacts.py`、FORMATS §7）── 定義と設計の関門。指摘は悪い段と場所を持つ。
+  矛盾（同じ入力に違う期待値）、参照の型、プラットフォームと対象言語も見る。テスト 26 件
+
 **次:**
 
-1. **出口の関門**（`artifacts.py`）── 試作（FORMATS §7）をリポジトリに作り直す。「同じ入力に違う期待値」の検出も
-2. **窓口の操作**（`loop-window` に名前だけ予約）と、ホストの pipeline・diagnose。
+1. **窓口の操作**（`loop-window` に名前だけ予約）と、ホストの pipeline・diagnose。
    アダプタは揃ったので、「テストを用意する」「検証する」は `build_workspace` と `run_command` を呼ぶだけになる
-3. **出力の段** ── 作業場の成果物と汎用のシェルを、esbuild（vitest に同梱）で1つの HTML にまとめる。
+2. **出力の段** ── 作業場の成果物と汎用のシェルを、esbuild（vitest に同梱）で1つの HTML にまとめる。
    まず ①（`browser-dom`）。そのあと three.js をプロビジョンに足して ②（`browser-3d`）
-4. ビルド・型チェックの段（`tsc --noEmit` など。箱に tsc はまだ無い）
-5. 残りの言語のアダプタ（Go・Rust・Java・Ruby・PHP・Perl・C/C++）、支援モジュール（tester）の経路、上流の3段
+3. ビルド・型チェックの段（`tsc --noEmit` など。箱に tsc はまだ無い）
+4. 残りの言語のアダプタ（Go・Rust・Java・Ruby・PHP・Perl・C/C++）、支援モジュール（tester）の経路、上流の3段
 
 整理の残り: 箱の退避先（run 8 の実物）は、支援モジュールの経路で S5 の形を写すまで残す。
 ホストの旧ミラー（`project`・`runs`）は、粒度と所要時間の材料を台帳から取り出すまで残す。

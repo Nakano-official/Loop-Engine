@@ -1,7 +1,7 @@
 {
   "format": "loop/design@1",
   "definition": "idlegame.definition.json",
-  "target": {"language": "typescript", "platform": "browser"},
+  "target": {"language": "typescript", "platform": "browser-dom"},
   "types": {
     "GameState": {
       "record": [
