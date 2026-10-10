@@ -48,10 +48,10 @@ def test_the_reference_solver_takes_every_module_to_green(setup):
     path, win, ledger = setup
     out = pipeline.run(path, reference, win, "run1", ledger=pipeline.Ledger(ledger))
     assert out.stage == "done"
-    assert out.green == ["catalog", "economy", "format", "rules", "save", "view", "game"]
+    assert out.green == ["catalog", "economy", "scale", "format", "rules", "save", "view", "game"]
     ev = events(ledger)
     assert ev[0] == "GATES_PASSED" and ev[-1] == "ALL_GREEN"
-    assert ev.count("GREEN") == 7 and ev.count("RED_GATE") == 7
+    assert ev.count("GREEN") == 8 and ev.count("RED_GATE") == 8
 
 
 def test_a_failed_attempt_is_retried_with_what_failed(setup):
@@ -81,7 +81,7 @@ def test_attempts_used_up_go_back_to_the_design_without_its_values(setup):
 
     out = pipeline.run(path, stuck, win, "run3", max_attempts=2, ledger=pipeline.Ledger(ledger))
     assert out.stage == "モジュール設計" and "granularity" in out.reason
-    assert out.green == ["catalog", "economy", "format"]
+    assert out.green == ["catalog", "economy", "scale", "format"]
     assert out.detail["examples"] == ["M4.E1"]
     assert "2.0" not in json.dumps(out.detail)
 

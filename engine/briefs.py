@@ -71,6 +71,21 @@ def implement(d, module: dict, feedback: tuple = ()) -> str:
         "The functions, their parameters and their return types are fixed by the contract: the file",
         "you are given already has them, returning placeholder values. Replace the bodies.",
         "",
+        "# What each function must do",
+    ]
+    parts += [f"- {fn}: {sig.get('doc', '(no description)')}" for fn, sig in module["functions"].items()]
+    deps = [d.modules[m] for m in module["depends_on"]]
+    if deps:
+        parts += ["", "# What the functions you may call do"]
+        parts += [f"- {dep['name']}.{fn}: {sig.get('doc', '(no description)')}"
+                  for dep in deps for fn, sig in dep["functions"].items()]
+    if module is d.assembly:
+        # The assembly's examples are the definition's; it gets the statements
+        # they were written from as well -- what the app is for.
+        parts += ["", "# What the app must do (from its definition)"]
+        parts += [f"- {item['id']} {item['title']}: {item['statement']}" for item in d.definition["items"]]
+    parts += [
+        "",
         "# How to write it",
         emit.implementation_guide(d, module),
         "",

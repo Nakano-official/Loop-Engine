@@ -1,13 +1,9 @@
-import loop_types
+from app import scale as m_scale
 
 
 def format_amount(value):
-    if value < 0:
-        raise loop_types.NegativeAmount(value)
-    for suffix in ("", "K", "M", "B", "T"):
-        if value < 1000 or suffix == "T":
-            return f"{value:.2f}{suffix}"
-        value /= 1000
+    s = m_scale.scale_down(value)
+    return f"{s.value:.2f}{s.unit}"
 
 
 def format_rate(value):

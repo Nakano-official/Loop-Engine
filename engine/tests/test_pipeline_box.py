@@ -35,7 +35,7 @@ def test_the_box_takes_the_idle_game_to_green(tmp_path):
     out = pipeline.run(DESIGN, reference, pipeline.RemoteWindow(), "box-test",
                        ledger=pipeline.Ledger(ledger))
     assert out.stage == "done", (out.reason, out.detail)
-    assert out.green == ["catalog", "economy", "format", "rules", "save", "view", "game"]
+    assert out.green == ["catalog", "economy", "scale", "format", "rules", "save", "view", "game"]
 
 
 def test_the_box_sends_a_stuck_module_back_to_the_design(tmp_path):

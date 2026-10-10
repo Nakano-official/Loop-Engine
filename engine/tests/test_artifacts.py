@@ -130,6 +130,15 @@ def s_platform_differs(ds):
 def s_shell_bypasses_assembly(ds):
     ds["shell"]["calls"] = "M6"
 
+def s_function_without_doc(ds):
+    del module(ds, "M2")["functions"]["current_cost"]["doc"]
+
+def s_empty_doc(ds):
+    module(ds, "M7")["functions"]["load"]["doc"] = "  "
+
+def s_unknown_contract_field(ds):
+    module(ds, "M2")["functions"]["current_cost"]["notes"] = "x"
+
 def s_module_contradiction(ds):
     clone = copy.deepcopy(module(ds, "M2")["examples"][0])
     clone["id"] = "M2.E9"
@@ -151,6 +160,9 @@ def s_module_contradiction(ds):
     (s_platform_differs, "target.platform"),
     (s_shell_bypasses_assembly, "shell.calls"),
     (s_module_contradiction, "modules[M2].examples[M2.E9]"),
+    (s_function_without_doc, "modules[M2].functions.current_cost"),
+    (s_empty_doc, "modules[M7].functions.load"),
+    (s_unknown_contract_field, "modules[M2].functions.current_cost"),
 ])
 def test_a_broken_design_is_refused_by_the_design_gate(breaks, where):
     ds = copy.deepcopy(DESIGN)
@@ -168,3 +180,10 @@ def test_a_design_is_not_judged_against_a_failing_definition(tmp_path):
     (tmp_path / "idlegame.design.json").write_text(json.dumps(DESIGN), encoding="utf-8")
     found = artifacts.check_files(tmp_path / "idlegame.design.json")
     assert found and {f.stage for f in found} == {artifacts.DEFINITION}
+
+
+def test_the_assembly_says_how_while_the_definition_says_what():
+    # Their docs differ by design; the contract match must not see it.
+    assert DESIGN["modules"][-1]["functions"]["load"]["doc"]
+    assert "doc" not in DEFINITION["interface"]["load"]
+    assert artifacts.check_design(DESIGN, DEFINITION) == []

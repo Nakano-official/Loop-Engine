@@ -32,6 +32,12 @@
         {"name": "base_rate", "type": "float"},
         {"name": "cost_scale", "type": "float"}
       ]
+    },
+    "Scaled": {
+      "record": [
+        {"name": "value", "type": "float"},
+        {"name": "unit", "type": "string"}
+      ]
     }
   },
   "errors": {
@@ -61,11 +67,12 @@
       "kind": "pure",
       "depends_on": [],
       "functions": {
-        "default_catalog": {"params": [], "returns": "list<GeneratorSpec>"},
+        "default_catalog": {"params": [], "returns": "list<GeneratorSpec>", "doc": "cursor（base_cost 15.0・base_rate 0.25・cost_scale 1.5）と grandma（base_cost 100.0・base_rate 2.0・cost_scale 1.5）を、この順の list で返す。呼ぶたびに新しい list を作る。"},
         "find_spec": {
           "params": [{"name": "catalog", "type": "list<GeneratorSpec>"}, {"name": "name", "type": "string"}],
           "returns": "GeneratorSpec",
-          "raises": ["UnknownGenerator"]
+          "raises": ["UnknownGenerator"],
+          "doc": "catalog の中から name が一致する最初の GeneratorSpec を返す。無ければ UnknownGenerator を投げる。"
         }
       },
       "examples": [
@@ -94,12 +101,14 @@
       "functions": {
         "current_cost": {
           "params": [{"name": "spec", "type": "GeneratorSpec"}, {"name": "owned", "type": "int"}],
-          "returns": "float"
+          "returns": "float",
+          "doc": "spec.base_cost に spec.cost_scale の owned 乗を掛けた値を返す。"
         },
         "production_rate": {
           "params": [{"name": "owned", "type": "map<string,int>"}, {"name": "catalog", "type": "list<GeneratorSpec>"}],
           "returns": "float",
-          "raises": ["UnknownGenerator"]
+          "raises": ["UnknownGenerator"],
+          "doc": "owned の各項目（名前と所有数）について、catalog から同じ名前の spec を探し、所有数 × base_rate を足し合わせて返す。owned が空なら 0.0。catalog に無い名前があれば UnknownGenerator を投げる。"
         }
       },
       "examples": [
@@ -133,20 +142,78 @@
       ]
     },
     {
+      "id": "M8",
+      "name": "scale",
+      "kind": "pure",
+      "depends_on": [],
+      "functions": {
+        "scale_down": {
+          "params": [{"name": "value", "type": "float"}],
+          "returns": "Scaled",
+          "raises": ["NegativeAmount"],
+          "doc": "value が負なら NegativeAmount を投げる。unit を空文字から始め、value が 1000 以上で、かつ unit が \"T\" でない間、value を 1000 で割り、unit を \"\" → \"K\" → \"M\" → \"B\" → \"T\" と1つずつ進める。最後の value と unit を返す。"
+        }
+      },
+      "examples": [
+        {
+          "id": "M8.E1",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 2500.0}}],
+          "then": {"observe": ["r"], "equals": [{"value": 2.5, "unit": "K"}]}
+        },
+        {
+          "id": "M8.E2",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 0.0}}],
+          "then": {"observe": ["r"], "equals": [{"value": 0.0, "unit": ""}]}
+        },
+        {
+          "id": "M8.E3",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 999.99}}],
+          "then": {"observe": ["r"], "equals": [{"value": 999.99, "unit": ""}]}
+        },
+        {
+          "id": "M8.E4",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 1000.0}}],
+          "then": {"observe": ["r"], "equals": [{"value": 1.0, "unit": "K"}]}
+        },
+        {
+          "id": "M8.E5",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 1500000.0}}],
+          "then": {"observe": ["r"], "equals": [{"value": 1.5, "unit": "M"}]}
+        },
+        {
+          "id": "M8.E6",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 2000000000.0}}],
+          "then": {"observe": ["r"], "equals": [{"value": 2.0, "unit": "B"}]}
+        },
+        {
+          "id": "M8.E7",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": 5000000000000000.0}}],
+          "then": {"observe": ["r"], "equals": [{"value": 5000.0, "unit": "T"}]}
+        },
+        {
+          "id": "M8.E8",
+          "steps": [{"let": "r", "call": "scale_down", "args": {"value": -1.0}}],
+          "then": {"raises": "NegativeAmount"}
+        }
+      ]
+    },
+    {
       "id": "M3",
       "name": "format",
       "kind": "pure",
-      "depends_on": [],
+      "depends_on": ["M8"],
       "functions": {
         "format_amount": {
           "params": [{"name": "value", "type": "float"}],
           "returns": "string",
-          "raises": ["NegativeAmount"]
+          "raises": ["NegativeAmount"],
+          "doc": "scale.scale_down(value) で、値と単位を得る（value が負なら、scale_down が投げる NegativeAmount をそのまま通す）。得た値を小数2桁の文字列にし、後ろに単位を付けて返す。例: scale_down(2500) は {value: 2.5, unit: \"K\"} なので \"2.50K\"。"
         },
         "format_rate": {
           "params": [{"name": "value", "type": "float"}],
           "returns": "string",
-          "raises": ["NegativeAmount"]
+          "raises": ["NegativeAmount"],
+          "doc": "format_amount(value) の後ろに \"/s\" を付けて返す。value が負なら NegativeAmount を投げる。"
         }
       },
       "examples": [
@@ -201,17 +268,20 @@
       "functions": {
         "click": {
           "params": [{"name": "state", "type": "GameState"}],
-          "returns": "GameState"
+          "returns": "GameState",
+          "doc": "state の resource に 1.0 を足した新しい GameState を返す。owned と last_update はそのまま。"
         },
         "buy": {
           "params": [{"name": "state", "type": "GameState"}, {"name": "catalog", "type": "list<GeneratorSpec>"}, {"name": "name", "type": "string"}],
           "returns": "GameState",
-          "raises": ["NotEnough", "UnknownGenerator"]
+          "raises": ["NotEnough", "UnknownGenerator"],
+          "doc": "catalog.find_spec(catalog, name) で spec を得る（無ければ UnknownGenerator）。その設備の今の所有数（owned に無ければ 0）で economy.current_cost(spec, 所有数) を値段とする。state.resource が値段未満なら NotEnough を投げる。そうでなければ、resource から値段を引き、その設備の所有数を 1 増やした新しい GameState を返す。last_update はそのまま。受け取った state は変えない。"
         },
         "tick": {
           "params": [{"name": "state", "type": "GameState"}, {"name": "catalog", "type": "list<GeneratorSpec>"}, {"name": "now", "type": "float"}],
           "returns": "GameState",
-          "raises": ["TimeWentBackwards"]
+          "raises": ["TimeWentBackwards"],
+          "doc": "now - state.last_update を経過秒数とする。負なら TimeWentBackwards を投げる。economy.production_rate(state.owned, catalog) × 経過秒数を resource に足し、last_update を now にした新しい GameState を返す。"
         }
       },
       "examples": [
@@ -277,12 +347,14 @@
       "functions": {
         "encode": {
           "params": [{"name": "state", "type": "GameState"}],
-          "returns": "string"
+          "returns": "string",
+          "doc": "state を JSON 文字列にする。キーは resource・owned・last_update の3つ。"
         },
         "decode": {
           "params": [{"name": "text", "type": "string"}],
           "returns": "GameState",
-          "raises": ["CorruptSave"]
+          "raises": ["CorruptSave"],
+          "doc": "text を JSON として読み、resource（数）・owned（文字列から整数への対応）・last_update（数）を持つ GameState を返す。JSON として読めない、キーが欠けている、型が違うときは CorruptSave を投げる。"
         }
       },
       "examples": [
@@ -320,7 +392,8 @@
       "functions": {
         "render": {
           "params": [{"name": "state", "type": "GameState"}, {"name": "catalog", "type": "list<GeneratorSpec>"}],
-          "returns": "View"
+          "returns": "View",
+          "doc": "resource_text は format.format_amount(state.resource)。rate_text は format.format_rate(economy.production_rate(state.owned, catalog))。rows は catalog の順に1設備1行で、所有数を n（owned に無ければ 0）、値段を cost = economy.current_cost(spec, n) として、name は spec.name、label は \"<name> x<n>\"、button_label は \"Buy <name> (<format.format_amount(cost)>)\"、affordable は state.resource >= cost。"
         }
       },
       "examples": [
@@ -360,34 +433,41 @@
       "functions": {
         "new_game": {
           "params": [{"name": "now", "type": "float"}],
-          "returns": "GameState"
+          "returns": "GameState",
+          "doc": "resource 0.0、owned 空、last_update は now の GameState を返す。"
         },
         "click": {
           "params": [{"name": "state", "type": "GameState"}],
-          "returns": "GameState"
+          "returns": "GameState",
+          "doc": "rules.click(state) を返す。"
         },
         "buy": {
           "params": [{"name": "state", "type": "GameState"}, {"name": "name", "type": "string"}],
           "returns": "GameState",
-          "raises": ["NotEnough", "UnknownGenerator"]
+          "raises": ["NotEnough", "UnknownGenerator"],
+          "doc": "rules.buy(state, catalog.default_catalog(), name) を返す。"
         },
         "tick": {
           "params": [{"name": "state", "type": "GameState"}, {"name": "now", "type": "float"}],
           "returns": "GameState",
-          "raises": ["TimeWentBackwards"]
+          "raises": ["TimeWentBackwards"],
+          "doc": "rules.tick(state, catalog.default_catalog(), now) を返す。"
         },
         "view": {
           "params": [{"name": "state", "type": "GameState"}],
-          "returns": "View"
+          "returns": "View",
+          "doc": "view.render(state, catalog.default_catalog()) を返す。"
         },
         "save": {
           "params": [{"name": "state", "type": "GameState"}],
-          "returns": "string"
+          "returns": "string",
+          "doc": "save.encode(state) を返す。"
         },
         "load": {
           "params": [{"name": "saved", "type": "optional<string>"}, {"name": "now", "type": "float"}],
           "returns": "GameState",
-          "raises": ["CorruptSave", "TimeWentBackwards"]
+          "raises": ["CorruptSave", "TimeWentBackwards"],
+          "doc": "saved が null なら new_game(now) を返す。そうでなければ save.decode(saved) で状態を読み、rules.tick(読んだ状態, catalog.default_catalog(), now) で now まで進めて返す。これで離れていたあいだの生産が加わり、時刻が戻っていれば TimeWentBackwards になる。"
         }
       },
       "examples": []

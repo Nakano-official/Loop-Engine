@@ -114,12 +114,22 @@ class _Gate:
                 self.bad(f"{where}.{name}", "an error is a CapWords name with a description")
         return errors
 
-    def contract_ok(self, name: str, sig: Any, types: dict, errors: dict, where: str) -> bool:
+    def contract_ok(self, name: str, sig: Any, types: dict, errors: dict, where: str,
+                    need_doc: bool = False) -> bool:
         if not SNAKE.match(name):
             self.bad(where, f"function name {name!r} is not snake_case")
         if not (isinstance(sig, dict) and isinstance(sig.get("params"), list) and "returns" in sig):
-            self.bad(where, "a contract is {params: [...], returns, raises?}")
+            self.bad(where, "a contract is {params: [...], returns, raises?, doc?}")
             return False
+        unknown = set(sig) - {"params", "returns", "raises", "doc"}
+        if unknown:
+            self.bad(where, f"a contract has no field {sorted(unknown)}")
+        # A design says HOW each function does what it does (FORMATS 3). The
+        # first run with the real solver stopped on an assembly function whose
+        # composition -- read the save, then advance it to now -- was written
+        # nowhere the implementer reads: examples alone did not carry it.
+        if need_doc and not (isinstance(sig.get("doc"), str) and sig["doc"].strip()):
+            self.bad(where, "no doc: a design says how each function does what it does")
         seen = set()
         for p in sig["params"]:
             if not (isinstance(p, dict) and set(p) == {"name", "type"}):
@@ -242,6 +252,11 @@ class _Gate:
         return called
 
 
+def _without_doc(functions: dict) -> dict:
+    return {n: {k: v for k, v in sig.items() if k != "doc"} if isinstance(sig, dict) else sig
+            for n, sig in functions.items()}
+
+
 def _assignable(got: str, want: str) -> bool:
     """A value of type `got` may be passed where `want` is expected: the same
     type, or `want` is optional<got> -- something present where "maybe
@@ -342,7 +357,7 @@ def check_design(ds: Any, definition: dict) -> list[Finding]:
             if dep not in by_id or dep == m.get("id"):
                 g.bad(w, f"depends on {dep!r}, which is not another module")
         for fn, sig in m.get("functions", {}).items():
-            g.contract_ok(fn, sig, types, errors, f"{w}.functions.{fn}")
+            g.contract_ok(fn, sig, types, errors, f"{w}.functions.{fn}", need_doc=True)
 
     # Acyclic.
     state: dict[str, int] = {}
@@ -366,7 +381,10 @@ def check_design(ds: Any, definition: dict) -> list[Finding]:
         g.bad("modules", f"exactly one assembly module is required, found {len(assemblies)}")
         return g.findings
     asm = assemblies[0]
-    if asm.get("functions") != definition.get("interface"):
+    # The assembly's contract is the interface: same functions, parameters,
+    # returns and errors. Not the same doc -- the definition says what, the
+    # design says how.
+    if _without_doc(asm.get("functions", {})) != _without_doc(definition.get("interface", {})):
         g.bad(f"modules[{asm['id']}]", "the assembly's contract is not the definition's interface")
     if ds.get("shell", {}).get("calls") != asm["id"]:
         g.bad("shell.calls", "the shell must call the assembly")
