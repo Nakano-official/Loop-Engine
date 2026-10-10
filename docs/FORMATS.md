@@ -145,10 +145,15 @@
 
 | | 持つもの |
 |---|---|
-| `definition.json` の `shell` | `platform`（`browser` など）と、務めの箇条書き（散文） |
+| `definition.json` の `shell` | `platform`（`browser-dom` か `browser-3d`。REDESIGN §1）と、務めの箇条書き（散文） |
 | `design.json` の `shell` | `calls`: 組み立てモジュールの ID |
 
 シェルの中身は人間のレビュー（REDESIGN §4 の最後の段）で確かめる。
+
+**出力は1つの HTML ファイル**（REDESIGN §1 の目的）。作業場のモジュールとシェルを1つにまとめ、
+開けば画面が出る形にする。シェルはアプリごとに書かず、**プラットフォームごとに機械側が用意する汎用の
+シェル**にする方針で、アプリは画面の記述（データ）を返す。画面の記述の形は未決（REDESIGN §10）。
+放置ゲームの例の `platform` は、この方針の前に書いた `browser` のままにしてある。
 
 ---
 
