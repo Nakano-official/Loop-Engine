@@ -22,6 +22,10 @@ TOOLS=/srv/loop/node
 # gates mean without anyone choosing that.
 VITEST_VERSION="4.1.11"
 HAPPY_DOM_VERSION="20.13.1"
+# three.js for browser-3d (REDESIGN 1, platform 2): bundled into each app's one
+# HTML file by build-app. Pinned like the rest; the generic shell is written
+# against this version's API.
+THREE_VERSION="0.170.0"
 
 command -v node >/dev/null || { echo "35-node: node is not installed (README 2-4)" >&2; exit 1; }
 
@@ -33,7 +37,8 @@ cat > "$TOOLS/package.json" <<EOF
   "type": "module",
   "devDependencies": {
     "vitest": "$VITEST_VERSION",
-    "happy-dom": "$HAPPY_DOM_VERSION"
+    "happy-dom": "$HAPPY_DOM_VERSION",
+    "three": "$THREE_VERSION"
   }
 }
 EOF

@@ -1,0 +1,1838 @@
+{
+ "format": "loop/definition@1",
+ "title": "コイン集め",
+ "types": {
+  "Vec3": {
+   "record": [
+    {
+     "name": "x",
+     "type": "float"
+    },
+    {
+     "name": "y",
+     "type": "float"
+    },
+    {
+     "name": "z",
+     "type": "float"
+    }
+   ]
+  },
+  "Camera": {
+   "record": [
+    {
+     "name": "position",
+     "type": "Vec3"
+    },
+    {
+     "name": "yaw",
+     "type": "float"
+    },
+    {
+     "name": "pitch",
+     "type": "float"
+    },
+    {
+     "name": "fov",
+     "type": "float"
+    }
+   ]
+  },
+  "Shape": {
+   "enum": [
+    "box",
+    "sphere",
+    "plane",
+    "cylinder"
+   ]
+  },
+  "Object3D": {
+   "record": [
+    {
+     "name": "id",
+     "type": "string"
+    },
+    {
+     "name": "shape",
+     "type": "Shape"
+    },
+    {
+     "name": "position",
+     "type": "Vec3"
+    },
+    {
+     "name": "size",
+     "type": "Vec3"
+    },
+    {
+     "name": "rotation_y",
+     "type": "float"
+    },
+    {
+     "name": "color",
+     "type": "string"
+    }
+   ]
+  },
+  "NodeKind": {
+   "enum": [
+    "heading",
+    "text",
+    "button"
+   ]
+  },
+  "Node": {
+   "record": [
+    {
+     "name": "kind",
+     "type": "NodeKind"
+    },
+    {
+     "name": "text",
+     "type": "string"
+    },
+    {
+     "name": "action",
+     "type": "string"
+    },
+    {
+     "name": "enabled",
+     "type": "bool"
+    }
+   ]
+  },
+  "Scene": {
+   "record": [
+    {
+     "name": "title",
+     "type": "string"
+    },
+    {
+     "name": "camera",
+     "type": "Camera"
+    },
+    {
+     "name": "objects",
+     "type": "list<Object3D>"
+    },
+    {
+     "name": "hud",
+     "type": "list<Node>"
+    }
+   ]
+  },
+  "Input": {
+   "record": [
+    {
+     "name": "keys",
+     "type": "list<string>"
+    },
+    {
+     "name": "mouse_dx",
+     "type": "float"
+    },
+    {
+     "name": "mouse_dy",
+     "type": "float"
+    },
+    {
+     "name": "locked",
+     "type": "bool"
+    }
+   ]
+  },
+  "Player": {
+   "record": [
+    {
+     "name": "x",
+     "type": "float"
+    },
+    {
+     "name": "z",
+     "type": "float"
+    },
+    {
+     "name": "yaw",
+     "type": "float"
+    },
+    {
+     "name": "pitch",
+     "type": "float"
+    }
+   ]
+  },
+  "Coin": {
+   "record": [
+    {
+     "name": "id",
+     "type": "string"
+    },
+    {
+     "name": "x",
+     "type": "float"
+    },
+    {
+     "name": "z",
+     "type": "float"
+    },
+    {
+     "name": "taken",
+     "type": "bool"
+    }
+   ]
+  },
+  "World": {
+   "record": [
+    {
+     "name": "player",
+     "type": "Player"
+    },
+    {
+     "name": "coins",
+     "type": "list<Coin>"
+    },
+    {
+     "name": "last",
+     "type": "float"
+    }
+   ]
+  }
+ },
+ "errors": {
+  "CorruptSave": "保存データとして読めない"
+ },
+ "interface": {
+  "start": {
+   "params": [
+    {
+     "name": "now",
+     "type": "float"
+    },
+    {
+     "name": "saved",
+     "type": "optional<string>"
+    }
+   ],
+   "returns": "World",
+   "raises": [
+    "CorruptSave"
+   ]
+  },
+  "step": {
+   "params": [
+    {
+     "name": "state",
+     "type": "World"
+    },
+    {
+     "name": "now",
+     "type": "float"
+    },
+    {
+     "name": "input",
+     "type": "Input"
+    }
+   ],
+   "returns": "World"
+  },
+  "act": {
+   "params": [
+    {
+     "name": "state",
+     "type": "World"
+    },
+    {
+     "name": "action",
+     "type": "string"
+    },
+    {
+     "name": "now",
+     "type": "float"
+    }
+   ],
+   "returns": "World"
+  },
+  "screen": {
+   "params": [
+    {
+     "name": "state",
+     "type": "World"
+    }
+   ],
+   "returns": "Scene"
+  },
+  "save": {
+   "params": [
+    {
+     "name": "state",
+     "type": "World"
+    }
+   ],
+   "returns": "string"
+  }
+ },
+ "items": [
+  {
+   "id": "D1",
+   "title": "はじまり",
+   "statement": "新しいゲームは、部屋の南寄り (x 0, z 8) に北 (-z) を向いて立ち、5枚のコインが決まった位置にあり、どれもまだ拾われていない。開いた時刻を最後の時刻として持つ。",
+   "examples": [
+    {
+     "id": "D1.E1",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 10.0,
+        "saved": null
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "s"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 10.0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "D2",
+   "title": "保存と再開",
+   "statement": "save した文字列を start に渡すと、同じ位置・向き・コインの状態から再開する。最後の時刻は再開した時刻になる。読めない保存は CorruptSave。",
+   "examples": [
+    {
+     "id": "D2.E1",
+     "steps": [
+      {
+       "let": "w",
+       "value": {
+        "player": {
+         "x": 0.0,
+         "z": 1.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       },
+       "type": "World"
+      },
+      {
+       "let": "t",
+       "call": "save",
+       "args": {
+        "state": {
+         "$": "w"
+        }
+       }
+      },
+      {
+       "let": "u",
+       "call": "start",
+       "args": {
+        "now": 20.0,
+        "saved": {
+         "$": "t"
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "u"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 1.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 20.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "D2.E2",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 5.0,
+        "saved": "not a save"
+       }
+      }
+     ],
+     "then": {
+      "raises": "CorruptSave"
+     }
+    }
+   ]
+  },
+  {
+   "id": "D3",
+   "title": "歩く",
+   "statement": "W/S で向いている方へ前後に、A/D で左右に、毎秒 4 m 歩く。歩く距離は前の step からの経過時間に比例し、経過時間は 0.25 秒を上限とする（タブが止まっていた後に飛ばない）。部屋の外 (|x|, |z| > 9.5) には出られない。",
+   "examples": [
+    {
+     "id": "D3.E1",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.5,
+        "input": {
+         "keys": [
+          "w"
+         ],
+         "mouse_dx": 0.0,
+         "mouse_dy": 0.0,
+         "locked": false
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 7.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.5
+       }
+      ]
+     }
+    },
+    {
+     "id": "D3.E2",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.125,
+        "input": {
+         "keys": [
+          "d"
+         ],
+         "mouse_dx": 0.0,
+         "mouse_dy": 0.0,
+         "locked": false
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.5,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.125
+       }
+      ]
+     }
+    },
+    {
+     "id": "D3.E3",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.25,
+        "input": {
+         "keys": [
+          "s"
+         ],
+         "mouse_dx": 0.0,
+         "mouse_dy": 0.0,
+         "locked": false
+        }
+       }
+      },
+      {
+       "let": "b",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "a"
+        },
+        "now": 0.5,
+        "input": {
+         "keys": [
+          "s"
+         ],
+         "mouse_dx": 0.0,
+         "mouse_dy": 0.0,
+         "locked": false
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "b"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 9.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.5
+       }
+      ]
+     }
+    },
+    {
+     "id": "D3.E4",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.25,
+        "input": {
+         "keys": [
+          "w",
+          "s"
+         ],
+         "mouse_dx": 0.0,
+         "mouse_dy": 0.0,
+         "locked": false
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.25
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "D4",
+   "title": "見回す",
+   "statement": "ポインタがロックされているあいだ、マウスを右へ 1 px 動かすと 0.0025 rad 右を向き（yaw が減る）、下へ動かすと下を向く。上下の向きは ±1.5 rad まで。ロックされていなければマウスは無視する。",
+   "examples": [
+    {
+     "id": "D4.E1",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.0,
+        "input": {
+         "keys": [],
+         "mouse_dx": 100.0,
+         "mouse_dy": -40.0,
+         "locked": true
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": -0.25,
+         "pitch": 0.1
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "D4.E2",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.0,
+        "input": {
+         "keys": [],
+         "mouse_dx": 100.0,
+         "mouse_dy": -40.0,
+         "locked": false
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "D4.E3",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "s"
+        },
+        "now": 0.0,
+        "input": {
+         "keys": [],
+         "mouse_dx": 0.0,
+         "mouse_dy": -1000.0,
+         "locked": true
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 1.5
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "D5",
+   "title": "コインを拾う",
+   "statement": "コインの中心から水平距離 1 m 以内に入ると、そのコインは拾われる。拾ったコインは消える。",
+   "examples": [
+    {
+     "id": "D5.E1",
+     "steps": [
+      {
+       "let": "w",
+       "value": {
+        "player": {
+         "x": 0.0,
+         "z": 1.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       },
+       "type": "World"
+      },
+      {
+       "let": "a",
+       "call": "step",
+       "args": {
+        "state": {
+         "$": "w"
+        },
+        "now": 0.25,
+        "input": {
+         "keys": [
+          "w"
+         ],
+         "mouse_dx": 0.0,
+         "mouse_dy": 0.0,
+         "locked": false
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 0.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": true
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.25
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "D6",
+   "title": "画面",
+   "statement": "画面は床と四方の壁、まだ拾っていないコイン（金色の球）を描き、目の高さ 1.6 m から見る。左上に題名と「コイン n / 5」と操作の説明を出す。全部集めたら説明の代わりに「ぜんぶ集めた！」と「もう一度」ボタンを出す。",
+   "examples": [
+    {
+     "id": "D6.E1",
+     "steps": [
+      {
+       "let": "s",
+       "call": "start",
+       "args": {
+        "now": 0.0,
+        "saved": null
+       }
+      },
+      {
+       "let": "v",
+       "call": "screen",
+       "args": {
+        "state": {
+         "$": "s"
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "v"
+      ],
+      "equals": [
+       {
+        "title": "コイン集め",
+        "camera": {
+         "position": {
+          "x": 0.0,
+          "y": 1.6,
+          "z": 8.0
+         },
+         "yaw": 0.0,
+         "pitch": 0.0,
+         "fov": 70.0
+        },
+        "objects": [
+         {
+          "id": "floor",
+          "shape": "plane",
+          "position": {
+           "x": 0.0,
+           "y": 0.0,
+           "z": 0.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 0.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#6b8f5e"
+         },
+         {
+          "id": "wall-n",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": -10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-s",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": 10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-e",
+          "shape": "box",
+          "position": {
+           "x": 10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-w",
+          "shape": "box",
+          "position": {
+           "x": -10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "coin-c1",
+          "shape": "sphere",
+          "position": {
+           "x": 0.0,
+           "y": 0.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c2",
+          "shape": "sphere",
+          "position": {
+           "x": -6.0,
+           "y": 0.5,
+           "z": -6.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c3",
+          "shape": "sphere",
+          "position": {
+           "x": 6.0,
+           "y": 0.5,
+           "z": -6.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c4",
+          "shape": "sphere",
+          "position": {
+           "x": -6.0,
+           "y": 0.5,
+           "z": 4.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c5",
+          "shape": "sphere",
+          "position": {
+           "x": 6.0,
+           "y": 0.5,
+           "z": 4.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         }
+        ],
+        "hud": [
+         {
+          "kind": "heading",
+          "text": "コイン集め",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "コイン 0 / 5",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "WASD で歩く・クリックで見回す",
+          "action": "",
+          "enabled": true
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "D6.E2",
+     "steps": [
+      {
+       "let": "w",
+       "value": {
+        "player": {
+         "x": 0.0,
+         "z": 0.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": true
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": true
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": true
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": true
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": true
+         }
+        ],
+        "last": 0.25
+       },
+       "type": "World"
+      },
+      {
+       "let": "v",
+       "call": "screen",
+       "args": {
+        "state": {
+         "$": "w"
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "v"
+      ],
+      "equals": [
+       {
+        "title": "コイン集め",
+        "camera": {
+         "position": {
+          "x": 0.0,
+          "y": 1.6,
+          "z": 0.5
+         },
+         "yaw": 0.0,
+         "pitch": 0.0,
+         "fov": 70.0
+        },
+        "objects": [
+         {
+          "id": "floor",
+          "shape": "plane",
+          "position": {
+           "x": 0.0,
+           "y": 0.0,
+           "z": 0.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 0.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#6b8f5e"
+         },
+         {
+          "id": "wall-n",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": -10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-s",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": 10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-e",
+          "shape": "box",
+          "position": {
+           "x": 10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-w",
+          "shape": "box",
+          "position": {
+           "x": -10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         }
+        ],
+        "hud": [
+         {
+          "kind": "heading",
+          "text": "コイン集め",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "コイン 5 / 5",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "ぜんぶ集めた！",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "button",
+          "text": "もう一度",
+          "action": "restart",
+          "enabled": true
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "D7",
+   "title": "もう一度",
+   "statement": "「もう一度」(action \"restart\") で新しいゲームになる。シーンのクリック (\"click\") やほかの action では何も変わらない。",
+   "examples": [
+    {
+     "id": "D7.E1",
+     "steps": [
+      {
+       "let": "w",
+       "value": {
+        "player": {
+         "x": 0.0,
+         "z": 0.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": true
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": true
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": true
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": true
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": true
+         }
+        ],
+        "last": 0.25
+       },
+       "type": "World"
+      },
+      {
+       "let": "a",
+       "call": "act",
+       "args": {
+        "state": {
+         "$": "w"
+        },
+        "action": "restart",
+        "now": 30.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 30.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "D7.E2",
+     "steps": [
+      {
+       "let": "w",
+       "value": {
+        "player": {
+         "x": 0.0,
+         "z": 1.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       },
+       "type": "World"
+      },
+      {
+       "let": "a",
+       "call": "act",
+       "args": {
+        "state": {
+         "$": "w"
+        },
+        "action": "click",
+        "now": 30.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "a"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 1.5,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ],
+ "shell": {
+  "platform": "browser-3d",
+  "duties": [
+   "browser-3d の汎用シェルが描く（adapters/platforms/browser-3d）。アプリ固有のシェルは無い",
+   "開いたときに start(現在時刻, localStorage の保存)、毎フレーム押されているキーとマウスの動きで step、クリックとボタンで act を呼ぶ",
+   "毎フレーム screen を描き、1秒ごとと act のたびに save の結果を localStorage に書く"
+  ]
+ }
+}

@@ -103,3 +103,19 @@ def test_used_up_attempts_send_the_designer_ids_and_reasons_only(win, tmp_path):
     assert "granularity" in second and "M3.E1" in second
     # What the implementation returned never reaches the designer.
     assert "2.500K" not in second
+
+
+def test_a_definition_for_another_platform_is_refused(win, tmp_path):
+    # The person chose browser-3d; the definer wrote the idle game for
+    # browser-dom. Its gate alone passes it -- the choice refuses it.
+    roles(win, [DEFINITION], [json.dumps(DESIGN)])
+    out = pipeline.run_from_requirements("3Dで歩く", tmp_path / "app", win, "up4", solver=reference,
+                                         gate_rounds=2, build=False, platform="browser-3d")
+    assert out.stage == "要件定義"
+    assert any("must be 'browser-3d'" in f for f in out.detail["findings"])
+    first, second = win.briefs["definer"]
+    # The brief is the chosen platform's: its interface, its conventions, and
+    # the refusal on the second round.
+    assert "step(state: $State, now: float, input: Input) -> $State" in first
+    assert "Conventions:" in first and "vertical field of view in degrees" in first
+    assert "must be 'browser-3d'" in second

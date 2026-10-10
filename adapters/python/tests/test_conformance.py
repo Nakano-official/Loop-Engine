@@ -127,3 +127,21 @@ def test_a_stub_filled_in_place_works(tmp_path):
     filled = head + "def production_rate(owned, catalog):\n    raise loop_types.UnknownGenerator('any')\n"
     v = run(tmp_path, {**CORRECT, "economy": filled}, only="economy")
     assert v["M2.E5"]["ok"] is True, v["M2.E5"]
+
+
+def test_definition_examples_copied_into_the_assembly_count_once(tmp_path):
+    # maze3d's designer copied all 16 definition examples into the assembly
+    # under its own ids; the solver's brief doubled and no longer fit the
+    # local model's context. The copy goes, the definition's id stays.
+    src = HERE.parents[2] / "docs" / "formats" / "examples"
+    design = json.loads((src / "coinroom.design.json").read_text(encoding="utf-8"))
+    definition = json.loads((src / "coinroom.definition.json").read_text(encoding="utf-8"))
+    defined = [e for item in definition["items"] for e in item["examples"]]
+    game = next(m for m in design["modules"] if m["kind"] == "assembly")
+    new = {"id": "M6.E99", "steps": [{"let": "s", "call": "start", "args": {"now": 1.0, "saved": None}}],
+           "then": {"observe": ["s"], "equals": [defined[0]["then"]["equals"][0] | {"last": 1.0}]}}
+    game["examples"] = [{**e, "id": f"M6.E{i}"} for i, e in enumerate(defined, 1)] + [new]
+    (tmp_path / "coinroom.definition.json").write_text(json.dumps(definition), encoding="utf-8")
+    (tmp_path / "d.json").write_text(json.dumps(design), encoding="utf-8")
+    d = emit.Design(tmp_path / "d.json")
+    assert [e["id"] for e in d.examples(d.assembly)] == [e["id"] for e in defined] + ["M6.E99"]

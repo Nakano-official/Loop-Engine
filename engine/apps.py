@@ -2,7 +2,7 @@
 flow: it reads and writes files, and decides nothing.
 
     apps/<name>/
-      app.json            {"name", "title"}
+      app.json            {"name", "title", "platform"} -- platform only for apps from requirements
       requirements.md     what a person asked for -- the definer's input
       definition.json     the latest definition -- the host holds the canonical copy (REDESIGN 6)
       design.json         the latest design; its "definition" field names definition.json
@@ -30,6 +30,10 @@ from pathlib import Path
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")   # also a workspace name in the box
 ROOT = Path(os.environ.get("LOOP_APPS", Path(__file__).resolve().parents[2] / "apps"))
+# What an app from requirements may be built as: the platforms that exist
+# (a directory with a platform.json), the same list the gate accepts.
+PLATFORMS = sorted(p.name for p in (Path(__file__).resolve().parents[1] / "adapters" / "platforms").glob("*")
+                   if (p / "platform.json").exists())
 
 FINAL = {"ALL_GREEN", "OUTPUT", "OUTPUT_FAILED", "EXHAUSTED", "GATE_FAILED", "STOPPED"}
 
@@ -202,6 +206,11 @@ class App:
         p = self.dir / "requirements.md"
         return p.read_text(encoding="utf-8") if p.exists() else None
 
+    def platform(self) -> str:
+        """What the definer is told to build for. Apps made before platforms
+        could be chosen are browser-dom."""
+        return self.meta().get("platform", "browser-dom")
+
     def runs(self) -> list[Run]:
         """Newest first, by when each run started -- not by its id, which is a
         name: an id given by hand ("real-5") sorts after every timestamp."""
@@ -320,11 +329,14 @@ class Store:
             raise KeyError(name)
         return App(self.root / name)
 
-    def create_from_requirements(self, name: str, title: str, requirements: str) -> App:
-        """A new app from what a person asked for. The definer and the designer
-        write the rest, on its first run."""
+    def create_from_requirements(self, name: str, title: str, requirements: str,
+                                 platform: str = "browser-dom") -> App:
+        """A new app from what a person asked for, to be built for one
+        platform. The definer and the designer write the rest, on its first run."""
         if not NAME.match(name):
             raise ValueError(f"an app name is lower case letters, digits, - and _: {name!r}")
+        if platform not in PLATFORMS:
+            raise ValueError(f"the platform is one of {PLATFORMS}: {platform!r}")
         if not requirements.strip():
             raise ValueError("the requirements are empty")
         if len(requirements) > 20000:
@@ -335,7 +347,7 @@ class Store:
         except FileExistsError:
             raise FileExistsError(name) from None
         (d / "requirements.md").write_text(requirements, encoding="utf-8")
-        (d / "app.json").write_text(json.dumps({"name": name, "title": title[:100] or name},
+        (d / "app.json").write_text(json.dumps({"name": name, "title": title[:100] or name, "platform": platform},
                                                ensure_ascii=False), encoding="utf-8")
         return App(d)
 

@@ -9,27 +9,115 @@
   "name": "browser-dom",
   "language": "typescript",
   "types": {
-    "NodeKind": {"enum": ["heading", "text", "button"]},
+    "NodeKind": {
+      "enum": [
+        "heading",
+        "text",
+        "button"
+      ]
+    },
     "Node": {
       "record": [
-        {"name": "kind", "type": "NodeKind"},
-        {"name": "text", "type": "string"},
-        {"name": "action", "type": "string"},
-        {"name": "enabled", "type": "bool"}
+        {
+          "name": "kind",
+          "type": "NodeKind"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "action",
+          "type": "string"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
       ]
     },
     "Screen": {
       "record": [
-        {"name": "title", "type": "string"},
-        {"name": "nodes", "type": "list<Node>"}
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "nodes",
+          "type": "list<Node>"
+        }
       ]
     }
   },
   "interface": {
-    "start": {"params": [{"name": "now", "type": "float"}, {"name": "saved", "type": "optional<string>"}], "returns": "$State"},
-    "step": {"params": [{"name": "state", "type": "$State"}, {"name": "now", "type": "float"}], "returns": "$State"},
-    "act": {"params": [{"name": "state", "type": "$State"}, {"name": "action", "type": "string"}, {"name": "now", "type": "float"}], "returns": "$State"},
-    "screen": {"params": [{"name": "state", "type": "$State"}], "returns": "Screen"},
-    "save": {"params": [{"name": "state", "type": "$State"}], "returns": "string"}
-  }
+    "start": {
+      "params": [
+        {
+          "name": "now",
+          "type": "float"
+        },
+        {
+          "name": "saved",
+          "type": "optional<string>"
+        }
+      ],
+      "returns": "$State"
+    },
+    "step": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        },
+        {
+          "name": "now",
+          "type": "float"
+        }
+      ],
+      "returns": "$State"
+    },
+    "act": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        },
+        {
+          "name": "action",
+          "type": "string"
+        },
+        {
+          "name": "now",
+          "type": "float"
+        }
+      ],
+      "returns": "$State"
+    },
+    "screen": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        }
+      ],
+      "returns": "Screen"
+    },
+    "save": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        }
+      ],
+      "returns": "string"
+    }
+  },
+  "brief": [
+    "start is called when the app opens, with what was saved last time (or null).",
+    "step is called every second; act when the player presses a button (`action` is the button's action string); screen after every change; save after every change.",
+    "If act throws, the shell keeps the old state: an action that is not allowed throws.",
+    "Everything the player can do is an action string; an action that needs confirmation is two actions (one that asks, one that confirms), and the state remembers the question.",
+    "screen returns a Screen: a title and a vertical list of nodes -- a heading, a text, or a button (with its action and whether it is enabled). Non-button nodes have action \"\" and enabled true. That is the whole vocabulary.",
+    "Pin the screen: give examples of screen for a few states, with every node written out."
+  ]
 }

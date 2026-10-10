@@ -37,7 +37,8 @@ def cmd_list(store: apps.Store, _args) -> int:
 def cmd_new(store: apps.Store, args) -> int:
     if args.requirements:
         app = store.create_from_requirements(args.name, args.title,
-                                             Path(args.requirements).read_text(encoding="utf-8"))
+                                             Path(args.requirements).read_text(encoding="utf-8"),
+                                             platform=args.platform)
     else:
         if not (args.definition and args.design):
             print("give --requirements, or both --definition and --design", file=sys.stderr)
@@ -71,13 +72,16 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
     stop_file = run.dir / "stop"
     try:
         requirements = app.requirements()
-        if requirements is not None:
+        if args.from_design and not app.design_path.exists():
+            raise FileNotFoundError(f"{app.name} has no design yet: run it from its requirements first")
+        if requirements is not None and not args.from_design:
             # From what a person asked for: the definer and the designer first.
             # This run's definition and design are kept in its directory, and
             # become the app's latest.
             out = pipeline.run_from_requirements(requirements, run.dir, pipeline.RemoteWindow(), run.workspace,
                                                  max_attempts=args.attempts, ledger=ledger,
-                                                 output=run.dir / "app.html", should_stop=stop_file.exists)
+                                                 output=run.dir / "app.html", should_stop=stop_file.exists,
+                                                 platform=app.platform())
             for name in ("definition.json", "design.json"):
                 if (run.dir / name).exists():
                     (app.dir / name).write_bytes((run.dir / name).read_bytes())
@@ -118,11 +122,15 @@ def main(argv=None) -> int:
     n.add_argument("name")
     n.add_argument("--title", required=True)
     n.add_argument("--requirements")
+    n.add_argument("--platform", default="browser-dom", choices=apps.PLATFORMS,
+                   help="what an app from requirements is built as")
     n.add_argument("--definition")
     n.add_argument("--design")
     r = sub.add_parser("run")
     r.add_argument("name")
     r.add_argument("--attempts", type=int, default=3)
+    r.add_argument("--from-design", action="store_true",
+                   help="start from the app's latest definition and design, not its requirements")
     s = sub.add_parser("stop")
     s.add_argument("name")
     s.add_argument("run")

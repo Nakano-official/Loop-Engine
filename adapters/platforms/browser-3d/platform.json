@@ -1,0 +1,242 @@
+{
+  "_comment": [
+    "The browser-3d platform (REDESIGN 1, platform 2): one HTML file, a three.js scene",
+    "drawn by a generic shell. A definition that declares this platform must declare",
+    "these types exactly and offer these five functions; $State is the record type",
+    "start returns, the same throughout. step is called every animation frame with",
+    "what the player is pressing; act on a click (\"click\") or a HUD button."
+  ],
+  "name": "browser-3d",
+  "language": "typescript",
+  "types": {
+    "Vec3": {
+      "record": [
+        {
+          "name": "x",
+          "type": "float"
+        },
+        {
+          "name": "y",
+          "type": "float"
+        },
+        {
+          "name": "z",
+          "type": "float"
+        }
+      ]
+    },
+    "Camera": {
+      "record": [
+        {
+          "name": "position",
+          "type": "Vec3"
+        },
+        {
+          "name": "yaw",
+          "type": "float"
+        },
+        {
+          "name": "pitch",
+          "type": "float"
+        },
+        {
+          "name": "fov",
+          "type": "float"
+        }
+      ]
+    },
+    "Shape": {
+      "enum": [
+        "box",
+        "sphere",
+        "plane",
+        "cylinder"
+      ]
+    },
+    "Object3D": {
+      "record": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "shape",
+          "type": "Shape"
+        },
+        {
+          "name": "position",
+          "type": "Vec3"
+        },
+        {
+          "name": "size",
+          "type": "Vec3"
+        },
+        {
+          "name": "rotation_y",
+          "type": "float"
+        },
+        {
+          "name": "color",
+          "type": "string"
+        }
+      ]
+    },
+    "NodeKind": {
+      "enum": [
+        "heading",
+        "text",
+        "button"
+      ]
+    },
+    "Node": {
+      "record": [
+        {
+          "name": "kind",
+          "type": "NodeKind"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "action",
+          "type": "string"
+        },
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    "Scene": {
+      "record": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "camera",
+          "type": "Camera"
+        },
+        {
+          "name": "objects",
+          "type": "list<Object3D>"
+        },
+        {
+          "name": "hud",
+          "type": "list<Node>"
+        }
+      ]
+    },
+    "Input": {
+      "record": [
+        {
+          "name": "keys",
+          "type": "list<string>"
+        },
+        {
+          "name": "mouse_dx",
+          "type": "float"
+        },
+        {
+          "name": "mouse_dy",
+          "type": "float"
+        },
+        {
+          "name": "locked",
+          "type": "bool"
+        }
+      ]
+    }
+  },
+  "interface": {
+    "start": {
+      "params": [
+        {
+          "name": "now",
+          "type": "float"
+        },
+        {
+          "name": "saved",
+          "type": "optional<string>"
+        }
+      ],
+      "returns": "$State"
+    },
+    "step": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        },
+        {
+          "name": "now",
+          "type": "float"
+        },
+        {
+          "name": "input",
+          "type": "Input"
+        }
+      ],
+      "returns": "$State"
+    },
+    "act": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        },
+        {
+          "name": "action",
+          "type": "string"
+        },
+        {
+          "name": "now",
+          "type": "float"
+        }
+      ],
+      "returns": "$State"
+    },
+    "screen": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        }
+      ],
+      "returns": "Scene"
+    },
+    "save": {
+      "params": [
+        {
+          "name": "state",
+          "type": "$State"
+        }
+      ],
+      "returns": "string"
+    }
+  },
+  "conventions": [
+    "Units are metres and radians, except fov: the vertical field of view in degrees (e.g. 70).",
+    "y is up. The camera looks along -z when yaw is 0; yaw turns left (counter-clockwise seen",
+    "from above) as it grows; pitch looks up as it grows. Facing yaw, forward is",
+    "(-sin(yaw), 0, -cos(yaw)) and right is (cos(yaw), 0, -sin(yaw)).",
+    "A box/plane/cylinder's size is its full width (x), height (y) and depth (z); a sphere's",
+    "diameter is size.x. A plane lies flat (in x-z) at position.y. rotation_y turns an object",
+    "about its vertical axis. color is \"#rrggbb\".",
+    "keys are KeyboardEvent.key in lower case (\"w\", \"a\", \"s\", \"d\", \" \", \"shift\",",
+    "\"arrowup\" ...). mouse_dx/mouse_dy are pixels moved since the last frame, and are 0 unless",
+    "locked."
+  ],
+  "brief": [
+    "start is called when the app opens, with what was saved last time (or null).",
+    "step is called every animation frame (about 60 times a second) with `input`: the keys held now, the mouse movement since the last frame, and whether the pointer is locked.",
+    "Movement must not depend on the frame rate: keep the time of the last step in the state and move by speed x (now - last), where now - last is the time since the previous step (0 on the first).",
+    "Mouse look turns yaw by -mouse_dx x sensitivity and pitch by -mouse_dy x sensitivity, pitch kept within [-1.5, 1.5].",
+    "act(state, \"click\", now) is called on a click on the scene (the click also locks the pointer); HUD buttons call act with their action. If act throws, the shell keeps the old state.",
+    "screen is called every frame and returns a Scene: the camera, the objects, and the HUD -- a list of nodes (heading, text, button with its action and whether it is enabled; non-button nodes have action \"\" and enabled true) drawn over the scene, top left.",
+    "Objects are boxes, spheres, planes and cylinders, each a single colour; light, shadow and sky are the shell's. That is the whole vocabulary.",
+    "save is called once a second and after every act.",
+    "Pin the scene: give examples of screen, and of step with inputs, for a few states, with every object and node written out. Keep the numbers exact: pick speeds, times and positions whose results are exact in binary (halves, quarters), and keep yaw 0 in examples that move."
+  ]
+}

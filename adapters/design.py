@@ -41,6 +41,11 @@ def is_ref(value: Any) -> bool:
     return isinstance(value, dict) and set(value) == {"$"}
 
 
+def _same(example: dict) -> str:
+    """What an example says, without its id."""
+    return json.dumps({"steps": example["steps"], "then": example["then"]}, sort_keys=True)
+
+
 class Design:
     def __init__(self, path: Path | str):
         path = Path(path)
@@ -73,7 +78,13 @@ class Design:
     def examples(self, module: dict) -> list[dict]:
         own = list(module["examples"])
         if module is self.assembly:
-            own = [e for item in self.definition["items"] for e in item["examples"]] + own
+            # The definition's examples are the assembly's already. A designer
+            # that copies them in as well (maze3d did, all 16) would double the
+            # tests and the solver's brief -- the copy goes, the definition's id
+            # stays, since that is where the example was written.
+            defined = [e for item in self.definition["items"] for e in item["examples"]]
+            seen = {_same(e) for e in defined}
+            own = defined + [e for e in own if _same(e) not in seen]
         return own
 
     def resolve(self, module: dict, call: str) -> tuple[dict, str, dict]:

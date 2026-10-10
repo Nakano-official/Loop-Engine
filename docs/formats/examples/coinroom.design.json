@@ -1,0 +1,2029 @@
+{
+ "format": "loop/design@1",
+ "definition": "coinroom.definition.json",
+ "target": {
+  "language": "typescript",
+  "platform": "browser-3d"
+ },
+ "types": {
+  "Vec3": {
+   "record": [
+    {
+     "name": "x",
+     "type": "float"
+    },
+    {
+     "name": "y",
+     "type": "float"
+    },
+    {
+     "name": "z",
+     "type": "float"
+    }
+   ]
+  },
+  "Camera": {
+   "record": [
+    {
+     "name": "position",
+     "type": "Vec3"
+    },
+    {
+     "name": "yaw",
+     "type": "float"
+    },
+    {
+     "name": "pitch",
+     "type": "float"
+    },
+    {
+     "name": "fov",
+     "type": "float"
+    }
+   ]
+  },
+  "Shape": {
+   "enum": [
+    "box",
+    "sphere",
+    "plane",
+    "cylinder"
+   ]
+  },
+  "Object3D": {
+   "record": [
+    {
+     "name": "id",
+     "type": "string"
+    },
+    {
+     "name": "shape",
+     "type": "Shape"
+    },
+    {
+     "name": "position",
+     "type": "Vec3"
+    },
+    {
+     "name": "size",
+     "type": "Vec3"
+    },
+    {
+     "name": "rotation_y",
+     "type": "float"
+    },
+    {
+     "name": "color",
+     "type": "string"
+    }
+   ]
+  },
+  "NodeKind": {
+   "enum": [
+    "heading",
+    "text",
+    "button"
+   ]
+  },
+  "Node": {
+   "record": [
+    {
+     "name": "kind",
+     "type": "NodeKind"
+    },
+    {
+     "name": "text",
+     "type": "string"
+    },
+    {
+     "name": "action",
+     "type": "string"
+    },
+    {
+     "name": "enabled",
+     "type": "bool"
+    }
+   ]
+  },
+  "Scene": {
+   "record": [
+    {
+     "name": "title",
+     "type": "string"
+    },
+    {
+     "name": "camera",
+     "type": "Camera"
+    },
+    {
+     "name": "objects",
+     "type": "list<Object3D>"
+    },
+    {
+     "name": "hud",
+     "type": "list<Node>"
+    }
+   ]
+  },
+  "Input": {
+   "record": [
+    {
+     "name": "keys",
+     "type": "list<string>"
+    },
+    {
+     "name": "mouse_dx",
+     "type": "float"
+    },
+    {
+     "name": "mouse_dy",
+     "type": "float"
+    },
+    {
+     "name": "locked",
+     "type": "bool"
+    }
+   ]
+  },
+  "Player": {
+   "record": [
+    {
+     "name": "x",
+     "type": "float"
+    },
+    {
+     "name": "z",
+     "type": "float"
+    },
+    {
+     "name": "yaw",
+     "type": "float"
+    },
+    {
+     "name": "pitch",
+     "type": "float"
+    }
+   ]
+  },
+  "Coin": {
+   "record": [
+    {
+     "name": "id",
+     "type": "string"
+    },
+    {
+     "name": "x",
+     "type": "float"
+    },
+    {
+     "name": "z",
+     "type": "float"
+    },
+    {
+     "name": "taken",
+     "type": "bool"
+    }
+   ]
+  },
+  "World": {
+   "record": [
+    {
+     "name": "player",
+     "type": "Player"
+    },
+    {
+     "name": "coins",
+     "type": "list<Coin>"
+    },
+    {
+     "name": "last",
+     "type": "float"
+    }
+   ]
+  }
+ },
+ "errors": {
+  "CorruptSave": "保存データとして読めない"
+ },
+ "fixtures": {},
+ "modules": [
+  {
+   "id": "M1",
+   "name": "motion",
+   "kind": "pure",
+   "depends_on": [],
+   "functions": {
+    "look": {
+     "params": [
+      {
+       "name": "player",
+       "type": "Player"
+      },
+      {
+       "name": "dx",
+       "type": "float"
+      },
+      {
+       "name": "dy",
+       "type": "float"
+      }
+     ],
+     "returns": "Player",
+     "doc": "x と z はそのまま。yaw は player.yaw - dx * 0.0025。pitch は player.pitch - dy * 0.0025 を -1.5 以上 1.5 以下に収めた値（下回れば -1.5、上回れば 1.5）。新しい Player を返す。"
+    },
+    "walk": {
+     "params": [
+      {
+       "name": "player",
+       "type": "Player"
+      },
+      {
+       "name": "keys",
+       "type": "list<string>"
+      },
+      {
+       "name": "dt",
+       "type": "float"
+      }
+     ],
+     "returns": "Player",
+     "doc": "f = (keys に \"w\" があれば 1、なければ 0) - (keys に \"s\" があれば 1、なければ 0)。r = (\"d\" があれば 1) - (\"a\" があれば 1)。ほかのキーは無視する。s = sin(player.yaw)、c = cos(player.yaw) として、dx = (-s * f + c * r) * 4.0 * dt、dz = (-c * f - s * r) * 4.0 * dt。x は player.x + dx を、z は player.z + dz を、それぞれ -9.5 以上 9.5 以下に収めた値。yaw と pitch はそのまま。斜めに歩くときも正規化しない。新しい Player を返す。"
+    }
+   },
+   "examples": [
+    {
+     "id": "M1.E1",
+     "steps": [
+      {
+       "let": "r",
+       "call": "look",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "dx": 100.0,
+        "dy": 0.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 0.0,
+        "yaw": -0.25,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E2",
+     "steps": [
+      {
+       "let": "r",
+       "call": "look",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "dx": -40.0,
+        "dy": -80.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 0.0,
+        "yaw": 0.1,
+        "pitch": 0.2
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E3",
+     "steps": [
+      {
+       "let": "r",
+       "call": "look",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 1.4
+        },
+        "dx": 0.0,
+        "dy": -100.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 0.0,
+        "yaw": 0.0,
+        "pitch": 1.5
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E4",
+     "steps": [
+      {
+       "let": "r",
+       "call": "look",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": -1.4
+        },
+        "dx": 0.0,
+        "dy": 100.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 0.0,
+        "yaw": 0.0,
+        "pitch": -1.5
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E5",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [
+         "w"
+        ],
+        "dt": 0.5
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": -2.0,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E6",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [
+         "s"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 1.0,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E7",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [
+         "a"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": -1.0,
+        "z": 0.0,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E8",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [
+         "w",
+         "d"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 1.0,
+        "z": -1.0,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E9",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [
+         "w",
+         "s",
+         "shift"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 0.0,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E10",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 0.0,
+        "z": 0.0,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E11",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 1.5707963267948966,
+         "pitch": 0.0
+        },
+        "keys": [
+         "w"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": -1.0,
+        "z": -6.123233995736766e-17,
+        "yaw": 1.5707963267948966,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E12",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 0.0,
+         "z": 0.0,
+         "yaw": 1.5707963267948966,
+         "pitch": 0.0
+        },
+        "keys": [
+         "d"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 6.123233995736766e-17,
+        "z": -1.0,
+        "yaw": 1.5707963267948966,
+        "pitch": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M1.E13",
+     "steps": [
+      {
+       "let": "r",
+       "call": "walk",
+       "args": {
+        "player": {
+         "x": 9.0,
+         "z": -9.25,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "keys": [
+         "w",
+         "d"
+        ],
+        "dt": 0.25
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       {
+        "x": 9.5,
+        "z": -9.5,
+        "yaw": 0.0,
+        "pitch": 0.0
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "M2",
+   "name": "pickup",
+   "kind": "pure",
+   "depends_on": [],
+   "functions": {
+    "collect": {
+     "params": [
+      {
+       "name": "coins",
+       "type": "list<Coin>"
+      },
+      {
+       "name": "x",
+       "type": "float"
+      },
+      {
+       "name": "z",
+       "type": "float"
+      }
+     ],
+     "returns": "list<Coin>",
+     "doc": "coins と同じ順で、同じ数の新しい Coin のリストを返す。まだ taken でないコインのうち (coin.x - x)^2 + (coin.z - z)^2 <= 1.0 のものは taken を true にし、ほかはそのまま写す。"
+    },
+    "taken_count": {
+     "params": [
+      {
+       "name": "coins",
+       "type": "list<Coin>"
+      }
+     ],
+     "returns": "int",
+     "doc": "taken が true のコインの数を返す。"
+    }
+   },
+   "examples": [
+    {
+     "id": "M2.E1",
+     "steps": [
+      {
+       "let": "r",
+       "call": "collect",
+       "args": {
+        "coins": [
+         {
+          "id": "a",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "b",
+          "x": 3.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c",
+          "x": 0.0,
+          "z": 1.0,
+          "taken": true
+         }
+        ],
+        "x": 0.5,
+        "z": 0.5
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       [
+        {
+         "id": "a",
+         "x": 0.0,
+         "z": 0.0,
+         "taken": true
+        },
+        {
+         "id": "b",
+         "x": 3.0,
+         "z": 0.0,
+         "taken": false
+        },
+        {
+         "id": "c",
+         "x": 0.0,
+         "z": 1.0,
+         "taken": true
+        }
+       ]
+      ]
+     }
+    },
+    {
+     "id": "M2.E2",
+     "steps": [
+      {
+       "let": "r",
+       "call": "collect",
+       "args": {
+        "coins": [
+         {
+          "id": "a",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "b",
+          "x": 3.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c",
+          "x": 0.0,
+          "z": 1.0,
+          "taken": true
+         }
+        ],
+        "x": 2.0,
+        "z": 0.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       [
+        {
+         "id": "a",
+         "x": 0.0,
+         "z": 0.0,
+         "taken": false
+        },
+        {
+         "id": "b",
+         "x": 3.0,
+         "z": 0.0,
+         "taken": true
+        },
+        {
+         "id": "c",
+         "x": 0.0,
+         "z": 1.0,
+         "taken": true
+        }
+       ]
+      ]
+     }
+    },
+    {
+     "id": "M2.E3",
+     "steps": [
+      {
+       "let": "r",
+       "call": "collect",
+       "args": {
+        "coins": [
+         {
+          "id": "a",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "b",
+          "x": 3.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c",
+          "x": 0.0,
+          "z": 1.0,
+          "taken": true
+         }
+        ],
+        "x": 1.5,
+        "z": 0.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       [
+        {
+         "id": "a",
+         "x": 0.0,
+         "z": 0.0,
+         "taken": false
+        },
+        {
+         "id": "b",
+         "x": 3.0,
+         "z": 0.0,
+         "taken": false
+        },
+        {
+         "id": "c",
+         "x": 0.0,
+         "z": 1.0,
+         "taken": true
+        }
+       ]
+      ]
+     }
+    },
+    {
+     "id": "M2.E4",
+     "steps": [
+      {
+       "let": "r",
+       "call": "collect",
+       "args": {
+        "coins": [],
+        "x": 0.0,
+        "z": 0.0
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       []
+      ]
+     }
+    },
+    {
+     "id": "M2.E5",
+     "steps": [
+      {
+       "let": "r",
+       "call": "taken_count",
+       "args": {
+        "coins": [
+         {
+          "id": "a",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "b",
+          "x": 3.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c",
+          "x": 0.0,
+          "z": 1.0,
+          "taken": true
+         }
+        ]
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       1
+      ]
+     }
+    },
+    {
+     "id": "M2.E6",
+     "steps": [
+      {
+       "let": "r",
+       "call": "taken_count",
+       "args": {
+        "coins": []
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "r"
+      ],
+      "equals": [
+       0
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "M3",
+   "name": "layout",
+   "kind": "pure",
+   "depends_on": [],
+   "functions": {
+    "new_world": {
+     "params": [
+      {
+       "name": "now",
+       "type": "float"
+      }
+     ],
+     "returns": "World",
+     "doc": "player は x 0.0、z 8.0、yaw 0.0、pitch 0.0。coins は順に c1 (x 0.0, z 0.0)、c2 (-6.0, -6.0)、c3 (6.0, -6.0)、c4 (-6.0, 4.0)、c5 (6.0, 4.0)、どれも taken false。last は now。"
+    }
+   },
+   "examples": [
+    {
+     "id": "M3.E1",
+     "steps": [
+      {
+       "let": "w",
+       "call": "new_world",
+       "args": {
+        "now": 7.5
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "w"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": 0.0,
+         "z": 8.0,
+         "yaw": 0.0,
+         "pitch": 0.0
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": false
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 7.5
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "M4",
+   "name": "scene",
+   "kind": "pure",
+   "depends_on": [
+    "M2"
+   ],
+   "functions": {
+    "build": {
+     "params": [
+      {
+       "name": "world",
+       "type": "World"
+      }
+     ],
+     "returns": "Scene",
+     "doc": "p = world.player、n = pickup.taken_count(world.coins)、total = world.coins の数。title は \"コイン集め\"。camera は position (p.x, 1.6, p.z)、yaw p.yaw、pitch p.pitch、fov 70.0。objects は順に: floor (plane, position (0,0,0), size (20,0,20), color \"#6b8f5e\")、wall-n (box, (0,1.5,-10), size (20,3,0.2))、wall-s (box, (0,1.5,10), size (20,3,0.2))、wall-e (box, (10,1.5,0), size (0.2,3,20))、wall-w (box, (-10,1.5,0), size (0.2,3,20))（壁の color はどれも \"#c9b79c\"）、そして world.coins のうち taken でないものを順に、id \"coin-\" + coin.id、sphere、position (coin.x, 0.5, coin.z)、size (0.5,0.5,0.5)、color \"#f2c14e\"。rotation_y はすべて 0.0。数値はすべて float。hud は順に: heading \"コイン集め\"、text \"コイン \" + n + \" / \" + total（整数をそのまま 10 進で）、そして n == total なら text \"ぜんぶ集めた！\" と button \"もう一度\"（action \"restart\"）、そうでなければ text \"WASD で歩く・クリックで見回す\"。button 以外の action は \"\"、enabled はすべて true。"
+    }
+   },
+   "examples": [
+    {
+     "id": "M4.E1",
+     "steps": [
+      {
+       "let": "v",
+       "call": "build",
+       "args": {
+        "world": {
+         "player": {
+          "x": 0.0,
+          "z": 8.0,
+          "yaw": 0.0,
+          "pitch": 0.0
+         },
+         "coins": [
+          {
+           "id": "c1",
+           "x": 0.0,
+           "z": 0.0,
+           "taken": false
+          },
+          {
+           "id": "c2",
+           "x": -6.0,
+           "z": -6.0,
+           "taken": false
+          },
+          {
+           "id": "c3",
+           "x": 6.0,
+           "z": -6.0,
+           "taken": false
+          },
+          {
+           "id": "c4",
+           "x": -6.0,
+           "z": 4.0,
+           "taken": false
+          },
+          {
+           "id": "c5",
+           "x": 6.0,
+           "z": 4.0,
+           "taken": false
+          }
+         ],
+         "last": 0.0
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "v"
+      ],
+      "equals": [
+       {
+        "title": "コイン集め",
+        "camera": {
+         "position": {
+          "x": 0.0,
+          "y": 1.6,
+          "z": 8.0
+         },
+         "yaw": 0.0,
+         "pitch": 0.0,
+         "fov": 70.0
+        },
+        "objects": [
+         {
+          "id": "floor",
+          "shape": "plane",
+          "position": {
+           "x": 0.0,
+           "y": 0.0,
+           "z": 0.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 0.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#6b8f5e"
+         },
+         {
+          "id": "wall-n",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": -10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-s",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": 10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-e",
+          "shape": "box",
+          "position": {
+           "x": 10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-w",
+          "shape": "box",
+          "position": {
+           "x": -10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "coin-c1",
+          "shape": "sphere",
+          "position": {
+           "x": 0.0,
+           "y": 0.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c2",
+          "shape": "sphere",
+          "position": {
+           "x": -6.0,
+           "y": 0.5,
+           "z": -6.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c3",
+          "shape": "sphere",
+          "position": {
+           "x": 6.0,
+           "y": 0.5,
+           "z": -6.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c4",
+          "shape": "sphere",
+          "position": {
+           "x": -6.0,
+           "y": 0.5,
+           "z": 4.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c5",
+          "shape": "sphere",
+          "position": {
+           "x": 6.0,
+           "y": 0.5,
+           "z": 4.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         }
+        ],
+        "hud": [
+         {
+          "kind": "heading",
+          "text": "コイン集め",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "コイン 0 / 5",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "WASD で歩く・クリックで見回す",
+          "action": "",
+          "enabled": true
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "M4.E2",
+     "steps": [
+      {
+       "let": "v",
+       "call": "build",
+       "args": {
+        "world": {
+         "player": {
+          "x": -2.0,
+          "z": 3.0,
+          "yaw": 0.5,
+          "pitch": -0.25
+         },
+         "coins": [
+          {
+           "id": "c1",
+           "x": 0.0,
+           "z": 0.0,
+           "taken": false
+          },
+          {
+           "id": "c2",
+           "x": -6.0,
+           "z": -6.0,
+           "taken": true
+          },
+          {
+           "id": "c3",
+           "x": 6.0,
+           "z": -6.0,
+           "taken": false
+          },
+          {
+           "id": "c4",
+           "x": -6.0,
+           "z": 4.0,
+           "taken": true
+          },
+          {
+           "id": "c5",
+           "x": 6.0,
+           "z": 4.0,
+           "taken": false
+          }
+         ],
+         "last": 0.0
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "v"
+      ],
+      "equals": [
+       {
+        "title": "コイン集め",
+        "camera": {
+         "position": {
+          "x": -2.0,
+          "y": 1.6,
+          "z": 3.0
+         },
+         "yaw": 0.5,
+         "pitch": -0.25,
+         "fov": 70.0
+        },
+        "objects": [
+         {
+          "id": "floor",
+          "shape": "plane",
+          "position": {
+           "x": 0.0,
+           "y": 0.0,
+           "z": 0.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 0.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#6b8f5e"
+         },
+         {
+          "id": "wall-n",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": -10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-s",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": 10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-e",
+          "shape": "box",
+          "position": {
+           "x": 10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-w",
+          "shape": "box",
+          "position": {
+           "x": -10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "coin-c1",
+          "shape": "sphere",
+          "position": {
+           "x": 0.0,
+           "y": 0.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c3",
+          "shape": "sphere",
+          "position": {
+           "x": 6.0,
+           "y": 0.5,
+           "z": -6.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         },
+         {
+          "id": "coin-c5",
+          "shape": "sphere",
+          "position": {
+           "x": 6.0,
+           "y": 0.5,
+           "z": 4.0
+          },
+          "size": {
+           "x": 0.5,
+           "y": 0.5,
+           "z": 0.5
+          },
+          "rotation_y": 0.0,
+          "color": "#f2c14e"
+         }
+        ],
+        "hud": [
+         {
+          "kind": "heading",
+          "text": "コイン集め",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "コイン 2 / 5",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "WASD で歩く・クリックで見回す",
+          "action": "",
+          "enabled": true
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "M4.E3",
+     "steps": [
+      {
+       "let": "v",
+       "call": "build",
+       "args": {
+        "world": {
+         "player": {
+          "x": 0.0,
+          "z": 0.5,
+          "yaw": 0.0,
+          "pitch": 0.0
+         },
+         "coins": [
+          {
+           "id": "c1",
+           "x": 0.0,
+           "z": 0.0,
+           "taken": true
+          },
+          {
+           "id": "c2",
+           "x": -6.0,
+           "z": -6.0,
+           "taken": true
+          },
+          {
+           "id": "c3",
+           "x": 6.0,
+           "z": -6.0,
+           "taken": true
+          },
+          {
+           "id": "c4",
+           "x": -6.0,
+           "z": 4.0,
+           "taken": true
+          },
+          {
+           "id": "c5",
+           "x": 6.0,
+           "z": 4.0,
+           "taken": true
+          }
+         ],
+         "last": 0.25
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "v"
+      ],
+      "equals": [
+       {
+        "title": "コイン集め",
+        "camera": {
+         "position": {
+          "x": 0.0,
+          "y": 1.6,
+          "z": 0.5
+         },
+         "yaw": 0.0,
+         "pitch": 0.0,
+         "fov": 70.0
+        },
+        "objects": [
+         {
+          "id": "floor",
+          "shape": "plane",
+          "position": {
+           "x": 0.0,
+           "y": 0.0,
+           "z": 0.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 0.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#6b8f5e"
+         },
+         {
+          "id": "wall-n",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": -10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-s",
+          "shape": "box",
+          "position": {
+           "x": 0.0,
+           "y": 1.5,
+           "z": 10.0
+          },
+          "size": {
+           "x": 20.0,
+           "y": 3.0,
+           "z": 0.2
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-e",
+          "shape": "box",
+          "position": {
+           "x": 10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         },
+         {
+          "id": "wall-w",
+          "shape": "box",
+          "position": {
+           "x": -10.0,
+           "y": 1.5,
+           "z": 0.0
+          },
+          "size": {
+           "x": 0.2,
+           "y": 3.0,
+           "z": 20.0
+          },
+          "rotation_y": 0.0,
+          "color": "#c9b79c"
+         }
+        ],
+        "hud": [
+         {
+          "kind": "heading",
+          "text": "コイン集め",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "コイン 5 / 5",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "text",
+          "text": "ぜんぶ集めた！",
+          "action": "",
+          "enabled": true
+         },
+         {
+          "kind": "button",
+          "text": "もう一度",
+          "action": "restart",
+          "enabled": true
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "M5",
+   "name": "save",
+   "kind": "pure",
+   "depends_on": [],
+   "functions": {
+    "encode": {
+     "params": [
+      {
+       "name": "world",
+       "type": "World"
+      }
+     ],
+     "returns": "string",
+     "doc": "world を JSON にした文字列を返す: {\"player\": {x, z, yaw, pitch}, \"coins\": [{id, x, z, taken}, ...], \"last\": last}。"
+    },
+    "decode": {
+     "params": [
+      {
+       "name": "text",
+       "type": "string"
+      }
+     ],
+     "returns": "World",
+     "raises": [
+      "CorruptSave"
+     ],
+     "doc": "text を JSON として読む。読めない、または player が x/z/yaw/pitch を数で持つオブジェクトでない、coins が配列でない、そのどれかの要素が id 文字列・x/z 数・taken 真偽値を持たない、last が数でない、のどれかなら CorruptSave を投げる。そうでなければ読んだ値から新しい World を作って返す（余分なキーは捨てる）。"
+    }
+   },
+   "examples": [
+    {
+     "id": "M5.E1",
+     "steps": [
+      {
+       "let": "t",
+       "call": "encode",
+       "args": {
+        "world": {
+         "player": {
+          "x": -2.0,
+          "z": 3.0,
+          "yaw": 0.5,
+          "pitch": -0.25
+         },
+         "coins": [
+          {
+           "id": "c1",
+           "x": 0.0,
+           "z": 0.0,
+           "taken": false
+          },
+          {
+           "id": "c2",
+           "x": -6.0,
+           "z": -6.0,
+           "taken": true
+          },
+          {
+           "id": "c3",
+           "x": 6.0,
+           "z": -6.0,
+           "taken": false
+          },
+          {
+           "id": "c4",
+           "x": -6.0,
+           "z": 4.0,
+           "taken": true
+          },
+          {
+           "id": "c5",
+           "x": 6.0,
+           "z": 4.0,
+           "taken": false
+          }
+         ],
+         "last": 0.0
+        }
+       }
+      },
+      {
+       "let": "w",
+       "call": "decode",
+       "args": {
+        "text": {
+         "$": "t"
+        }
+       }
+      }
+     ],
+     "then": {
+      "observe": [
+       "w"
+      ],
+      "equals": [
+       {
+        "player": {
+         "x": -2.0,
+         "z": 3.0,
+         "yaw": 0.5,
+         "pitch": -0.25
+        },
+        "coins": [
+         {
+          "id": "c1",
+          "x": 0.0,
+          "z": 0.0,
+          "taken": false
+         },
+         {
+          "id": "c2",
+          "x": -6.0,
+          "z": -6.0,
+          "taken": true
+         },
+         {
+          "id": "c3",
+          "x": 6.0,
+          "z": -6.0,
+          "taken": false
+         },
+         {
+          "id": "c4",
+          "x": -6.0,
+          "z": 4.0,
+          "taken": true
+         },
+         {
+          "id": "c5",
+          "x": 6.0,
+          "z": 4.0,
+          "taken": false
+         }
+        ],
+        "last": 0.0
+       }
+      ]
+     }
+    },
+    {
+     "id": "M5.E2",
+     "steps": [
+      {
+       "let": "w",
+       "call": "decode",
+       "args": {
+        "text": "{"
+       }
+      }
+     ],
+     "then": {
+      "raises": "CorruptSave"
+     }
+    },
+    {
+     "id": "M5.E3",
+     "steps": [
+      {
+       "let": "w",
+       "call": "decode",
+       "args": {
+        "text": "null"
+       }
+      }
+     ],
+     "then": {
+      "raises": "CorruptSave"
+     }
+    },
+    {
+     "id": "M5.E4",
+     "steps": [
+      {
+       "let": "w",
+       "call": "decode",
+       "args": {
+        "text": "{\"player\": 1}"
+       }
+      }
+     ],
+     "then": {
+      "raises": "CorruptSave"
+     }
+    }
+   ]
+  },
+  {
+   "id": "M6",
+   "name": "game",
+   "kind": "assembly",
+   "depends_on": [
+    "M1",
+    "M2",
+    "M3",
+    "M4",
+    "M5"
+   ],
+   "functions": {
+    "start": {
+     "params": [
+      {
+       "name": "now",
+       "type": "float"
+      },
+      {
+       "name": "saved",
+       "type": "optional<string>"
+      }
+     ],
+     "returns": "World",
+     "raises": [
+      "CorruptSave"
+     ],
+     "doc": "saved が null なら layout.new_world(now) を返す。そうでなければ w = save.decode(saved)（CorruptSave はそのまま投げる）として、w の last だけを now に替えた World を返す。"
+    },
+    "step": {
+     "params": [
+      {
+       "name": "state",
+       "type": "World"
+      },
+      {
+       "name": "now",
+       "type": "float"
+      },
+      {
+       "name": "input",
+       "type": "Input"
+      }
+     ],
+     "returns": "World",
+     "doc": "dt = now - state.last を 0.0 以上 0.25 以下に収める。p = state.player。input.locked なら p = motion.look(p, input.mouse_dx, input.mouse_dy)。p = motion.walk(p, input.keys, dt)。coins = pickup.collect(state.coins, p.x, p.z)。{player: p, coins, last: now} を返す。"
+    },
+    "act": {
+     "params": [
+      {
+       "name": "state",
+       "type": "World"
+      },
+      {
+       "name": "action",
+       "type": "string"
+      },
+      {
+       "name": "now",
+       "type": "float"
+      }
+     ],
+     "returns": "World",
+     "doc": "action が \"restart\" なら layout.new_world(now) を返す。それ以外（\"click\" を含む）なら state をそのまま返す。"
+    },
+    "screen": {
+     "params": [
+      {
+       "name": "state",
+       "type": "World"
+      }
+     ],
+     "returns": "Scene",
+     "doc": "scene.build(state) を返す。"
+    },
+    "save": {
+     "params": [
+      {
+       "name": "state",
+       "type": "World"
+      }
+     ],
+     "returns": "string",
+     "doc": "save.encode(state) を返す。"
+    }
+   },
+   "examples": []
+  }
+ ],
+ "shell": {
+  "calls": "M6",
+  "note": "定義の shell.duties を満たす。localStorage と時計と入力と WebGL はここにしか無い。中身は人間のレビューで確かめる"
+ }
+}

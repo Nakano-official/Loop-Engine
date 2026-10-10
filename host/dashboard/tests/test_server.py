@@ -149,7 +149,19 @@ class CreateAppTest(DashboardTest):
         data = json.loads(self.request("GET", "/api/apps/todo")[2])
         self.assertEqual(data["requirements"], body["requirements"])
 
+    def test_the_platform_is_chosen_from_those_that_exist(self):
+        session = json.loads(self.request("GET", "/api/session")[2])
+        self.assertIn("browser-3d", session["platforms"])
+        body = {"name": "walk", "title": "歩く", "platform": "browser-3d", "requirements": "- 部屋を歩く\n"}
+        self.assertEqual(self.request("POST", "/api/apps", body=body)[0], 201)
+        self.assertEqual(self.store.app("walk").platform(), "browser-3d")
+        # Without one, an app is browser-dom, as every app was before.
+        body = {"name": "plain", "title": "t", "requirements": "- r\n"}
+        self.assertEqual(self.request("POST", "/api/apps", body=body)[0], 201)
+        self.assertEqual(self.store.app("plain").platform(), "browser-dom")
+
     def test_a_bad_name_or_empty_requirements_is_refused(self):
         for body in [{"name": "../x", "title": "t", "requirements": "r"},
-                     {"name": "ok", "title": "t", "requirements": "   "}]:
+                     {"name": "ok", "title": "t", "requirements": "   "},
+                     {"name": "ok", "title": "t", "requirements": "r", "platform": "android"}]:
             self.assertEqual(self.request("POST", "/api/apps", body=body)[0], 400)

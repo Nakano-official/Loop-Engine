@@ -50,7 +50,22 @@ TOOLS = {
     "rolldown": os.environ.get("LOOP_ROLLDOWN", "/srv/loop/node/node_modules/.bin/rolldown"),
     "node": os.environ.get("LOOP_NODE", "/usr/bin/node"),
     "happy-dom": os.environ.get("LOOP_HAPPY_DOM", "/srv/loop/node/node_modules/happy-dom/lib/index.js"),
+    "node_modules": os.environ.get("LOOP_NODE_MODULES", "/srv/loop/node/node_modules"),
 }
+
+
+def _link_modules(ws: Path) -> None:
+    """ws/node_modules -> the frozen toolchain's. A junction on Windows, which
+    needs no privilege (a symlink would); a symlink elsewhere."""
+    link = ws / "node_modules"
+    if link.exists() or link.is_symlink():
+        return
+    target = TOOLS["node_modules"]
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        os.symlink(target, link, target_is_directory=True)
 
 Runner = Callable[[Path, list], dict]   # (workspace, argv) -> {"records", "output"}
 
@@ -260,16 +275,24 @@ class Window:
         shutil.copyfile(plat / "shell.ts", ws / "shell.ts")
         title = d.definition.get("title", "app")
         key = "loop:" + title
+        # The shell's handle goes on window.__loop: the boot check drives frames
+        # through it (browser-3d). For browser-dom mount returns nothing.
         (ws / "entry.ts").write_text(
             f'import * as app from "./app/{module}";\n'
             'import { mount } from "./shell";\n'
-            f'mount(app as any, {json.dumps(key, ensure_ascii=False)}, document.getElementById("app")!);\n',
+            f'(window as any).__loop = mount(app as any, {json.dumps(key, ensure_ascii=False)}, '
+            'document.getElementById("app")!);\n',
             encoding="utf-8")
+        # A shell may import a library from the frozen toolchain (browser-3d:
+        # three). The bundler resolves bare imports from the workspace upward,
+        # so the workspace gets a link to the toolchain's node_modules --
+        # read-only for everyone, like the toolchain itself.
+        _link_modules(ws)
 
         out = tool_out(self.tool) or ws / ".loop"
         bundle = out / "app.js"
         bundle.unlink(missing_ok=True)
-        code, output, _ = self.tool(ws, [TOOLS["rolldown"], "entry.ts", "--format", "iife",
+        code, output, _ = self.tool(ws, [TOOLS["rolldown"], "entry.ts", "--format", "iife", "--minify",
                                          "--file", str(bundle)])
         if code != 0 or not bundle.exists():
             return {"error": "the bundler failed", "output": output}

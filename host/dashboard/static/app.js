@@ -148,16 +148,20 @@ function drawCreate() {
   const name = h("input", { placeholder: "idlegame2（小文字・数字・- _）", pattern: "[a-z0-9][a-z0-9_-]*" });
   const title = h("input", { placeholder: "放置ゲーム" });
   const req = h("textarea", { class: "req", placeholder: "作りたいアプリの要件を書きます。箇条書きで、できること・画面に出すもの・保存など。" });
+  const PLATFORM_LABEL = { "browser-dom": "画面（ボタンと文字）", "browser-3d": "3D（歩いて見回す）" };
+  const platform = h("select", {}, ...(session.platforms || ["browser-dom"]).map((p) =>
+    h("option", { value: p }, `${PLATFORM_LABEL[p] || p} — ${p}`)));
   const msg = h("p", { class: "note" });
   box.replaceChildren(
     h("h2", {}, "新しいアプリ"),
     h("p", { class: "muted" }, "要件から、definer が定義を、designer が設計を書き、ローカルのモデルが実装して、開けば動く1つの HTML を出します。"),
-    h("label", {}, "名前", name), h("label", {}, "題名", title), h("label", {}, "要件", req),
+    h("label", {}, "名前", name), h("label", {}, "題名", title), h("label", {}, "形", platform),
+    h("label", {}, "要件", req),
     h("div", { class: "row" }, h("button", {
       class: "act primary",
       onclick: async () => {
         try {
-          const made = await post("/api/apps", { name: name.value.trim(), title: title.value.trim(), requirements: req.value });
+          const made = await post("/api/apps", { name: name.value.trim(), title: title.value.trim(), platform: platform.value, requirements: req.value });
           selected = { app: made.name, run: null };
           drawnFrom = "";
           refresh();

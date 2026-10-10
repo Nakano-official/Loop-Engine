@@ -186,6 +186,42 @@
 happy-dom で一度開いて、何かが描かれること・押せるボタンを全部押しても壊れないことを確かめる（`boot.mjs`）。
 どちらも exec として走る。見た目と操作感は人間が開いて確かめる。
 
+### browser-3d（固定、2026-10-10）
+
+正本は `adapters/platforms/browser-3d/platform.json`。three.js 0.170.0（`provision/35-node.sh` で固定）の
+シーンを汎用シェルが描く。アプリは毎フレーム**シーンの記述（データ）**を返し、three.js には触れない。
+関門が確かめることは browser-dom と同じ形で、型と関数が違う:
+
+- 型 `Vec3 {x, y, z}`、`Camera {position, yaw, pitch, fov}`、`Shape`（enum: `box`・`sphere`・`plane`・`cylinder`）、
+  `Object3D {id, shape, position, size, rotation_y, color}`、`NodeKind`・`Node`（browser-dom と同じ）、
+  `Scene {title, camera, objects: list<Object3D>, hud: list<Node>}`、`Input {keys: list<string>, mouse_dx, mouse_dy, locked}`
+
+| 関数 | シェルがいつ呼ぶか |
+|---|---|
+| `start(now, saved) -> $State` | browser-dom と同じ |
+| `step(state, now, input: Input) -> $State` | **毎フレーム**（約60回/秒）。押されているキーと、前のフレームからのマウスの移動量。投げたら状態はそのままで、そのメッセージを一度だけ console に出す（起動確認はそれで落ちる） |
+| `act(state, action, now) -> $State` | シーンのクリック（`"click"`。同時にポインタをロックする）と HUD のボタン。投げたら状態はそのまま |
+| `screen(state) -> Scene` | 毎フレーム |
+| `save(state) -> string` | 1秒ごとと、act のたび |
+
+約束（`platform.json` の `conventions`。definer のブリーフにもそのまま載る）: 長さはメートル、角度はラジアン、
+ただし `fov` は**縦の視野角を度で**。y が上。yaw 0 で -z を向き、yaw が増えると左（上から見て反時計回り）を向く。
+pitch が増えると上を向く。向いている方向は (-sin yaw, 0, -cos yaw)、右は (cos yaw, 0, -sin yaw)。
+`size` は箱・板・円柱では幅・高さ・奥行き、球では `size.x` が直径。`plane` は x-z に水平に置く。色は `"#rrggbb"`。
+キーは `KeyboardEvent.key` の小文字。マウスの移動量はロック中だけ 0 以外。光・影・空はシェルが持つ。
+シェルは描く前にシーンを確かめる（id の重複、有限でない数、範囲外の fov、色の形）。
+
+**フレームの速さに依存させない**のはアプリの側: 状態に前回の `now` を持ち、`速さ × (now - 前回)` だけ動かす。
+例で確かめられるのはこの形にしたからで、`step` を入力つきで呼ぶ例を定義に書ける。
+
+起動確認（`boot.mjs`）: happy-dom には WebGL が無いので描画はしない。そのかわりシェルの取っ手
+（`window.__loop`）から300フレームを決まった入力（前進のあと右へ、マウスを動かし、時々クリック）で回し、
+例外が無いこと・シーンが毎回確かめを通ること・カメラが動いたことを見る。本物の描画は人間が開いて確かめる
+（見本 `coinroom` は headless Edge でも描けることを確かめた）。
+
+見本: `docs/formats/examples/coinroom.{definition,design}.json`（部屋を歩いてコインを集める。6モジュール）と
+その正しい実装 `adapters/typescript/tests/coinroom/`。
+
 ---
 
 ## 7. 出口の関門

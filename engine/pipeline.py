@@ -196,6 +196,17 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
 # is told which module and why -- ids and the kind of reason, never what the
 # implementation returned -- and the design is written again.
 
+def _on_platform(definition, platform: str) -> list:
+    """The definition gate, and the platform the person chose: a definition
+    for another platform is refused like any other finding."""
+    findings = artifacts.check_definition(definition)
+    got = definition.get("shell", {}).get("platform") if isinstance(definition, dict) else None
+    if got != platform:
+        findings.append(artifacts.Finding(artifacts.DEFINITION, "shell.platform",
+                                          f"must be {platform!r}, the platform this app is built for (got {got!r})"))
+    return findings
+
+
 def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, rounds: int, log) -> tuple:
     """Ask a role for one JSON file until its gate passes. -> (doc, findings)"""
     findings: list[str] = []
@@ -222,7 +233,8 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
                           solver: Solver = "box", max_attempts: int = 3, gate_rounds: int = 3,
                           redesigns: int = 2, ledger: Ledger | None = None,
                           output: Path | str | None = None, build: bool = True,
-                          should_stop: Callable[[], bool] = lambda: False) -> Outcome:
+                          should_stop: Callable[[], bool] = lambda: False,
+                          platform: str = "browser-dom") -> Outcome:
     log = ledger or Ledger(None)
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -230,8 +242,8 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
     # 1. The definition, by the definer, held at the definition gate.
     definition, findings = _write_by_role(
         window, f"{ws}-def", "definer", "definition.json",
-        lambda f: upstream_briefs.define(requirements, findings=f),
-        artifacts.check_definition, gate_rounds, log)
+        lambda f: upstream_briefs.define(requirements, platform=platform, findings=f),
+        lambda doc: _on_platform(doc, platform), gate_rounds, log)
     if findings:
         return Outcome(artifacts.DEFINITION, "the definition did not pass its gate",
                        detail={"findings": findings})

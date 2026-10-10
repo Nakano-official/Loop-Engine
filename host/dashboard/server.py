@@ -92,7 +92,8 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                     # The page is told what it may do rather than finding out by
                     # being refused: a button that cannot work should not be there.
                     self._json({"token": token, "scope": scope, "user": user,
-                                "can_start": scope == LOCAL, "can_approve": scope == LOCAL})
+                                "can_start": scope == LOCAL, "can_approve": scope == LOCAL,
+                                "platforms": apps.PLATFORMS})
                     return
                 if path == "/api/apps":
                     self._json({"apps": [a.summary() for a in store.apps()],
@@ -151,7 +152,8 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                     if scope != LOCAL:
                         raise PermissionError("an app is created at this machine")
                     app = store.create_from_requirements(str(body.get("name", "")), str(body.get("title", "")),
-                                                         str(body.get("requirements", "")))
+                                                         str(body.get("requirements", "")),
+                                                         platform=str(body.get("platform", "browser-dom")))
                     self._json({"name": app.name}, HTTPStatus.CREATED)
                     return
                 if path == "/api/runs/start":
