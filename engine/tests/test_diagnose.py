@@ -1,6 +1,6 @@
 """diagnose, fed real records: each case builds a Python workspace for the idle
 game, runs the generated tests the way exec would, and hands the record to
-diagnose. The verdict must be the one REDESIGN 4's table gives."""
+diagnose. The verdict must be the one DESIGN 5's table gives."""
 import json
 import os
 import subprocess

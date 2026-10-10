@@ -1,4 +1,4 @@
-"""Where a failure points (REDESIGN 4). A part, not a flow: records in, a
+"""Where a failure points (DESIGN 5). A part, not a flow: records in, a
 verdict out. No model, no state, no I/O -- so it is fixed by its tests.
 
     red_gate(design, module, run)              after generating tests, against stubs
@@ -32,7 +32,7 @@ class Verdict:
     stage: str                   # GREEN, RED, or the stage at fault
     reason: str
     # For the implementation only: what failed, with expected and actual
-    # values. REDESIGN 4: the design is never shown what an implementation
+    # values. DESIGN 5: the design is never shown what an implementation
     # returned, or it would bend its examples to match.
     feedback: tuple = ()
     # Facts about one attempt, kept for exhausted().
@@ -125,7 +125,7 @@ def attempt(design, module: dict, run: dict, green: list[dict]) -> Verdict:
 def exhausted(design, module: dict, attempts: list[Verdict]) -> Verdict:
     """Every attempt failed. At this point the tests are the design's examples,
     transcribed and verified against a stub, so what remains is the design's
-    (REDESIGN 4, "使い切ったら、なぜ設計なのか")."""
+    (DESIGN 5, "使い切ったら、なぜ設計なのか")."""
     failed = sorted({i for a in attempts for i in a.facts.get("failed", [])})
     facts = {"failed": failed}
     if module is design.assembly:

@@ -3,7 +3,7 @@
 solver（実装する役）にローカルモデル（Qwen3.5-9B / nonthinking）を据えるための手順書。
 **Claude を介さずに最後まで進める**ことを目的に書いてある。ここは操作だけ。
 
-> **solver はローカルモデルだけ**（REDESIGN §10 決定 11）。solver の通信は loopback の 8080 だけに
+> **solver はローカルモデルだけ**（DECISIONS 決定 11）。solver の通信は loopback の 8080 だけに
 > 閉じてある（`provision/roles.json`）。ループからは、窓口の `attempt` が `solver-run` を通して呼ぶ。
 
 ---

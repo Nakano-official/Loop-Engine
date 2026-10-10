@@ -78,7 +78,7 @@ cd "$OUT"
 #     the brief is the only input.
 # --allowedTools
 #     from the table. Read, Write, Edit at most: no Bash and no WebFetch, which
-#     is why the Claude roles need no egress list (REDESIGN 7-3). Add either
+#     is why the Claude roles need no egress list (SYSTEM 8-3). Add either
 #     here and that line has to be revisited.
 set +e
 timeout --kill-after=30 "$LIMIT" claude -p \

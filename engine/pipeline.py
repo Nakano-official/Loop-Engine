@@ -1,4 +1,4 @@
-"""The loop's flow, top to bottom (REDESIGN 6: the flow lives in this one file).
+"""The loop's flow, top to bottom (SYSTEM 6: the flow lives in this one file).
 
 Everything this calls is a part with no flow of its own: artifacts (the exit
 gates), diagnose (where a failure points), a window (prepare-tests / verify /
@@ -43,7 +43,7 @@ class Outcome:
 
 
 class Ledger:
-    """One JSON line per event, on the host (REDESIGN 6: the ledger is the host's)."""
+    """One JSON line per event, on the host (SYSTEM 7: the ledger is the host's)."""
 
     def __init__(self, path: Path | None):
         self.path = Path(path) if path else None
@@ -164,7 +164,7 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
     if not build:
         return Outcome("done", "every module green (no output built)", names)
 
-    # 3. The output (REDESIGN 1): one HTML file that opens as the app. The
+    # 3. The output (DESIGN 1): one HTML file that opens as the app. The
     #    window bundles it with the platform's generic shell and opens it once
     #    in happy-dom. Every example is green here, so an app that does not
     #    boot points at the shell or the bundling -- the engine.
@@ -190,7 +190,7 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
 
 # ---- from requirements -------------------------------------------------------
 #
-# The upstream stages (REDESIGN 2): requirements -> definition -> design, each
+# The upstream stages (DESIGN 2): requirements -> definition -> design, each
 # written by a role in the box (run-role) and held at the host's gate; then
 # run() above; and when run() sends the loop back to the design, the designer
 # is told which module and why -- ids and the kind of reason, never what the

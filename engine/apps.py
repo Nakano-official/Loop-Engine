@@ -4,7 +4,7 @@ flow: it reads and writes files, and decides nothing.
     apps/<name>/
       app.json            {"name", "title", "platform"} -- platform only for apps from requirements
       requirements.md     what a person asked for -- the definer's input
-      definition.json     the latest definition -- the host holds the canonical copy (REDESIGN 6)
+      definition.json     the latest definition -- the host holds the canonical copy (SYSTEM 5)
       design.json         the latest design; its "definition" field names definition.json
       decisions.jsonl     what a person decided about a run: append-only
       runs/<run>/

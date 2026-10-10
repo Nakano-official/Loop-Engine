@@ -3,10 +3,10 @@
 AI に実装を任せるループを、テストの自己申告や権限逸脱に頼らず運用するための実験的な実行基盤です。
 
 > [!IMPORTANT]
-> **作り直しの途中です（2026-10-09〜）。** 設計を [REDESIGN.md](docs/REDESIGN.md) の形に変えました。
-> 設計から、本物のローカル 9B が実装し、**開けば動くアプリ（1つの HTML）が出る**ところまで通っています。
-> ダッシュボードは `host\loop-dashboard.cmd`。
-> 続きは REDESIGN §10 の「再開点」から。
+> **作り直しの途中です（2026-10-09〜）。** 設計の本体は [DESIGN.md](docs/DESIGN.md) です。
+> 要求から、definer・designer が定義と設計を書き、本物のローカル 9B が実装し、**開けば動くアプリ（1つの HTML）が出る**
+> ところまで通っています（2D と 3D）。ダッシュボードは `host\loop-dashboard.cmd`。
+> 次にやることは [PROGRESS.md](docs/PROGRESS.md) にあります。
 
 ## 考え方
 
@@ -46,8 +46,8 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 
 | | |
 |---|---|
-| **できた** | 設計（[REDESIGN.md](docs/REDESIGN.md)、[FORMATS.md](docs/FORMATS.md)）/ サンドボックスのプロビジョン（役の表から生成・総当たりの検査・通信制限・窓口）/ 9言語のツールチェーン / Python と TypeScript のアダプタ / 出口の関門・diagnose・pipeline（`engine/`）/ **本物のローカル 9B で放置ゲームを通し、1つの HTML として出力**（`apps/idlegame`）/ 複数アプリの置き場とダッシュボード（`host/dashboard`） |
-| **次** | 上流の3段（要件から定義と設計を作る）→ ②（3D）→ ビルド・型チェック、率の測定、残りの言語 |
+| **できた** | 設計（[DESIGN.md](docs/DESIGN.md)・[SYSTEM.md](docs/SYSTEM.md)・[FORMATS.md](docs/FORMATS.md)）/ サンドボックスのプロビジョン（役の表から生成・総当たりの検査・通信制限・窓口）/ 9言語のツールチェーン / Python と TypeScript のアダプタ / 出口の関門・diagnose・pipeline（`engine/`）/ **要求から definer・designer・9B を通して1つの HTML を出力**（2D の放置ゲーム、3D の迷路）/ 複数アプリの置き場とダッシュボード（`host/dashboard`） |
+| **次** | 外側の輪: 要求分析と概念ファイル → 評価 → 続きから → 改良の輪（[DESIGN.md](docs/DESIGN.md) §4〜§6、[PROGRESS.md](docs/PROGRESS.md)） |
 
 ## これまでの実績（旧い形で得たもの）
 
@@ -67,15 +67,18 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 弱いソルバーでも結果が落ちなかったことが、「合格基準を外に置けば、満たす側の質は結果を支配しない」
 という主張の検証になりました。一方 run 8 では、範囲が広すぎると弱いモデルが落ちること、
 そして**未解決の失敗3件がどれもテスト側の誤りだった**ことが分かり、それが今回の作り直しの出発点です
-（[REDESIGN.md](docs/REDESIGN.md) §3・§4）。旧設計の文書は消しました（git の履歴（`6a03828` 以前）に残る）。
+（[DESIGN.md](docs/DESIGN.md) §3・§5）。旧設計の文書は消しました（git の履歴（`6a03828` 以前）に残る）。
 
 ## ドキュメント
 
-1. [docs/REDESIGN.md](docs/REDESIGN.md) — 何を作っているか、決まったこと、再開点
-2. [docs/FORMATS.md](docs/FORMATS.md) — 定義・設計・記録の形
-3. [provision/README.md](provision/README.md) — WSL2 サンドボックスの構築・検証手順と落とし穴
-4. [host/README.md](host/README.md) — Windows 側の起動、keepalive、SSH 設定
-5. [docs/LOCAL_SOLVER.md](docs/LOCAL_SOLVER.md) — ローカルモデルをソルバーに据える手順と失敗表
+1. [docs/DESIGN.md](docs/DESIGN.md) — 何を作っているか（設計の本体）
+2. [docs/SYSTEM.md](docs/SYSTEM.md) — どこに置き、どう守るか
+3. [docs/DECISIONS.md](docs/DECISIONS.md) — 決まったことと、決まっていないこと
+4. [docs/PROGRESS.md](docs/PROGRESS.md) — 進み具合と、次にやること
+5. [docs/FORMATS.md](docs/FORMATS.md) — 定義・設計・概念ファイル・記録の形
+6. [provision/README.md](provision/README.md) — WSL2 サンドボックスの構築・検証手順と落とし穴
+7. [host/README.md](host/README.md) — Windows 側の起動、keepalive、SSH 設定
+8. [docs/LOCAL_SOLVER.md](docs/LOCAL_SOLVER.md) — ローカルモデルを solver に据える手順と失敗表
 
 ## リポジトリ構成
 
@@ -83,9 +86,12 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 .
 ├── README.md
 ├── docs/
-│   ├── REDESIGN.md        # 今の設計
-│   ├── FORMATS.md         # 定義・設計・記録の形
-│   ├── formats/examples/  # 放置ゲームを今の形で書いた例
+│   ├── DESIGN.md          # 設計の本体
+│   ├── SYSTEM.md          # 置き場と守り方
+│   ├── DECISIONS.md       # 決まったこと・決まっていないこと
+│   ├── PROGRESS.md        # 進み具合・次にやること
+│   ├── FORMATS.md         # 定義・設計・概念ファイル・記録の形
+│   ├── formats/examples/  # 放置ゲームとコイン集めを今の形で書いた見本
 │   └── LOCAL_SOLVER.md    # ローカルモデルの手順
 ├── engine/                # ホストの流れ（pipeline.py）と部品: 関門・判定・ブリーフ・窓口・アプリの置き場
 ├── adapters/

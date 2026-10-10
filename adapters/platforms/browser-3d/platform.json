@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "The browser-3d platform (REDESIGN 1, platform 2): one HTML file, a three.js scene",
+    "The browser-3d platform (DESIGN 1, platform 2): one HTML file, a three.js scene",
     "drawn by a generic shell. A definition that declares this platform must declare",
     "these types exactly and offer these five functions; $State is the record type",
     "start returns, the same throughout. step is called every animation frame with",

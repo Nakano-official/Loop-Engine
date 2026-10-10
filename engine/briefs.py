@@ -1,9 +1,9 @@
-"""Briefs: what a role is told (REDESIGN 6). A part, not a flow.
+"""Briefs: what a role is told (SYSTEM 5). A part, not a flow.
 
     implement(design, module, feedback) -> str     the solver's brief for one module
 
 A brief is the only input a role has, so what goes into it is decided here,
-in code, and fixed by tests -- REDESIGN 4's rule in particular: the
+in code, and fixed by tests -- DESIGN 5's rule in particular: the
 implementer is shown the examples it must satisfy and, after a failed
 attempt, what failed with expected and actual values; nothing else of the
 design's or the loop's.

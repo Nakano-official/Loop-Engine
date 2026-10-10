@@ -1,4 +1,4 @@
-// The generic shell for browser-dom (REDESIGN 1). Machine-provided: no app
+// The generic shell for browser-dom (DESIGN 1 and 7). Machine-provided: no app
 // writes its own. It calls the app's five functions and draws the Screen they
 // return; everything an app does is in those functions, where the examples
 // check it.

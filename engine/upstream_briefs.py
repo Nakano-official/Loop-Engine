@@ -1,4 +1,4 @@
-"""Briefs for the upstream roles: the definer and the designer (REDESIGN 2).
+"""Briefs for the upstream roles: the definer and the designer (DESIGN 2).
 
     define(requirements, platform, findings)                 -> the definer's brief
     design(definition, findings, previous, verdict)          -> the designer's brief
@@ -8,7 +8,7 @@ formats is said here, once, and is the same every time: FORMATS.md, shortened
 to what a writer needs, plus the platform's own declaration verbatim. What a
 role is told after a failure is decided here too -- the gate's findings, or
 for the designer the verdict of used-up attempts: which module, which kind of
-reason, which example ids. Never what an implementation returned (REDESIGN 4).
+reason, which example ids. Never what an implementation returned (DESIGN 5).
 """
 from __future__ import annotations
 

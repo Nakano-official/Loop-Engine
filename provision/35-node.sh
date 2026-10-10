@@ -8,7 +8,7 @@
 # need a screen: happy-dom builds one in memory, so a test can click a button
 # and assert what changed.
 #
-# Machine only (REDESIGN 7-1). This used to also write the project's side --
+# Machine only (SYSTEM 8-1). This used to also write the project's side --
 # the node_modules symlink, vitest.config.mjs, index.html, the .gitignore
 # anchoring -- and that now belongs to the TypeScript adapter, which builds it
 # into each workspace. What stays here is the frozen tree itself, outside every
@@ -22,7 +22,7 @@ TOOLS=/srv/loop/node
 # gates mean without anyone choosing that.
 VITEST_VERSION="4.1.11"
 HAPPY_DOM_VERSION="20.13.1"
-# three.js for browser-3d (REDESIGN 1, platform 2): bundled into each app's one
+# three.js for browser-3d (DESIGN 1, platform 2): bundled into each app's one
 # HTML file by build-app. Pinned like the rest; the generic shell is written
 # against this version's API.
 THREE_VERSION="0.170.0"

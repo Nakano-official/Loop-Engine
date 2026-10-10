@@ -14,7 +14,7 @@ writes a workspace the window can hand to exec:
 Nothing here makes a judgement. A test is a transcription of an example: build
 each argument from the example, call, compare once. A stub has the contract's
 shape and returns values built only from sentinels no expected value contains
-(REDESIGN 4), so every example that observes a result fails against it with a
+(DESIGN 5), so every example that observes a result fails against it with a
 clean assertion rather than an error.
 
 Modules live in the package `app` so that a design's module name can never

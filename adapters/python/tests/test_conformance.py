@@ -1,4 +1,4 @@
-"""Conformance: the Python adapter, on the idle game, fails where REDESIGN 4
+"""Conformance: the Python adapter, on the idle game, fails where DESIGN 5
 says it must and nowhere else.
 
 The design is docs/formats/examples. tests/idlegame holds a correct
@@ -59,7 +59,7 @@ def test_stubs_fail_every_result_by_comparison_and_never_by_crash(tmp_path):
     for ex in all_examples():
         r = v[ex["id"]]
         # A stub has the contract's shape: calling it never breaks. If it did,
-        # the red gate would blame the engine (REDESIGN 4), so it must not.
+        # the red gate would blame the engine (DESIGN 5), so it must not.
         assert r is not None, f"{ex['id']} crashed against the stub"
         if DESIGN.observes_a_result(ex):
             assert r["ok"] is False, f"{ex['id']} passed against a stub"

@@ -6,7 +6,7 @@
 # The runner has no sudo; /etc/sudoers.d/91-loop-roles lets it start this
 # script as solver and nothing else. Sideways, never up.
 #
-# The solver is the local model and only the local model (REDESIGN 10, decision
+# The solver is the local model and only the local model (DECISIONS, decision
 # on egress: the solver reaches loopback port 8080 and nothing else). The codex
 # tier this script used to fall back to needed the internet, and is gone.
 set -euo pipefail

@@ -7,7 +7,7 @@
 #     restrict,command="/srv/loop/bin/loop-window"
 #
 # so the key starts loop-window and nothing else: no shell, no pty, no port or
-# agent forwarding (REDESIGN 7-4). What the client asked for reaches the window
+# agent forwarding (SYSTEM 8-4). What the client asked for reaches the window
 # as SSH_ORIGINAL_COMMAND and is matched against a fixed list there.
 #
 # The key comes from /tmp/loop-provision/loop-runner_ed25519.pub when that file

@@ -1,4 +1,4 @@
-"""The comparison function for Python (REDESIGN 4, FORMATS 10).
+"""The comparison function for Python (DESIGN 5, FORMATS 10).
 
 A generated test does three things with it, and nothing else:
 

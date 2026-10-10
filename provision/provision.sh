@@ -4,7 +4,7 @@
 #
 #   sudo ./provision.sh
 #
-# Machine only (REDESIGN 7-1): users, toolchains, permissions, network, SSH.
+# Machine only (SYSTEM 8-1): users, toolchains, permissions, network, SSH.
 # Workspaces are built by the window, not here.
 #
 # The maintenance user is the distro's default user (uid 1000) unless

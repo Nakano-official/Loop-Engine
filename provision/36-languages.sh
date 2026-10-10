@@ -2,7 +2,7 @@
 # Every language the engine supports beyond Python and Node, and the test
 # runner each one needs. Idempotent.
 #
-# REDESIGN section 5: the engine does not know languages, adapters do. An
+# DESIGN section 7: the engine does not know languages, adapters do. An
 # adapter needs two things from the machine -- the language itself, and
 # something that runs tests one at a time in isolation. Nothing more: the
 # verdict is read from the comparison function's record, not from the test
@@ -13,7 +13,7 @@
 # `php php-cli`). Nothing here recorded them, so a rebuilt box would have come
 # up without them and nobody would have been told. This script is that record.
 #
-# Machine only (REDESIGN 7-1). Nothing here touches a project directory: the
+# Machine only (SYSTEM 8-1). Nothing here touches a project directory: the
 # per-project files a language needs (go.mod, Cargo.toml, a phpunit config ...)
 # are the adapter's to write when the window builds a workspace.
 #

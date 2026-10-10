@@ -4,11 +4,15 @@ Loop Engine の設計・運用ドキュメントです。
 
 ## 今の設計
 
-1. [REDESIGN.md](REDESIGN.md) — **何を作っているか。** 定義と設計を深くして、実装を弱いモデルに任せる。
-   落ちた場所で悪い段が分かるデバッグ、言語のアダプタ、役と窓口、プロビジョン。
-   §10 に決まったことと、**再開点**がある
-2. [FORMATS.md](FORMATS.md) — 定義と設計の形、記録の形。例は [formats/examples/](formats/examples/)
-3. [LOCAL_SOLVER.md](LOCAL_SOLVER.md) — ローカルモデルをソルバーに据える手順と失敗表
+1. [DESIGN.md](DESIGN.md) — **何を作っているか（設計の本体）。** 目的、流れ、要求分析と概念ファイル、
+   落ちた場所で悪い段が分かるデバッグ、外側の輪（評価と改良）、言語とプラットフォーム
+2. [SYSTEM.md](SYSTEM.md) — **どこに置き、どう守るか。** ホストと箱、役と uid、窓口、正本と台帳、箱の作り方の考え方、ダッシュボード
+3. [DECISIONS.md](DECISIONS.md) — 決まったこと（いつ・何を・なぜ）と、決まっていないこと
+4. [PROGRESS.md](PROGRESS.md) — 進み具合。済んだこと、通しの結果、**次にやること**
+5. [FORMATS.md](FORMATS.md) — 定義・設計・概念ファイル・記録の形。例は [formats/examples/](formats/examples/)
+6. [LOCAL_SOLVER.md](LOCAL_SOLVER.md) — ローカルモデルを solver に据える手順と失敗表
+
+どの文書も、それだけで読めるように書く（DESIGN §4）。ほかの文書へのリンクは道案内で、意味をそこに預けない。
 
 環境別の手順は [provision/README.md](../provision/README.md)（サンドボックス）と
 [host/README.md](../host/README.md)（Windows ホスト）。

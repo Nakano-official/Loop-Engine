@@ -11,7 +11,7 @@
     python3 roles.py sshd        [roles.json]   prints "AllowUsers ..." and
                                                 "DenyUsers ..." for 50-lockdown.sh
 
-REDESIGN 7-2. The three roles before this were each written out by hand, in four
+SYSTEM 8-2. The three roles before this were each written out by hand, in four
 scripts, and the checks were written by hand too -- which is how tests/ stayed
 readable by every account until a check written for one new role happened to
 look. Here a role is one line of roles.json, and the checks are generated from

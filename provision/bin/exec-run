@@ -30,7 +30,7 @@ esac
 cd "$WS"
 # A clean environment: nothing the window's shell had leaks into the run.
 # LOOP_RECORD_DIR is where the comparison function writes its record
-# (REDESIGN 4); it is exec's own out/, which the window reads back.
+# (DESIGN 5); it is exec's own out/, which the window reads back.
 # LOOP_EXAMPLES is the examples file every adapter puts at the workspace root
 # (FORMATS 10) -- the expected values the tests compare against.
 # PYTHONDONTWRITEBYTECODE: exec cannot write the workspace, so Python must not

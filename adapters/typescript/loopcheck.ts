@@ -1,4 +1,4 @@
-// The comparison function for TypeScript (REDESIGN 4, FORMATS 10).
+// The comparison function for TypeScript (DESIGN 5, FORMATS 10).
 //
 // The same contract as adapters/python/loopcheck.py, in the same words:
 //

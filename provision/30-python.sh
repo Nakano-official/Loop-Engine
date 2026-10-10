@@ -5,7 +5,7 @@
 # (the environment is frozen: what the loop runs on changes only when
 # provisioning changes it).
 #
-# Machine only (REDESIGN 7-1). It used to live inside the project, at
+# Machine only (SYSTEM 8-1). It used to live inside the project, at
 # project/.venv, and the project is no longer provisioning's business: the
 # window builds workspaces, and the Python adapter points at this venv.
 set -euo pipefail

@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "The browser-dom platform (REDESIGN 1): one HTML file, drawn by a generic shell.",
+    "The browser-dom platform (DESIGN 1): one HTML file, drawn by a generic shell.",
     "A definition that declares this platform must declare these types exactly, and",
     "its interface must contain these five functions. $State is the record type",
     "start returns; the other functions must use that same type. Which errors each",

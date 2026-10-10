@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Outbound network, per role, from the table (REDESIGN 7-3). Idempotent.
+# Outbound network, per role, from the table (SYSTEM 8-3). Idempotent.
 #
 #     exec    none         -- generated code runs here
 #     solver  loopback:8080 -- the local model's server, nothing else

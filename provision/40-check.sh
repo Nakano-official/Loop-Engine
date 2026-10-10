@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The role model, checked from every role's point of view (REDESIGN 7-2).
+# The role model, checked from every role's point of view (SYSTEM 8-2).
 #
 # Every role is tried against every path the table knows about -- read, write,
 # traverse -- and each answer has to be the one the table implies. Then the

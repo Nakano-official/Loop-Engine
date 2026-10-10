@@ -11,7 +11,7 @@ tests. Everything that does not depend on the language lives here, once:
       .examples_file()     the LOOP_EXAMPLES content: every example, each step
                            annotated with the types its arguments must be decoded as
       .leaves()            every primitive value any expected value contains --
-                           a stub's sentinels are chosen outside these (REDESIGN 4)
+                           a stub's sentinels are chosen outside these (DESIGN 5)
 
 It assumes the design has passed the exit gates (FORMATS 7). It does not check
 them again; it fails loudly where a gate should have.
@@ -172,7 +172,7 @@ class Design:
         """Whether an example looks at something a call returned. Only those
         must fail against a stub; one that observes an input it passed in
         (to show the input was left alone) passes against a stub that does
-        nothing, and is right to (REDESIGN 4)."""
+        nothing, and is right to (DESIGN 5)."""
         called = {st["let"] for st in ex["steps"] if "call" in st}
         if "raises" in ex["then"]:
             return True

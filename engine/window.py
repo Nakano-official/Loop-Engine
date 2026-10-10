@@ -1,4 +1,4 @@
-"""The window's operations (REDESIGN 6). Runs inside the box, as runner.
+"""The window's operations (SYSTEM 4). Runs inside the box, as runner.
 
     prepare-tests <ws> <module>    stdin: {"design": ..., "definition": ...}
                                    (re)build the workspace from the design and
@@ -13,7 +13,7 @@ Each answers one JSON object on stdout: {"records": [...], "output": "..."} for
 the two that run tests, {"ok": true} for accept. A part, not a flow: it never
 decides what happens next -- pipeline.py does, from diagnose.py's verdict.
 
-The workspace is the window's alone to write (REDESIGN 7-5). Its state is
+The workspace is the window's alone to write (SYSTEM 8-5). Its state is
 kept inside it: .loop/design.json and .loop/definition.json, and in
 .loop/impl/ the implementation of every module that went green. A build
 regenerates everything else from the design, so a failed candidate never
@@ -259,7 +259,7 @@ class Window:
         return result
 
     def build_app(self, ws_name: str, module: str) -> dict:
-        """The output (REDESIGN 1): the assembly and its platform's generic
+        """The output (DESIGN 1): the assembly and its platform's generic
         shell bundled into one script, put into the platform's page, and the
         page opened once in happy-dom to see that it boots, draws, and survives
         its own buttons. Bundling and the boot check run as exec -- the boot
@@ -310,7 +310,7 @@ class Window:
         return {"html": html, "boot": boot}
 
     def run_role(self, ws_name: str, role: str, payload: dict) -> dict:
-        """An upstream role on one brief (REDESIGN 6, run-role): the brief into
+        """An upstream role on one brief (SYSTEM 4, run-role): the brief into
         the role's in/, the role started through its launcher, and the files it
         left at the top of its out/ handed back. The role never sees a
         workspace; ws_name only names the brief.

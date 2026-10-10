@@ -1,4 +1,4 @@
-// The generic shell for browser-3d (REDESIGN 1, platform 2). Machine-provided:
+// The generic shell for browser-3d (DESIGN 1 and 7, platform 2). Machine-provided:
 // no app writes its own. It calls the app's five functions and draws the Scene
 // they return with three.js; everything an app does is in those functions,
 // where the examples check it.

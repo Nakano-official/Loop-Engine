@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The window: the only thing the runner key can start (REDESIGN 6 and 7-4).
+# The window: the only thing the runner key can start (SYSTEM 4 and 8-4).
 #
 # sshd runs this for every login with the runner key, because authorized_keys
 # carries `restrict,command="/srv/loop/bin/loop-window"`. What the client asked
@@ -8,7 +8,7 @@
 # and "the window is the one place data crosses the boundary" was a habit
 # rather than a fact.
 #
-# The operations REDESIGN 6 lists are reserved by name and refuse until they
+# The operations SYSTEM 4 lists are reserved by name and refuse until they
 # exist. Anything else is refused outright.
 set -euo pipefail
 

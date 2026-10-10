@@ -1,11 +1,11 @@
-"""The exit gates for the definition and the design (REDESIGN 4, FORMATS 7).
+"""The exit gates for the definition and the design (DESIGN 5, FORMATS 7).
 
     check_definition(definition)         -> [Finding]
     check_design(design, definition)     -> [Finding]
 
 A part, not a flow: it reads two JSON documents and says what is wrong with
 them, and where. Each finding names the stage that is at fault, which is what
-the place a test fails has to name (REDESIGN 4): a definition that fails its
+the place a test fails has to name (DESIGN 5): a definition that fails its
 gate goes back to requirements definition; a design that fails its gate goes
 back to module design, never further -- the definition it was checked against
 already passed its own.
@@ -29,7 +29,7 @@ DEFINITION = "要件定義"
 DESIGN = "モジュール設計"
 
 PLATFORM_DIR = Path(__file__).resolve().parents[1] / "adapters" / "platforms"
-# The platforms that exist: a directory with a platform.json. REDESIGN 1 names
+# The platforms that exist: a directory with a platform.json. DESIGN 1 names
 # browser-dom and browser-3d as the target; only what is built is accepted.
 PLATFORMS = {p.name for p in PLATFORM_DIR.glob("*") if (p / "platform.json").exists()}
 
@@ -324,7 +324,7 @@ def check_definition(d: Any) -> list[Finding]:
 
 
 def _platform_ok(g: _Gate, d: dict, plat: dict) -> None:
-    """The definition offers what its platform's shell calls (REDESIGN 1): the
+    """The definition offers what its platform's shell calls (DESIGN 1): the
     platform's types, declared exactly, and its functions, with the app's state
     type ($State) the same record throughout."""
     name = plat["name"]
