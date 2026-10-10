@@ -54,3 +54,11 @@ textarea.req { min-height: 14rem; }
 pre.req { white-space: pre-wrap; background: var(--panel); border: 1px solid var(--line); padding: .6rem;
   border-radius: .35rem; }
 details { margin: .4rem 0 .8rem; }
+.now { border: 1px solid var(--blue); border-radius: .5rem; padding: .6rem .8rem; margin: .4rem 0 .8rem;
+  background: var(--panel); }
+.now .row { gap: .5rem; }
+.dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: var(--blue);
+  animation: pulse 1.2s ease-in-out infinite; }
+.live { color: var(--blue); display: flex; align-items: center; gap: .35rem; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }

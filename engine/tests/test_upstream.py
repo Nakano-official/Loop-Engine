@@ -69,8 +69,12 @@ def test_requirements_to_green_through_both_gates(win, tmp_path):
     # The definer was refused once, and told why.
     assert len(win.briefs["definer"]) == 2
     assert "types.Screen" in win.briefs["definer"][1]
-    events = [json.loads(l)["event"] for l in ledger.read_text(encoding="utf-8").splitlines()]
+    entries = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()]
+    events = [e["event"] for e in entries if e["event"] != "BEGIN"]
     assert events[:4] == ["DEFINER", "DEFINER", "DESIGNER", "DESIGN_ROUND"]
+    # Every long step says when it starts, so a dashboard can show it while it runs.
+    begun = [(e["step"], e.get("n")) for e in entries if e["event"] == "BEGIN"][:3]
+    assert begun == [("definer", 1), ("definer", 2), ("designer", 1)]
     assert json.loads((tmp_path / "app" / "design.json").read_text(encoding="utf-8"))["definition"] == "definition.json"
 
 

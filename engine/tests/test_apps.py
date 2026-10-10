@@ -145,3 +145,15 @@ def test_the_newest_run_is_first_whatever_its_name(store):
     (old / "ledger.jsonl").write_text(json.dumps({"t": 1.0, "event": "GATES_PASSED"}) + "\n", encoding="utf-8")
     new = app.new_run()
     assert [r.id for r in app.runs()][0] == new.id
+
+
+def test_a_running_run_says_what_it_is_doing(store, monkeypatch):
+    app = store.app("idle")
+    run = write_run(app, [{"t": 100.0, "event": "GREEN", "module": "catalog"},
+                          {"t": 200.0, "event": "BEGIN", "step": "attempt", "module": "economy", "n": 2}])
+    monkeypatch.setattr(apps.Run, "status", lambda self: "running")
+    assert run.now() == {"step": "attempt", "module": "economy", "n": 2, "since": 200.0}
+    assert [m for m in run.modules() if m["module"] == "economy"][0] == \
+        {"module": "economy", "attempts": 2, "state": "trying", "reason": ""}
+    empty = write_run(app, [])
+    assert empty.now()["step"] == "start"

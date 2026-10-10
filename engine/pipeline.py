@@ -55,6 +55,13 @@ class Ledger:
                 f.write(json.dumps({"t": time.time(), "event": event, **fields}, ensure_ascii=False) + "\n")
 
 
+# A run started from the dashboard has no console (so it outlives the
+# dashboard). On Windows, a process without a console that starts a console
+# program -- ssh -- gets a NEW console window for it: one popped up for every
+# call to the box. CREATE_NO_WINDOW starts ssh with none.
+NO_WINDOW = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+
+
 class RemoteWindow:
     """The window in the box, over the runner key (loop-window)."""
 
@@ -64,7 +71,7 @@ class RemoteWindow:
     def call(self, op: str, ws: str, module: str, payload: dict | None) -> dict:
         proc = subprocess.run(["ssh", "-o", "BatchMode=yes", self.host, f"{op} {ws} {module}"],
                               input=json.dumps(payload or {}), capture_output=True, text=True,
-                              encoding="utf-8")
+                              encoding="utf-8", **NO_WINDOW)
         try:
             return json.loads(proc.stdout)
         except json.JSONDecodeError:
@@ -98,6 +105,9 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
             return Outcome("stopped", "stopped by a person", [m["name"] for m in green])
 
         # 2a. Generate the tests and run them against the stub.
+        # BEGIN marks where a long step starts, so what the loop is doing can
+        # be seen while it does it -- not only once the step is over.
+        log("BEGIN", step="red_gate", module=name)
         red = window.call("prepare-tests", ws, name, payload)
         verdict = diagnose.red_gate(d, module, red)
         log("RED_GATE", module=name, stage=verdict.stage, reason=verdict.reason)
@@ -117,6 +127,7 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
                 # The solver role, in the box: the brief is composed here, on
                 # the host, and the window stages, solves and verifies.
                 brief = briefs.implement(d, module, feedback)
+                log("BEGIN", step="attempt", module=name, n=n)
                 result = window.call("attempt", ws, name, {"brief": brief, "green": names})
                 if "engine" in result:
                     log("ATTEMPT", module=name, n=n, stage=diagnose.ENGINE, reason=result["engine"])
@@ -125,6 +136,7 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
             else:
                 # A stand-in: a function that returns the module's file.
                 files = solver(d, module, feedback)
+                log("BEGIN", step="attempt", module=name, n=n)
                 result = window.call("verify", ws, name, {"files": files, "green": names})
             if "refused" in result:
                 verdict = diagnose.Verdict(diagnose.IMPLEMENTATION, result["refused"],
@@ -156,6 +168,7 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
     #    window bundles it with the platform's generic shell and opens it once
     #    in happy-dom. Every example is green here, so an app that does not
     #    boot points at the shell or the bundling -- the engine.
+    log("BEGIN", step="build")
     built = window.call("build-app", ws, d.assembly["name"], None)
     if "error" in built:
         log("OUTPUT_FAILED", reason=built["error"])
@@ -188,6 +201,7 @@ def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, round
     findings: list[str] = []
     doc = None
     for n in range(1, rounds + 1):
+        log("BEGIN", step=role, n=n)
         res = window.call("run-role", ws, role, {"brief": brief_for(findings)})
         text = res.get("files", {}).get(name)
         if text is None:

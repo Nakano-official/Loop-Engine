@@ -52,6 +52,36 @@ const MODULE = {
   green: ["緑", "ok"], trying: ["試行中", "info"], red: ["赤の関門", "info"],
   exhausted: ["使い切り", "bad"], engine: ["エンジン", "bad"],
 };
+function doing(now) {
+  const m = now.module, n = now.n;
+  switch (now.step) {
+    case "start": return "通しを始めたところです";
+    case "definer": return `definer が要件から定義を書いています（${n} 回目）`;
+    case "designer": return `designer が定義から設計を書いています（${n} 回目）`;
+    case "red_gate": return `${m} のテストを用意して、スタブで赤になることを確かめています`;
+    case "attempt": return `モデルが ${m} を実装しています（${n} 回目）`;
+    case "build": return "アプリを1つの HTML にまとめて、起動を確かめています";
+    default: return `${now.after || ""}${m ? `（${m}）` : ""} のあと、次の段へ進むところです`;
+  }
+}
+
+// Elapsed time, counted on the page every second from a start time the server
+// gave -- so the clock moves even between polls, and a pane that is not being
+// redrawn still shows that time is passing.
+function elapsed(since) {
+  return h("span", { class: "elapsed", "data-since": String(since) }, fmt(Date.now() / 1000 - since));
+}
+function fmt(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m ? `${m}分${String(s).padStart(2, "0")}秒` : `${s}秒`;
+}
+setInterval(() => {
+  for (const el of document.querySelectorAll(".elapsed")) {
+    el.textContent = fmt(Date.now() / 1000 - Number(el.dataset.since));
+  }
+}, 1000);
+
 const chip = (pair, extra) => h("span", { class: `chip ${pair[1]}` }, pair[0], extra ? ` ${extra}` : "");
 
 function decisionChip(d) {
@@ -96,7 +126,8 @@ async function drawApps() {
     },
       h("div", { class: "title" }, a.title),
       h("div", { class: "sub" }, a.name, " · ", `${a.runs} 回`,
-        latest ? [" · ", chip(STATUS[latest.status] || [latest.status, "info"])] : ""));
+        latest ? [" · ", chip(STATUS[latest.status] || [latest.status, "info"])] : ""),
+      latest && latest.now ? h("div", { class: "sub live" }, h("span", { class: "dot" }), doing(latest.now)) : null);
   }));
   if (session.can_start) {
     nav.append(h("button", {
@@ -206,7 +237,12 @@ function drawRun(app, run) {
       h("td", {}, String(m.attempts)),
       h("td", {}, m.reason || ""))));
 
-  const out = [h("h3", {}, `通し ${run.id}`),
+  const now = run.now ? h("div", { class: "now" },
+    h("div", { class: "row" }, h("span", { class: "dot" }), h("strong", {}, "いま"), doing(run.now)),
+    h("div", { class: "row note" },
+      "この段の経過 ", elapsed(run.now.since), " ・ 通しの開始から ", elapsed(run.started),
+      " ・ プロセスは動いています（止まれば「中断」と出ます）")) : null;
+  const out = [h("h3", {}, `通し ${run.id}`), now,
     h("div", { class: "row" }, chip(STATUS[run.status] || [run.status, "info"]),
       run.stage ? h("span", {}, `戻り先・結果: ${run.stage}`) : null,
       run.status === "running" ? h("button", {

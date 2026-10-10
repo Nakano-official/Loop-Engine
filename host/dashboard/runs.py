@@ -76,7 +76,9 @@ class Box:
             return self._last
         try:
             proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", self.host, "status"],
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True, timeout=10,
+                                  # no console window for ssh (see engine/pipeline.py, NO_WINDOW)
+                                  creationflags=0x08000000 if os.name == "nt" else 0)
             self._last = json.loads(proc.stdout) if proc.returncode == 0 else {
                 "window": "down", "error": (proc.stderr.strip() or "no answer")[:200]}
         except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:

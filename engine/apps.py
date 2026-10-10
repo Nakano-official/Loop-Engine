@@ -136,7 +136,10 @@ class Run:
             if not name:
                 continue
             m = mods.setdefault(name, {"module": name, "attempts": 0, "state": "red", "reason": ""})
-            if e["event"] == "ATTEMPT":
+            if e["event"] == "BEGIN" and e.get("step") == "attempt":
+                m["attempts"] = e.get("n", m["attempts"])
+                m["state"] = "trying"
+            elif e["event"] == "ATTEMPT":
                 m["attempts"] = e.get("n", m["attempts"])
                 m["reason"] = e.get("reason", "")
                 m["state"] = "trying"
@@ -155,11 +158,27 @@ class Run:
         keep = {"DEFINER", "DESIGNER", "DESIGN_ROUND", "BACK_TO_DESIGN"}
         return [{k: v for k, v in e.items() if k != "t"} for e in self.ledger() if e.get("event") in keep]
 
+    def now(self) -> dict | None:
+        """What a running run is doing: the last BEGIN, if nothing has ended it
+        since, with when it started; else the last event. None unless running.
+        `since` is a time, so the page can count the seconds itself."""
+        if self.status() != "running":
+            return None
+        ledger = self.ledger()
+        last = ledger[-1] if ledger else None
+        if last is None:
+            return {"step": "start", "since": self.started()}
+        if last.get("event") == "BEGIN":
+            return {k: last.get(k) for k in ("step", "module", "n")} | {"since": last.get("t")}
+        return {"step": "between", "after": last.get("event"), "module": last.get("module"),
+                "since": last.get("t")}
+
     def summary(self) -> dict:
         out = self.outcome() or {}
         return {"id": self.id, "status": self.status(), "stage": out.get("stage"),
                 "reason": out.get("reason"), "green": out.get("green", []),
                 "output": bool(self.output()), "modules": self.modules(), "upstream": self.upstream(),
+                "now": self.now(), "started": self.started(),
                 "decision": self.app.decision(self.id)}
 
 
