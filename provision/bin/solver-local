@@ -203,8 +203,8 @@ def files_from_brief(brief: str) -> list[str]:
     if FILES_HEADING not in brief:
         die(EXIT_BRIEF_SHAPE,
             f"the brief has no {FILES_HEADING!r} section.\n"
-            "  loop.py's brief format changed and this backend was not updated.\n"
-            "  Fix: compare with brief_impl() in runner/loop.py.")
+            "  The brief format (engine/briefs.py) changed and this backend was not updated.\n"
+            "  Fix: compare with engine/briefs.py.")
     tail = brief.split(FILES_HEADING, 1)[1]
     paths = []
     for line in tail.splitlines():

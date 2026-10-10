@@ -1,15 +1,10 @@
-# LOCAL_SOLVER.md — ローカルソルバーの導入と、1本目の実験
+# LOCAL_SOLVER.md — ローカルソルバーの導入と失敗表
 
-ソルバーを Codex からローカルモデル（Qwen3.5-9B / nonthinking）に差し替えるための手順書。
-**Claude を介さずに最後まで進める**ことを目的に書いてある。
+solver（実装する役）にローカルモデル（Qwen3.5-9B / nonthinking）を据えるための手順書。
+**Claude を介さずに最後まで進める**ことを目的に書いてある。ここは操作だけ。
 
-設計の根拠は archive/RUNNER_SPEC §4-4-1、判断の経緯は archive/HANDOFF §5。ここは操作だけ。
-
-> **今の位置づけ（2026-10-09）。** §1-1〜§1-5（llama.cpp のビルド、重み、サーバ、配管の確認）は
-> 今もそのまま有効。§1-6 以降に出てくる `plan/tasks.json`・`solver_tiers`・ランナーの動詞は
-> 旧いランナー（`runner/loop.py`）のもので、今は動かない。
-> **solver はローカルモデルだけ**になった（REDESIGN §10 決定 11）。codex の段は無く、solver の
-> 通信は loopback の 8080 だけに閉じてある（`provision/roles.json`）。
+> **solver はローカルモデルだけ**（REDESIGN §10 決定 11）。solver の通信は loopback の 8080 だけに
+> 閉じてある（`provision/roles.json`）。ループからは、窓口の `attempt` が `solver-run` を通して呼ぶ。
 
 ---
 
@@ -109,33 +104,6 @@ sudo -u solver /srv/loop/bin/smoke-local
 7項目。全部 PASS なら「配管は問題ではない」ことが確定する。
 7番だけ FAIL する場合、それは**配管ではなくモデルの話**で、スクリプトがそう言う。
 
-### 1-6. 1本回す
-
-```bash
-# run 5 のプランをそのまま使う。題材を変えない ── 変えると
-# 「モデルが弱い」のか「その題材が難しい」のかが分離できない
-sudo -u runner python3 /srv/loop/runner/loop.py reset S1     # 必要なら
-```
-
-`plan/tasks.json` の最上位に足す:
-
-```json
-"policy":       {"retry": "resample"},
-"limits":       {"attempts": 8}
-```
-
-`solver_tiers` は書かなくてよい ── **既定が `["local", "codex"]`**（RUNNER_SPEC §7 末尾）。
-ここに書くのは、この箱の既定と違う段構成を試すときだけ。
-
-`resample` と温度 0.7 は**対で意味を持つ**。温度 0 で `resample` すると8回とも同じ
-答えを引く。逆に `repair` にするなら温度は下げてよい。
-
-```bash
-sudo -u runner python3 /srv/loop/runner/loop.py run --all
-```
-
----
-
 ## 2. 失敗表
 
 ### `solver-local` の終了コード
@@ -144,20 +112,20 @@ sudo -u runner python3 /srv/loop/runner/loop.py run --all
 |---|---|---|
 | 0 | 動いた（**中身が駄目でも 0**） | 下記「0 で返るのに何も起きない」参照 |
 | 2 | 引数かブリーフが読めない | `solver-run` の呼び方。通常は起きない |
-| 5 | ブリーフに `# Files you may create or modify` が無い | `loop.py` のブリーフ書式が変わった。`brief_impl()` と突き合わせる |
-| 6 | プロンプトがコンテキストに入らない | `llm-serve` の `--ctx-size` と `LOOP_LLM_CTX` を上げる。上げられないならステップを分割 |
+| 5 | ブリーフに `# Files you may create or modify` が無い | ブリーフの書式が変わった。`engine/briefs.py` と突き合わせる |
+| 6 | プロンプトがコンテキストに入らない | `llm-serve` の `--ctx-size` と `LOOP_LLM_CTX` を上げる。上げられないならモジュールを分ける（2026-10-10 の迷路では、組み立ての例の重複が原因だった） |
 | 7 | 推論サーバに届かない／拒否された | `pgrep -a -u llm llama-server`。落ちていれば 1-4 |
-| 124 | 制限時間内に返らない | `timeouts.solver` を上げる。CPU 推論なら数倍必要 |
+| 124 | 制限時間内に返らない | 窓口の制限時間（`engine/window.py`）を上げる。CPU 推論なら数倍必要 |
 
-**非ゼロは全部エスカレーション＝プランナー呼び出し＝Claude の消費**になる。
-だから「モデルが下手」は**絶対に非ゼロにしない**設計にしてある（下記）。
+**非ゼロは、通しを「エンジン」として止める**（7 だけは窓口が数回やり直す）。どの段に戻しても直らないから。
+だから「モデルが下手」は**絶対に非ゼロにしない**設計にしてある（下記）。下手なら試行の失敗として数える。
 
 ### 症状から引く
 
 **0 で返るのに何も書かれない / VERIFY が毎回同じ失敗**
 モデルが JSON を守れなかったか、許可外のパスを返した。`solver-local` が
-`wrote nothing` / `refused [...]` と標準出力に書いている。台帳ではなく `run.log` を見る。
-これは**設計どおり**の挙動 ── モデルの失敗は試行を1回消費するだけで、プランナーには届かない。
+`wrote nothing` / `refused [...]` と標準出力に書いている（試行の結果の `output` に入る）。
+これは**設計どおり**の挙動 ── モデルの失敗は試行を1回消費するだけで、通しは止まらない。
 何度も続くならステップが大きすぎる（次項）。
 
 **ステップが大きすぎる**
@@ -184,64 +152,3 @@ GPU に載っていない。`nvidia-smi` と `--n-gpu-layers`。載せられな�
 llama-server のポートが、`provision/roles.json` の solver の `loopback_tcp` と違う。solver は
 表に書いたポートにしか出られない。表を直して `10-roles.sh` と `25-egress.sh` を当て直す。
 `ECONNREFUSED`（Connection refused）なら規則は通っていて、サーバが上がっていない。
-
----
-
-## 3. 1本目に観測すること
-
-run 5（Codex）が比較対象。**run 6 の実測値を入れてある**（2026-09-01）。
-
-| | run 5 (Codex) | run 6 (Qwen3.5-9B local) |
-|---|---|---|
-| 無介入の緑 | 11/11 | **11/11** |
-| ステップあたり試行数 | ほぼ1 | **1（全ステップ attempt=1）** |
-| **エスカレーション回数** | 1 | **0** |
-| codex 段に落ちたステップ数 | ─ | **0** |
-| 実時間 | 19分37秒 | **15分12秒** |
-| 最終スイート | 48 passed | **48 passed**（skipped 0 / regressions []） |
-| 消費した課金アカウント | Codex | **なし** |
-
-**エスカレーション回数が最重要**。それが Claude の消費そのもので、
-「ソルバーを安くしたら費用がプランナー側へ移った」かどうかはこの数字だけで分かる。
-
-台帳から取れる:
-
-```bash
-sudo -u runner grep -c ESCALATED /srv/loop/project/plan/ledger.jsonl
-sudo -u runner grep '"phase":"VERIFY"' /srv/loop/project/plan/ledger.jsonl \
-  | python3 -c 'import sys,json,collections
-c=collections.Counter()
-for l in sys.stdin: r=json.loads(l); c[r.get("backend")]+=1
-print(c)'
-```
-
-### 自動では測れない1つ
-
-**通ったコードを1回だけ目で見る。** 見るのは「テストを通すためのハードコード」
-（`if n == 3: return 7` の類）。失敗出力を返す × 弱いモデル × 試行回数を増やす、の
-3つが揃うと主要な失敗モードになる。FREEZE はテストの改変を止めるが、これは止めない。
-
-出ていたら、次はホールドアウト（§4）を入れる。出ていなければ入れない。
-
-### RED_GATE が落ちる場合の読み方
-
-R1（収集数の不一致）／R4（スタブで通る）／R5（赤が本物でない）が目立つなら、
-**問題は IMPL ではなく TEST_WRITE** ── 9B が受け入れ条件からテストを書けていない。
-テストは凍結されて基準になるので、ここが弱いのは実装が弱いより悪い。
-位相ごとにバックエンドを変える仕組みは**まだ無い**。必要になったら作る（それが証拠）。
-
----
-
-## 4. まだ決めていないこと
-
-**ホールドアウト。** プランナーがテストを可視群と秘匿群に分け、ブリーフには可視群だけを
-描画し、RED_GATE と VERIFY は全部を走らせる。判断を含まない純粋な機構。
-ただし **IMPL 中の `tests/` は 0444 でソルバーから読める**（`loop.py` の `set_writable`）
-ので、いまのままでは要請であって剥奪ではない。本物にするには `tests/` を runner のみに
-する必要があり、代償として**ソルバーが自分で pytest を回して自己検証できなくなる**。
-弱いモデルほどそれは効く機能なので、代償のある判断。**1本目の目視で必要性を決める。**
-
-**位相ごとのバックエンド。** 上記の RED_GATE の読み方を参照。
-
-**egress の締め直し。** ローカル単独運用に切り替えたら `solver` は外向き通信が
-一切不要になる。この設計で初めてそこまで締められる（`lo` は既に許可されている）。

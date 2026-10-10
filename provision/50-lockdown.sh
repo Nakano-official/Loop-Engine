@@ -76,7 +76,8 @@ fi
 
 [ "$fail" -eq 0 ] || { echo "50-lockdown: SSH CONFIG DID NOT TAKE EFFECT" >&2; exit 1; }
 
-# Freeze the environment against silent upgrades (RUNNER_SPEC 1-3).
+# Freeze the environment against silent upgrades: what the gates mean must
+# not change underneath a run.
 systemctl disable --now unattended-upgrades.service 2>/dev/null || true
 systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 

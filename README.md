@@ -5,7 +5,7 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 > [!IMPORTANT]
 > **作り直しの途中です（2026-10-09〜）。** 設計を [REDESIGN.md](docs/REDESIGN.md) の形に変えました。
 > 設計から、本物のローカル 9B が実装し、**開けば動くアプリ（1つの HTML）が出る**ところまで通っています。
-> ダッシュボードは `host\loop-dashboard.cmd`。旧いランナー（`runner/loop.py`）はもう動きません。
+> ダッシュボードは `host\loop-dashboard.cmd`。
 > 続きは REDESIGN §10 の「再開点」から。
 
 ## 考え方
@@ -67,7 +67,7 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 弱いソルバーでも結果が落ちなかったことが、「合格基準を外に置けば、満たす側の質は結果を支配しない」
 という主張の検証になりました。一方 run 8 では、範囲が広すぎると弱いモデルが落ちること、
 そして**未解決の失敗3件がどれもテスト側の誤りだった**ことが分かり、それが今回の作り直しの出発点です
-（[REDESIGN.md](docs/REDESIGN.md) §3・§4）。経緯は [docs/archive/](docs/archive/) にあります。
+（[REDESIGN.md](docs/REDESIGN.md) §3・§4）。旧設計の文書は消しました（git の履歴（`6a03828` 以前）に残る）。
 
 ## ドキュメント
 
@@ -76,7 +76,6 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 3. [provision/README.md](provision/README.md) — WSL2 サンドボックスの構築・検証手順と落とし穴
 4. [host/README.md](host/README.md) — Windows 側の起動、keepalive、SSH 設定
 5. [docs/LOCAL_SOLVER.md](docs/LOCAL_SOLVER.md) — ローカルモデルをソルバーに据える手順と失敗表
-6. [docs/archive/](docs/archive/) — 旧設計の記録（run 1〜8）
 
 ## リポジトリ構成
 
@@ -87,21 +86,20 @@ AI に実装を任せるループを、テストの自己申告や権限逸脱�
 │   ├── REDESIGN.md        # 今の設計
 │   ├── FORMATS.md         # 定義・設計・記録の形
 │   ├── formats/examples/  # 放置ゲームを今の形で書いた例
-│   ├── LOCAL_SOLVER.md    # ローカルモデルの手順
-│   └── archive/           # 旧設計の文書（ARCHITECTURE・RUNNER_SPEC・BOOTSTRAP・HANDOFF）
+│   └── LOCAL_SOLVER.md    # ローカルモデルの手順
+├── engine/                # ホストの流れ（pipeline.py）と部品: 関門・判定・ブリーフ・窓口・アプリの置き場
 ├── adapters/
-│   └── python/            # 比較関数（loopcheck.py）とそのテスト
+│   ├── design.py          # 言語に依らない中核
+│   ├── python/            # Python のアダプタ（比較関数・生成器）と適合テスト
+│   ├── typescript/        # TypeScript のアダプタと適合テスト（放置ゲーム・コイン集め）
+│   └── platforms/         # browser-dom・browser-3d: 汎用シェル・ページ・起動確認
 ├── provision/
 │   ├── roles.json         # 役の表 ── 正本
 │   ├── roles.py           # 表から生成し、総当たりで検査する
-│   ├── provision.sh       # 入口（05 → 10 → 15 → 25 → 30/35/36 → 40 → 50）
-│   ├── 95-retire.sh       # 旧構成からその場で作り替えるときに一度だけ
+│   ├── provision.sh       # 入口（05 → 10 → 15 → 25 → 30/35/36 → 45 → 40 → 50）
 │   └── bin/               # 起動スクリプト、loop-window、ローカルソルバー
-├── host/                  # Windows 側：起動、keepalive、ミラー（loop-pull.cmd）
-│   └── dashboard/         # 旧い形のレビュー画面（作り直し対象）
-├── runner/                # 旧いランナー（作り直し対象。もう動かない）
-├── plan/fixture/          # 旧い tasks.json の見本（作り直し対象）
-└── requirements/          # 題材の要件
+└── host/                  # Windows 側：起動、keepalive、ミラー（loop-pull.cmd）
+    └── dashboard/         # アプリ・通し・出力・承認のダッシュボード
 ```
 
 ## 環境構築について

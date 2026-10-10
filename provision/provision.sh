@@ -8,8 +8,7 @@
 # Workspaces are built by the window, not here.
 #
 # The maintenance user is the distro's default user (uid 1000) unless
-# ADMIN_USER names someone else. Rebuilding the old three-role layout in place?
-# Run 95-retire.sh first.
+# ADMIN_USER names someone else.
 #
 # Order matters:
 #   05  isolation first -- with no isolation there is nothing to provision into

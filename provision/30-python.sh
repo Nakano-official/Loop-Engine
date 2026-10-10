@@ -2,7 +2,8 @@
 # Python toolchain: one virtualenv for the whole machine, owned by root.
 # Every role may read and execute it; none may write to it, so nothing that
 # runs under a loop account can pip-install its way out of a problem
-# (RUNNER_SPEC 1-3: environment freeze).
+# (the environment is frozen: what the loop runs on changes only when
+# provisioning changes it).
 #
 # Machine only (REDESIGN 7-1). It used to live inside the project, at
 # project/.venv, and the project is no longer provisioning's business: the
