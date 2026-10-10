@@ -117,3 +117,13 @@ def test_every_generated_file_compiles(tmp_path, module):
     for f in [tmp_path / "loop_types.py", tmp_path / "app" / f"{module}.py",
               tmp_path / "tests" / f"test_{module}.py"]:
         compile(f.read_text(encoding="utf-8"), str(f), "exec")
+
+
+def test_a_stub_filled_in_place_works(tmp_path):
+    # Same property as the TypeScript adapter's: the stub's own imports must
+    # work at run time, because the solver keeps them.
+    stub = emit.emit_stub(DESIGN, DESIGN.by_name["economy"])
+    head, _, _ = stub.partition("def production_rate")
+    filled = head + "def production_rate(owned, catalog):\n    raise loop_types.UnknownGenerator('any')\n"
+    v = run(tmp_path, {**CORRECT, "economy": filled}, only="economy")
+    assert v["M2.E5"]["ok"] is True, v["M2.E5"]

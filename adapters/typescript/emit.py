@@ -124,9 +124,16 @@ def signature(sig: dict) -> str:
 
 def emit_stub(d: Design, module: dict) -> str:
     s = Sentinels(d)
+    # A value import, not `import type`. The stub needs only the types, but the
+    # solver starts from this file and keeps its first line: with `import type`
+    # the import is erased at run time, and `throw new T.NegativeAmount()` in an
+    # otherwise correct implementation dies with ReferenceError. That happened
+    # on the first run with the real solver (2026-10-10): format.ts went red on
+    # M3.E6 three times and the loop sent the design back for granularity --
+    # the engine's mistake, reported as the design's.
     out = [f"// STUB for {module['id']} ({module['name']}). Generated: the right shape,",
            "// and values no example expects. The solver replaces this file.",
-           'import type * as T from "../loop_types";', ""]
+           'import * as T from "../loop_types";', ""]
     for fn, sig in module["functions"].items():
         out += [f"export function {tsname(fn)}{signature(sig)} {{",
                 f"  return {s.expr(parse_type(sig['returns']))};", "}", ""]
@@ -222,3 +229,32 @@ def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) ->
         name = module["name"]
         (ws / "app" / f"{name}.ts").write_text(impls.get(name) or emit_stub(d, module), encoding="utf-8")
         (ws / "tests" / f"{name}.test.ts").write_text(emit_tests(d, module), encoding="utf-8")
+
+
+# ---- what the implementer is told ------------------------------------------
+
+def implementation_guide(d: Design, module: dict) -> str:
+    """The language-specific half of an implementation brief: how to write
+    this module's one file so the generated tests can import and call it."""
+    name = module["name"]
+    deps = [d.modules[m]["name"] for m in module["depends_on"]]
+    lines = [
+        f"Write the TypeScript module `app/{name}.ts`.",
+        "",
+        '- Import the design\'s types with `import * as T from "../loop_types";`.',
+        "  Every value you are given is frozen: build new objects (spread syntax),",
+        "  never assign to a property of an argument.",
+        "- Throw the design's errors as `throw new T.<ErrorName>(...)`.",
+        "- Export every function of the contract by exactly its name.",
+    ]
+    if deps:
+        lines.append("- Call the modules you depend on through these imports, and nothing else:")
+        lines += [f'    import * as m_{dep} from "./{dep}";' for dep in deps]
+    else:
+        lines.append("- You depend on no other module of the design.")
+    lines += ["- Import nothing else.", "",
+              "The generated types (loop_types.ts):", "```ts", emit_types(d), "```"]
+    for dep in deps:
+        lines += ["", f"The contract of `{dep}` (signatures only):", "```ts",
+                  emit_stub(d, d.by_name[dep]), "```"]
+    return "\n".join(lines)

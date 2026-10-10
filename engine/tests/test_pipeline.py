@@ -111,3 +111,45 @@ def test_a_design_that_fails_its_gate_never_reaches_the_box(setup):
     assert out.stage == "モジュール設計"
     assert events(ledger) == ["GATE_FAILED"]
     assert not (win.root / "run5").exists()
+
+
+# ---- the attempt operation, with a fake solver role ---------------------------
+
+def fake_solver_role(correct, broken_first=()):
+    """Stands in for solver-run: reads the brief exactly as solver-local does
+    (the paths under its files heading), and writes the module's file into its
+    working directory -- the staging dir the window prepared."""
+    seen = {}
+
+    def solve(brief_path):
+        text = Path(brief_path).read_text(encoding="utf-8")
+        path = text.split("# Files you may create or modify", 1)[1].split()[0]
+        module = Path(path).stem
+        seen[module] = seen.get(module, 0) + 1
+        content = correct[module]
+        if module in broken_first and seen[module] == 1:
+            content = content.replace("spec.base_cost * spec.cost_scale ** owned", "spec.base_cost")
+        (solve.out / path).write_text(content, encoding="utf-8")
+        solve.briefs.append(text)
+        return 0, "[fake solver] wrote " + path
+
+    solve.briefs = []
+    return solve
+
+
+def test_the_attempt_operation_stages_solves_and_verifies(setup, tmp_path):
+    path, win, ledger = setup
+    solve = fake_solver_role(CORRECT, broken_first=("economy",))
+    solve.out = tmp_path / "solver_out"
+    win.solve, win.solver_in, win.solver_out = solve, tmp_path / "solver_in", solve.out
+    win.solver_in.mkdir()
+    win.solver_out.mkdir()
+    out = pipeline.run(path, "box", win, "run6", ledger=pipeline.Ledger(ledger))
+    assert out.stage == "done", (out.reason, out.detail)
+    # The second brief for economy carries what failed, expected and actual.
+    economy = [b for b in solve.briefs if "app/economy.py" in b]
+    assert len(economy) == 2
+    assert "M2.E1: expected [33.75], got [15.0]" in economy[1]
+    # A brief never names another module's file as writable.
+    for b in solve.briefs:
+        assert len(b.split("# Files you may create or modify", 1)[1].split()) == 1

@@ -217,3 +217,31 @@ def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) ->
         name = module["name"]
         (ws / "app" / f"{name}.py").write_text(impls.get(name) or emit_stub(d, module), encoding="utf-8")
         (ws / "tests" / f"test_{name}.py").write_text(emit_tests(d, module), encoding="utf-8")
+
+
+# ---- what the implementer is told ------------------------------------------
+
+def implementation_guide(d: Design, module: dict) -> str:
+    """The language-specific half of an implementation brief: how to write
+    this module's one file so the generated tests can import and call it."""
+    name = module["name"]
+    deps = [d.modules[m]["name"] for m in module["depends_on"]]
+    lines = [
+        f"Write the Python module `app/{name}.py`.",
+        "",
+        "- Import the design's types with `import loop_types`. Records are frozen dataclasses:",
+        "  build them with keyword arguments, and make a changed copy with",
+        "  `dataclasses.replace(...)`. Never modify a value you were given.",
+        "- Raise the design's errors as `raise loop_types.<ErrorName>(...)`.",
+    ]
+    if deps:
+        lines.append("- Call the modules you depend on through these imports, and nothing else:")
+        lines += [f"    from app import {dep} as m_{dep}" for dep in deps]
+    else:
+        lines.append("- You depend on no other module of the design.")
+    lines += ["- Use only the Python standard library besides these.", "",
+              "The generated types (loop_types.py):", "```python", emit_types(d), "```"]
+    for dep in deps:
+        lines += ["", f"The contract of `{dep}` (signatures only):", "```python",
+                  emit_stub(d, d.by_name[dep]), "```"]
+    return "\n".join(lines)

@@ -7,8 +7,7 @@ file), and a ledger. Read this file to know what happens in what order and
 where the loop goes back to.
 
 Not here yet: the upstream stages (analysis, definition, design -- the
-definer and designer roles), and the solver role in the box. run() starts
-from a design that exists, and takes the solver as an argument.
+definer and designer roles). run() starts from a design that exists.
 """
 from __future__ import annotations
 
@@ -24,11 +23,14 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "adapters"))
 import artifacts  # noqa: E402
+import briefs  # noqa: E402
 import diagnose  # noqa: E402
 from design import Design  # noqa: E402
 
-# A solver: (design, module, feedback from the last attempt) -> {path: text}.
-Solver = Callable[[Design, dict, tuple], dict]
+# A solver is either "box" -- the solver role in the box, through the window's
+# attempt operation -- or a stand-in function for tests:
+# (design, module, feedback from the last attempt) -> {path: text}.
+Solver = Callable[[Design, dict, tuple], dict] | str
 
 
 @dataclass
@@ -101,8 +103,20 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
         attempts: list[diagnose.Verdict] = []
         feedback: tuple = ()
         for n in range(1, max_attempts + 1):
-            files = solver(d, module, feedback)
-            result = window.call("verify", ws, name, {"files": files, "green": [m["name"] for m in green]})
+            names = [m["name"] for m in green]
+            if solver == "box":
+                # The solver role, in the box: the brief is composed here, on
+                # the host, and the window stages, solves and verifies.
+                brief = briefs.implement(d, module, feedback)
+                result = window.call("attempt", ws, name, {"brief": brief, "green": names})
+                if "engine" in result:
+                    log("ATTEMPT", module=name, n=n, stage=diagnose.ENGINE, reason=result["engine"])
+                    return Outcome(diagnose.ENGINE, f"{name}: {result['engine']}", names,
+                                   detail={"output": result.get("output", "")[-3000:]})
+            else:
+                # A stand-in: a function that returns the module's file.
+                files = solver(d, module, feedback)
+                result = window.call("verify", ws, name, {"files": files, "green": names})
             if "refused" in result:
                 verdict = diagnose.Verdict(diagnose.IMPLEMENTATION, result["refused"],
                                            feedback=(result["refused"],),

@@ -1,0 +1,90 @@
+"""Briefs: what a role is told (REDESIGN 6). A part, not a flow.
+
+    implement(design, module, feedback) -> str     the solver's brief for one module
+
+A brief is the only input a role has, so what goes into it is decided here,
+in code, and fixed by tests -- REDESIGN 4's rule in particular: the
+implementer is shown the examples it must satisfy and, after a failed
+attempt, what failed with expected and actual values; nothing else of the
+design's or the loop's.
+
+The format is the one solver-local reads (provision/bin/solver-local): it
+ends with the heading "# Files you may create or modify" and the paths the
+solver may write, one per line. solver-local adds the current contents of
+those files and the output instructions itself.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+
+ADAPTERS = Path(__file__).resolve().parents[1] / "adapters"
+FILES_HEADING = "# Files you may create or modify"     # solver-local's FILES_HEADING
+
+
+def _adapter(language: str):
+    spec = importlib.util.spec_from_file_location(f"emit_{language}", ADAPTERS / language / "emit.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _value(v) -> str:
+    if isinstance(v, dict) and set(v) == {"$"}:
+        return v["$"]                       # a fixture or an earlier step, by name
+    return json.dumps(v, ensure_ascii=False)
+
+
+def render_example(d, module: dict, ex: dict) -> str:
+    """One example as two lines a model can read: the calls, then what must hold."""
+    calls = []
+    for st in ex["steps"]:
+        if "value" in st:
+            calls.append(f"{st['let']} = {_value(st['value'])}")
+        else:
+            args = ", ".join(f"{k}={_value(v)}" for k, v in st["args"].items())
+            calls.append(f"{st['let']} = {st['call']}({args})")
+    then = ex["then"]
+    if "raises" in then:
+        last = ex["steps"][-1]
+        expect = f"the call to {last['call']} throws {then['raises']}"
+    else:
+        expect = " and ".join(f"{name} == {_value(v)}" for name, v in zip(then["observe"], then["equals"]))
+    return f"{ex['id']}:  " + "; ".join(calls) + f"\n    must hold: {expect}"
+
+
+def implement(d, module: dict, feedback: tuple = ()) -> str:
+    language = d.data["target"]["language"]
+    emit = _adapter(language)
+    path = f"app/{module['name']}{emit.EXTENSION}"
+    examples = d.examples(module)
+    used = {v["$"] for ex in examples for st in ex["steps"]
+            for v in st.get("args", {}).values() if isinstance(v, dict) and set(v) == {"$"}}
+    used |= {v["$"] for ex in examples for v in ex["then"].get("equals", [])
+             if isinstance(v, dict) and set(v) == {"$"}}
+    fixtures = {k: fx for k, fx in d.fixtures.items() if k in used}
+
+    parts = [
+        f"# Task",
+        f"Implement the module `{module['name']}` ({module['id']}) so that every example below holds.",
+        "The functions, their parameters and their return types are fixed by the contract: the file",
+        "you are given already has them, returning placeholder values. Replace the bodies.",
+        "",
+        "# How to write it",
+        emit.implementation_guide(d, module),
+        "",
+        f"# Examples ({len(examples)}) -- every one must hold",
+        "Each line shows calls in order, then what must be true afterwards. Names on the left",
+        "of `=` are results you can refer to later in the same example.",
+        "",
+    ]
+    parts += [render_example(d, module, ex) for ex in examples]
+    if fixtures:
+        parts += ["", "Named values used above:"]
+        parts += [f"{k} = {json.dumps(fx['value'], ensure_ascii=False)}" for k, fx in fixtures.items()]
+    if feedback:
+        parts += ["", "# Your previous attempt failed", "Fix these and keep the rest working:"]
+        parts += [str(f) for f in feedback]
+    parts += ["", FILES_HEADING, path, ""]
+    return "\n".join(parts)

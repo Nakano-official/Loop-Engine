@@ -82,10 +82,33 @@ def local_runner(ws: Path, argv: list) -> dict:
     return {"records": records, "output": (proc.stdout + proc.stderr)[-20000:]}
 
 
+def solver_runner(brief: Path) -> tuple[int, str]:
+    """In the box: start the solver role on one brief. Exit 7 is solver-local's
+    "the inference server did not answer" -- after the VM restarts, llama-server
+    is still loading the weights and answers 503 for a while -- so that one is
+    waited out; every other code is passed on."""
+    import time
+    for _ in range(18):
+        proc = subprocess.run(["sudo", "-n", "-u", "solver", "/srv/loop/bin/solver-run", str(brief), "600"],
+                              capture_output=True, text=True, cwd="/")
+        if proc.returncode != 7:
+            break
+        time.sleep(10)
+    return proc.returncode, (proc.stdout + proc.stderr)[-8000:]
+
+
+SOLVER_IN = Path("/srv/loop/roles/solver/in")
+SOLVER_OUT = Path("/srv/loop/roles/solver/out")
+
+
 class Window:
-    def __init__(self, root: Path, runner: Runner):
+    def __init__(self, root: Path, runner: Runner, solve=solver_runner,
+                 solver_in: Path = SOLVER_IN, solver_out: Path = SOLVER_OUT):
         self.root = Path(root)
         self.runner = runner
+        self.solve = solve
+        self.solver_in = Path(solver_in)
+        self.solver_out = Path(solver_out)
 
     def _ws(self, name: str) -> Path:
         if not NAME.match(name):
@@ -142,6 +165,45 @@ class Window:
         green = [g for g in payload.get("green", []) if g in d.by_name]
         return self._run(ws, emit, green + [module])
 
+    def attempt(self, ws_name: str, module: str, payload: dict) -> dict:
+        """One attempt by the solver role: stage, solve, verify.
+
+        The solver never sees the workspace. Its working directory is its own
+        out/, where the window puts the one file it may change (the stub, or
+        the last candidate) inside a directory app/ the window creates --
+        without the sticky bit: in a sticky directory a file owned by someone
+        else cannot be opened with O_CREAT even when it is writable
+        (fs.protected_regular), which is how solver-local writes. Whatever
+        comes back at that one path is handed to verify, which accepts that
+        path and nothing else.
+        """
+        ws = self._ws(ws_name)
+        d, emit = self._build(ws)
+        self._module(d, module)
+        allowed = f"app/{module}{emit.EXTENSION}"
+
+        stage = self.solver_out / "app"
+        shutil.rmtree(stage, ignore_errors=True)
+        stage.mkdir(parents=True)
+        os.chmod(stage, 0o2770)
+        current = self.solver_out / allowed
+        shutil.copyfile(ws / allowed, current)
+        os.chmod(current, 0o664)
+
+        brief = self.solver_in / f"{ws_name}-{module}.md"
+        brief.write_text(payload["brief"], encoding="utf-8")
+        code, output = self.solve(brief)
+        brief.unlink(missing_ok=True)
+        if code not in (0, 124):
+            # Not the model being bad at its job (that exits 0 and costs an
+            # attempt): the machine is wrong, and retrying will not help.
+            return {"engine": f"the solver backend exited {code}", "output": output}
+        candidate = current.read_text(encoding="utf-8") if current.exists() else ""
+        result = self.verify(ws_name, module, {"files": {allowed: candidate},
+                                               "green": payload.get("green", [])})
+        result["solver"] = output
+        return result
+
     def accept(self, ws_name: str, module: str) -> dict:
         ws = self._ws(ws_name)
         d, emit = self._load(ws)
@@ -156,6 +218,8 @@ class Window:
             return self.prepare_tests(ws, module, payload)
         if op == "verify":
             return self.verify(ws, module, payload)
+        if op == "attempt":
+            return self.attempt(ws, module, payload)
         if op == "accept":
             return self.accept(ws, module)
         raise ValueError(f"unknown operation {op!r}")
@@ -167,7 +231,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"error": "usage: <op> <workspace> <module>"}))
         return 2
     op, ws, module = argv
-    payload = json.loads(sys.stdin.read() or "{}") if op in ("prepare-tests", "verify") else None
+    payload = json.loads(sys.stdin.read() or "{}") if op in ("prepare-tests", "verify", "attempt") else None
     try:
         out = Window(Path("/srv/loop/work"), exec_runner).call(op, ws, module, payload)
     except (ValueError, KeyError) as e:

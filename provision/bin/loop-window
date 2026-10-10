@@ -41,7 +41,7 @@ case "$CMD" in
     exec git-upload-pack "$GIT/$name"
     ;;
 
-  "prepare-tests "*|"verify "*|"accept "*)
+  "prepare-tests "*|"verify "*|"attempt "*|"accept "*)
     # <op> <workspace> <module>, the payload (JSON) on stdin, the answer (JSON)
     # on stdout. Three plain names, checked here and again in window.py, so
     # nothing reaches Python that could be read as a path or an option.
@@ -53,7 +53,7 @@ case "$CMD" in
     exec python3 /srv/loop/lib/engine/window.py "${parts[@]}"
     ;;
 
-  run-role|run-role\ *|freeze|freeze\ *|attempt|attempt\ *)
+  run-role|run-role\ *|freeze|freeze\ *)
     echo "loop-window: '${CMD%% *}' is reserved and not implemented yet" >&2
     exit 64
     ;;

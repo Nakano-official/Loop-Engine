@@ -96,3 +96,23 @@ def test_mutating_the_input_is_impossible(tmp_path):
     assert broken != CORRECT["rules"]
     v = run(tmp_path, {**CORRECT, "rules": broken}, only="rules")
     assert v["M4.E5"] is None or v["M4.E5"]["ok"] is False
+
+
+def test_a_stub_filled_in_place_works(tmp_path):
+    # The solver starts from the stub and keeps what it does not need to
+    # change -- its imports included. Whatever the stub imports must therefore
+    # work at run time. Here the stub of economy has one body replaced, by a
+    # line that uses a design error class through the stub's own import.
+    stub = emit.emit_stub(DESIGN, DESIGN.by_name["economy"])
+    head, _, _ = stub.partition("export function production_rate")
+    filled = head + (
+        "export function production_rate(owned: Readonly<Record<string, number>>,"
+        " catalog: ReadonlyArray<T.GeneratorSpec>): number {\n"
+        "  throw new T.UnknownGenerator(\"any\");\n}\n")
+    v = run(tmp_path, {**CORRECT, "economy": filled}, only="economy")
+    assert v["M2.E5"]["ok"] is True, v["M2.E5"]
+
+
+def test_the_stub_imports_the_types_as_values():
+    for module in DESIGN.order():
+        assert "import type" not in emit.emit_stub(DESIGN, module)
