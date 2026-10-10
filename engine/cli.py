@@ -1,6 +1,7 @@
 """The command line for the apps on this machine.
 
     python engine/cli.py list
+    python engine/cli.py new <name> --title T --requirements R.md        (the roles write the rest)
     python engine/cli.py new <name> --title T --definition D.json --design S.json
     python engine/cli.py run <name> [--attempts N]       one run, in the foreground
     python engine/cli.py stop <name> <run>               ask a running run to stop
@@ -34,7 +35,14 @@ def cmd_list(store: apps.Store, _args) -> int:
 
 
 def cmd_new(store: apps.Store, args) -> int:
-    app = store.create(args.name, args.title, Path(args.definition), Path(args.design))
+    if args.requirements:
+        app = store.create_from_requirements(args.name, args.title,
+                                             Path(args.requirements).read_text(encoding="utf-8"))
+    else:
+        if not (args.definition and args.design):
+            print("give --requirements, or both --definition and --design", file=sys.stderr)
+            return 2
+        app = store.create(args.name, args.title, Path(args.definition), Path(args.design))
     print(f"created {app.dir}")
     return 0
 
@@ -62,9 +70,21 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
     # ends cleanly at the next one.
     stop_file = run.dir / "stop"
     try:
-        out = pipeline.run(app.design_path, "box", pipeline.RemoteWindow(), run.workspace,
-                           max_attempts=args.attempts, ledger=ledger, output=run.dir / "app.html",
-                           should_stop=stop_file.exists)
+        requirements = app.requirements()
+        if requirements is not None:
+            # From what a person asked for: the definer and the designer first.
+            # This run's definition and design are kept in its directory, and
+            # become the app's latest.
+            out = pipeline.run_from_requirements(requirements, run.dir, pipeline.RemoteWindow(), run.workspace,
+                                                 max_attempts=args.attempts, ledger=ledger,
+                                                 output=run.dir / "app.html", should_stop=stop_file.exists)
+            for name in ("definition.json", "design.json"):
+                if (run.dir / name).exists():
+                    (app.dir / name).write_bytes((run.dir / name).read_bytes())
+        else:
+            out = pipeline.run(app.design_path, "box", pipeline.RemoteWindow(), run.workspace,
+                               max_attempts=args.attempts, ledger=ledger, output=run.dir / "app.html",
+                               should_stop=stop_file.exists)
         outcome = {"stage": out.stage, "reason": out.reason, "green": out.green, "detail": out.detail}
     except KeyboardInterrupt:
         ledger("STOPPED")
@@ -97,8 +117,9 @@ def main(argv=None) -> int:
     n = sub.add_parser("new")
     n.add_argument("name")
     n.add_argument("--title", required=True)
-    n.add_argument("--definition", required=True)
-    n.add_argument("--design", required=True)
+    n.add_argument("--requirements")
+    n.add_argument("--definition")
+    n.add_argument("--design")
     r = sub.add_parser("run")
     r.add_argument("name")
     r.add_argument("--attempts", type=int, default=3)

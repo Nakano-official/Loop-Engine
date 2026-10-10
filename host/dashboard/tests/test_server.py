@@ -136,3 +136,20 @@ class DashboardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreateAppTest(DashboardTest):
+    def test_an_app_is_created_from_requirements_at_this_machine_only(self):
+        body = {"name": "todo", "title": "やること", "requirements": "- 追加できる\n- 消せる\n"}
+        self.assertEqual(self.remote("POST", "/api/apps", body)[0], 403)
+        s, _, _ = self.request("POST", "/api/apps", body=body)
+        self.assertEqual(s, 201)
+        self.assertEqual(self.store.app("todo").requirements(), body["requirements"])
+        self.assertEqual(self.request("POST", "/api/apps", body=body)[0], 409)
+        data = json.loads(self.request("GET", "/api/apps/todo")[2])
+        self.assertEqual(data["requirements"], body["requirements"])
+
+    def test_a_bad_name_or_empty_requirements_is_refused(self):
+        for body in [{"name": "../x", "title": "t", "requirements": "r"},
+                     {"name": "ok", "title": "t", "requirements": "   "}]:
+            self.assertEqual(self.request("POST", "/api/apps", body=body)[0], 400)

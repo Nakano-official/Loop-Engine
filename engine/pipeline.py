@@ -6,8 +6,8 @@ accept, in the box or local), a solver (a function from a module to its one
 file), and a ledger. Read this file to know what happens in what order and
 where the loop goes back to.
 
-Not here yet: the upstream stages (analysis, definition, design -- the
-definer and designer roles). run() starts from a design that exists.
+run() starts from a design that exists; run_from_requirements() starts from
+requirements and puts the definer and the designer in front of it.
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "adapters"))
 import artifacts  # noqa: E402
 import briefs  # noqa: E402
+import upstream_briefs  # noqa: E402
 import diagnose  # noqa: E402
 from design import Design  # noqa: E402
 
@@ -172,3 +173,86 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
     log("OUTPUT", path=str(path) if path else None, boot=boot)
     return Outcome("done", "every module green, and the app boots", names,
                    detail={"output": str(path) if path else None, "boot": boot})
+
+
+# ---- from requirements -------------------------------------------------------
+#
+# The upstream stages (REDESIGN 2): requirements -> definition -> design, each
+# written by a role in the box (run-role) and held at the host's gate; then
+# run() above; and when run() sends the loop back to the design, the designer
+# is told which module and why -- ids and the kind of reason, never what the
+# implementation returned -- and the design is written again.
+
+def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, rounds: int, log) -> tuple:
+    """Ask a role for one JSON file until its gate passes. -> (doc, findings)"""
+    findings: list[str] = []
+    doc = None
+    for n in range(1, rounds + 1):
+        res = window.call("run-role", ws, role, {"brief": brief_for(findings)})
+        text = res.get("files", {}).get(name)
+        if text is None:
+            findings = [f"{role} wrote no {name} (exit {res.get('code')}); write exactly that file"]
+        else:
+            try:
+                doc = json.loads(text)
+                findings = [str(f) for f in gate(doc)]
+            except json.JSONDecodeError as e:
+                findings = [f"{name} is not JSON: {e}"]
+        log(role.upper(), n=n, findings=findings[:20])
+        if not findings:
+            return doc, []
+    return doc, findings
+
+
+def run_from_requirements(requirements: str, workdir: Path | str, window, ws: str,
+                          solver: Solver = "box", max_attempts: int = 3, gate_rounds: int = 3,
+                          redesigns: int = 2, ledger: Ledger | None = None,
+                          output: Path | str | None = None, build: bool = True,
+                          should_stop: Callable[[], bool] = lambda: False) -> Outcome:
+    log = ledger or Ledger(None)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    # 1. The definition, by the definer, held at the definition gate.
+    definition, findings = _write_by_role(
+        window, f"{ws}-def", "definer", "definition.json",
+        lambda f: upstream_briefs.define(requirements, findings=f),
+        artifacts.check_definition, gate_rounds, log)
+    if findings:
+        return Outcome(artifacts.DEFINITION, "the definition did not pass its gate",
+                       detail={"findings": findings})
+    (workdir / "definition.json").write_text(json.dumps(definition, ensure_ascii=False, indent=1),
+                                             encoding="utf-8")
+
+    # 2-4. The design, by the designer; then the modules; back to the designer
+    #      when the loop says the design is at fault.
+    previous, verdict = None, None
+    out = Outcome("none", "")
+    for round_ in range(redesigns + 1):
+        if should_stop():
+            log("STOPPED")
+            return Outcome("stopped", "stopped by a person")
+
+        def brief(f, prev=previous, v=verdict):
+            return upstream_briefs.design(definition, findings=f, previous=prev, verdict=v)
+
+        def gate(ds):
+            ds["definition"] = "definition.json"
+            return artifacts.check_design(ds, definition)
+
+        design, findings = _write_by_role(window, f"{ws}-des{round_}", "designer", "design.json",
+                                          brief, gate, gate_rounds, log)
+        if findings:
+            return Outcome(artifacts.DESIGN, "the design did not pass its gate", detail={"findings": findings})
+        design["definition"] = "definition.json"
+        (workdir / "design.json").write_text(json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8")
+        log("DESIGN_ROUND", round=round_)
+
+        out = run(workdir / "design.json", solver, window, f"{ws}-r{round_}", max_attempts=max_attempts,
+                  ledger=log, output=output, build=build, should_stop=should_stop)
+        if out.stage != diagnose.DESIGN:
+            return out
+        module = out.reason.split(":", 1)[0]
+        previous, verdict = design, {"module": module, **out.detail}
+        log("BACK_TO_DESIGN", round=round_, **verdict)
+    return out

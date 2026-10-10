@@ -105,6 +105,7 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                 if m:
                     app = store.app(m.group(1))
                     self._json({"name": app.name, "title": app.meta().get("title", app.name),
+                                "requirements": app.requirements(),
                                 "runs": [r.summary() for r in app.runs()]})
                     return
                 m = re.fullmatch(r"/api/apps/([^/]+)/runs/([^/]+)", path)
@@ -144,6 +145,15 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
             try:
                 body = self._body()
                 path = urlparse(self.path).path
+                if path == "/api/apps":
+                    # A new app from requirements. Local, like starting a run:
+                    # its first run is what the person creating it will play.
+                    if scope != LOCAL:
+                        raise PermissionError("an app is created at this machine")
+                    app = store.create_from_requirements(str(body.get("name", "")), str(body.get("title", "")),
+                                                         str(body.get("requirements", "")))
+                    self._json({"name": app.name}, HTTPStatus.CREATED)
+                    return
                 if path == "/api/runs/start":
                     # Starting is a local act: it spends the machine, and the
                     # person who starts a run is the one who will play its app.
@@ -167,6 +177,8 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                 self._json({"error": "no such app or run"}, HTTPStatus.NOT_FOUND)
             except PermissionError as e:
                 self._json({"error": str(e)}, HTTPStatus.FORBIDDEN)
+            except FileExistsError:
+                self._json({"error": "an app with that name already exists"}, HTTPStatus.CONFLICT)
             except (ValueError, RuntimeError, json.JSONDecodeError) as e:
                 self._json({"error": str(e)}, HTTPStatus.CONFLICT if isinstance(e, RuntimeError)
                            else HTTPStatus.BAD_REQUEST)

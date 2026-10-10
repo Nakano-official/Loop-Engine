@@ -98,14 +98,46 @@ async function drawApps() {
       h("div", { class: "sub" }, a.name, " · ", `${a.runs} 回`,
         latest ? [" · ", chip(STATUS[latest.status] || [latest.status, "info"])] : ""));
   }));
-  if (!data.apps.length) nav.append(h("p", { class: "muted" }, "アプリがまだありません。engine/cli.py new で作ります。"));
+  if (session.can_start) {
+    nav.append(h("button", {
+      class: selected.app === null && selected.creating ? "on" : "",
+      onclick: () => { selected = { app: null, run: null, creating: true }; drawnFrom = ""; refresh(); },
+    }, h("div", { class: "title" }, "＋ 新しいアプリ"), h("div", { class: "sub" }, "要件から作る")));
+  }
+  if (!data.apps.length) nav.append(h("p", { class: "muted" }, "アプリがまだありません。"));
   return data.running;
 }
 
 // ---- one app ----------------------------------------------------------------------
 
+function drawCreate() {
+  const box = document.getElementById("detail");
+  if (drawnFrom === "create") return;           // never redraw over what is being typed
+  drawnFrom = "create";
+  const name = h("input", { placeholder: "idlegame2（小文字・数字・- _）", pattern: "[a-z0-9][a-z0-9_-]*" });
+  const title = h("input", { placeholder: "放置ゲーム" });
+  const req = h("textarea", { class: "req", placeholder: "作りたいアプリの要件を書きます。箇条書きで、できること・画面に出すもの・保存など。" });
+  const msg = h("p", { class: "note" });
+  box.replaceChildren(
+    h("h2", {}, "新しいアプリ"),
+    h("p", { class: "muted" }, "要件から、definer が定義を、designer が設計を書き、ローカルのモデルが実装して、開けば動く1つの HTML を出します。"),
+    h("label", {}, "名前", name), h("label", {}, "題名", title), h("label", {}, "要件", req),
+    h("div", { class: "row" }, h("button", {
+      class: "act primary",
+      onclick: async () => {
+        try {
+          const made = await post("/api/apps", { name: name.value.trim(), title: title.value.trim(), requirements: req.value });
+          selected = { app: made.name, run: null };
+          drawnFrom = "";
+          refresh();
+        } catch (e) { msg.textContent = e.message; }
+      },
+    }, "作る"), msg));
+}
+
 async function drawApp(running) {
   const box = document.getElementById("detail");
+  if (selected.creating) { drawCreate(); return; }
   if (!selected.app) return;
   const app = await get(`/api/apps/${encodeURIComponent(selected.app)}`);
   if (!selected.run && app.runs.length) selected.run = app.runs[0].id;
@@ -136,6 +168,7 @@ async function drawApp(running) {
 
   const parts = [
     h("h2", {}, app.title, h("span", { class: "muted" }, `  ${app.name}`)),
+    app.requirements ? h("details", {}, h("summary", {}, "要件"), h("pre", { class: "req" }, app.requirements)) : null,
     h("div", { class: "row" }, start,
       busy ? h("span", { class: "note" }, `実行中の通しがあります（${running.app}）。同時に1つだけです。`) : null,
       !session.can_start ? h("span", { class: "note" }, "通しはこの PC から始めます。") : null),
@@ -144,6 +177,24 @@ async function drawApp(running) {
   ];
   if (run) parts.push(drawRun(app, run));
   box.replaceChildren(...parts);
+}
+
+const UPSTREAM = { DEFINER: "定義（definer）", DESIGNER: "設計（designer）" };
+
+function drawUpstream(run) {
+  if (!run.upstream || !run.upstream.length) return null;
+  const rows = run.upstream.map((e) => {
+    if (e.event === "BACK_TO_DESIGN") {
+      return h("li", {}, chip(["設計へ戻した", "warn"]),
+        ` ${e.module}: ${e.reason || ""}`, e.examples && e.examples.length ? `（${e.examples.join(", ")}）` : "");
+    }
+    if (e.event === "DESIGN_ROUND") return h("li", {}, chip(["設計で実装へ", "info"]), ` ${e.round + 1} 回目の設計`);
+    const ok = !e.findings || !e.findings.length;
+    return h("li", {}, chip([UPSTREAM[e.event] || e.event, ok ? "ok" : "bad"]),
+      ` ${e.n} 回目: `, ok ? "関門を通った" : `関門の指摘 ${e.findings.length} 件`,
+      ok ? null : h("ul", {}, ...e.findings.slice(0, 5).map((f) => h("li", { class: "note" }, f))));
+  });
+  return h("div", {}, h("h3", {}, "上流"), h("ul", {}, ...rows));
 }
 
 function drawRun(app, run) {
@@ -164,7 +215,8 @@ function drawRun(app, run) {
                                catch (e) { alert(e.message); } },
       }, "止める") : null),
     run.reason ? h("p", {}, run.reason) : null,
-    modules];
+    drawUpstream(run),
+    run.modules.length ? modules : null];
 
   if (run.output) {
     const src = `/play/${encodeURIComponent(app.name)}/${encodeURIComponent(run.id)}`;

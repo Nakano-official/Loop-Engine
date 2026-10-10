@@ -3,11 +3,14 @@ flow: it reads and writes files, and decides nothing.
 
     apps/<name>/
       app.json            {"name", "title"}
-      definition.json     the definition -- the host holds the canonical copy (REDESIGN 6)
-      design.json         the design; its "definition" field names definition.json
+      requirements.md     what a person asked for -- the definer's input
+      definition.json     the latest definition -- the host holds the canonical copy (REDESIGN 6)
+      design.json         the latest design; its "definition" field names definition.json
       decisions.jsonl     what a person decided about a run: append-only
       runs/<run>/
         ledger.jsonl      the pipeline's ledger for that run
+        definition.json   the definition and design this run wrote (from requirements)
+        design.json
         outcome.json      how it ended
         app.html          the output, when it built and booted
         run.pid           while it runs
@@ -147,11 +150,16 @@ class Run:
                 m["reason"] = e.get("reason", "")
         return list(mods.values())
 
+    def upstream(self) -> list[dict]:
+        """The definer's and designer's rounds and every return to the design."""
+        keep = {"DEFINER", "DESIGNER", "DESIGN_ROUND", "BACK_TO_DESIGN"}
+        return [{k: v for k, v in e.items() if k != "t"} for e in self.ledger() if e.get("event") in keep]
+
     def summary(self) -> dict:
         out = self.outcome() or {}
         return {"id": self.id, "status": self.status(), "stage": out.get("stage"),
                 "reason": out.get("reason"), "green": out.get("green", []),
-                "output": bool(self.output()), "modules": self.modules(),
+                "output": bool(self.output()), "modules": self.modules(), "upstream": self.upstream(),
                 "decision": self.app.decision(self.id)}
 
 
@@ -170,6 +178,10 @@ class App:
     @property
     def design_path(self) -> Path:
         return self.dir / "design.json"
+
+    def requirements(self) -> str | None:
+        p = self.dir / "requirements.md"
+        return p.read_text(encoding="utf-8") if p.exists() else None
 
     def runs(self) -> list[Run]:
         """Newest first, by when each run started -- not by its id, which is a
@@ -231,6 +243,7 @@ class App:
     def summary(self) -> dict:
         runs = self.runs()
         return {"name": self.name, "title": self.meta().get("title", self.name),
+                "from_requirements": self.requirements() is not None,
                 "runs": len(runs), "latest": runs[0].summary() if runs else None}
 
 
@@ -281,12 +294,31 @@ class Store:
         if not self.root.exists():
             return []
         return [App(p) for p in sorted(self.root.iterdir())
-                if p.is_dir() and NAME.match(p.name) and (p / "design.json").exists()]
+                if p.is_dir() and NAME.match(p.name) and (p / "app.json").exists()]
 
     def app(self, name: str) -> App:
-        if not NAME.match(name) or not (self.root / name / "design.json").exists():
+        if not NAME.match(name) or not (self.root / name / "app.json").exists():
             raise KeyError(name)
         return App(self.root / name)
+
+    def create_from_requirements(self, name: str, title: str, requirements: str) -> App:
+        """A new app from what a person asked for. The definer and the designer
+        write the rest, on its first run."""
+        if not NAME.match(name):
+            raise ValueError(f"an app name is lower case letters, digits, - and _: {name!r}")
+        if not requirements.strip():
+            raise ValueError("the requirements are empty")
+        if len(requirements) > 20000:
+            raise ValueError("the requirements are too long")
+        d = self.root / name
+        try:
+            d.mkdir(parents=True)
+        except FileExistsError:
+            raise FileExistsError(name) from None
+        (d / "requirements.md").write_text(requirements, encoding="utf-8")
+        (d / "app.json").write_text(json.dumps({"name": name, "title": title[:100] or name},
+                                               ensure_ascii=False), encoding="utf-8")
+        return App(d)
 
     def create(self, name: str, title: str, definition: Path, design: Path) -> App:
         """A new app from a definition and a design (until the upstream stages

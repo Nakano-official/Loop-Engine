@@ -125,12 +125,26 @@ def tool_out(tool) -> Path:
     return Path("/srv/loop/roles/exec/out") if tool is exec_tool else None
 
 
+UPSTREAM = {"definer", "designer"}           # the roles run-role may start
+ROLES = Path("/srv/loop/roles")
+
+
+def role_runner(role: str, brief: Path) -> tuple[int, str]:
+    """In the box: start a Claude role on one brief, through its launcher."""
+    proc = subprocess.run(["sudo", "-n", "-u", role, f"/srv/loop/bin/{role}-run", str(brief), "900"],
+                          capture_output=True, text=True, cwd="/")
+    return proc.returncode, (proc.stdout + proc.stderr)[-8000:]
+
+
 class Window:
     def __init__(self, root: Path, runner: Runner, solve=solver_runner,
-                 solver_in: Path = SOLVER_IN, solver_out: Path = SOLVER_OUT, tool=exec_tool):
+                 solver_in: Path = SOLVER_IN, solver_out: Path = SOLVER_OUT, tool=exec_tool,
+                 run_role=role_runner, roles: Path = ROLES):
         self.root = Path(root)
         self.runner = runner
         self.tool = tool
+        self.run_role_fn = run_role
+        self.roles = Path(roles)
         self.solve = solve
         self.solver_in = Path(solver_in)
         self.solver_out = Path(solver_out)
@@ -272,6 +286,35 @@ class Window:
             boot = {"ok": False, "errors": [f"the boot check printed no verdict: {output[-2000:]}"]}
         return {"html": html, "boot": boot}
 
+    def run_role(self, ws_name: str, role: str, payload: dict) -> dict:
+        """An upstream role on one brief (REDESIGN 6, run-role): the brief into
+        the role's in/, the role started through its launcher, and the files it
+        left at the top of its out/ handed back. The role never sees a
+        workspace; ws_name only names the brief.
+
+        out/ is emptied first: runner owns it, so it may remove what the role
+        left there (the sticky bit stops the role, not the directory's owner).
+        Only top-level regular files come back -- the brief asks for exactly
+        the file it wants."""
+        self._ws(ws_name)                       # the name check
+        if role not in UPSTREAM:
+            raise ValueError(f"run-role starts {sorted(UPSTREAM)}, not {role!r}")
+        out = self.roles / role / "out"
+        for p in out.iterdir():
+            if p.is_file() or p.is_symlink():
+                p.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(p, ignore_errors=True)
+        brief = self.roles / role / "in" / f"{ws_name}.md"
+        brief.write_text(payload["brief"], encoding="utf-8")
+        code, output = self.run_role_fn(role, brief)
+        brief.unlink(missing_ok=True)
+        files = {}
+        for p in sorted(out.iterdir()):
+            if p.is_file() and not p.is_symlink() and p.stat().st_size <= 1_000_000:
+                files[p.name] = p.read_text(encoding="utf-8", errors="replace")
+        return {"code": code, "files": files, "output": output}
+
     def accept(self, ws_name: str, module: str) -> dict:
         ws = self._ws(ws_name)
         d, emit = self._load(ws)
@@ -292,6 +335,8 @@ class Window:
             return self.accept(ws, module)
         if op == "build-app":
             return self.build_app(ws, module)
+        if op == "run-role":
+            return self.run_role(ws, module, payload)
         raise ValueError(f"unknown operation {op!r}")
 
 
@@ -305,7 +350,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"error": "usage: <op> <workspace> <module>"}))
         return 2
     op, ws, module = argv
-    payload = json.loads(sys.stdin.read() or "{}") if op in ("prepare-tests", "verify", "attempt") else None
+    payload = json.loads(sys.stdin.read() or "{}") if op in ("prepare-tests", "verify", "attempt", "run-role") else None
     try:
         out = Window(Path("/srv/loop/work"), exec_runner).call(op, ws, module, payload)
     except (ValueError, KeyError) as e:
