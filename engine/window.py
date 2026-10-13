@@ -97,7 +97,11 @@ def local_runner(ws: Path, argv: list) -> dict:
     """On the host, for the engine's own tests: the same, without exec."""
     record = ws / ".loop" / "records.jsonl"
     record.unlink(missing_ok=True)
-    env = {**os.environ, "LOOP_EXAMPLES": str(ws / "examples.json"), "LOOP_RECORD_DIR": str(record.parent)}
+    # PYTHONDONTWRITEBYTECODE, as exec-run sets it: a candidate rewritten within
+    # the same second at the same size would otherwise run as the cached .pyc
+    # of the one before it -- a correct second attempt judged as the first.
+    env = {**os.environ, "LOOP_EXAMPLES": str(ws / "examples.json"), "LOOP_RECORD_DIR": str(record.parent),
+           "PYTHONDONTWRITEBYTECODE": "1"}
     proc = subprocess.run(argv, cwd=ws, env=env, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", shell=sys.platform == "win32")
     records = [json.loads(l) for l in record.read_text(encoding="utf-8").splitlines()] if record.exists() else []
@@ -142,7 +146,7 @@ def tool_out(tool) -> Path:
     return Path("/srv/loop/roles/exec/out") if tool is exec_tool else None
 
 
-UPSTREAM = {"definer", "designer"}           # the roles run-role may start
+UPSTREAM = {"analyst", "definer", "designer"}   # the roles run-role may start
 ROLES = Path("/srv/loop/roles")
 
 

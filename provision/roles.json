@@ -21,6 +21,7 @@
     "exec":     {"uid": 1006, "model": null,     "invoked": true,  "egress": "none", "work": "read"},
     "definer":  {"uid": 1007, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
     "designer": {"uid": 1008, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
+    "analyst":  {"uid": 1009, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
     "llm":      {"uid": null, "system": true, "model": null, "invoked": false, "egress": "none"}
   }
 }

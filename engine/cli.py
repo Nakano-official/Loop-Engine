@@ -82,7 +82,7 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
                                                  max_attempts=args.attempts, ledger=ledger,
                                                  output=run.dir / "app.html", should_stop=stop_file.exists,
                                                  platform=app.platform())
-            for name in ("definition.json", "design.json"):
+            for name in ("concepts.json", "definition.json", "design.json"):
                 if (run.dir / name).exists():
                     (app.dir / name).write_bytes((run.dir / name).read_bytes())
         else:

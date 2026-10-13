@@ -1,5 +1,7 @@
-"""The exit gates for the definition and the design (DESIGN 5, FORMATS 7).
+"""The exit gates for the concept file, the definition and the design (DESIGN 5, FORMATS 7, 11).
 
+    check_concepts(concepts)             -> [Finding]   back to requirements analysis
+    check_coverage(concepts, definition) -> [Finding]   back to the definer
     check_definition(definition)         -> [Finding]
     check_design(design, definition)     -> [Finding]
 
@@ -25,6 +27,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "adapters"))
 from design import PRIMITIVES, is_ref, parse_type  # noqa: E402
 
+ANALYSIS = "要求分析"
 DEFINITION = "要件定義"
 DESIGN = "モジュール設計"
 
@@ -458,6 +461,166 @@ def check_design(ds: Any, definition: dict) -> list[Finding]:
         for fn in m.get("functions", {}):
             if fn not in called:
                 g.bad(f"{w}.functions.{fn}", "no example calls it")
+    return g.findings
+
+
+# ---- the concept file (DESIGN 4, FORMATS 11) --------------------------------
+
+CONCEPT_ID = re.compile(r"^C[1-9][0-9]*$")
+REQUIREMENT_ID = re.compile(r"^R[1-9][0-9]*$")
+CHECKS = {"example", "evaluation"}
+# An id written into prose: "D1で定めた", "C2 の", "R3" -- ASCII letters and
+# digits around it would make it part of a longer word, so those do not count.
+ID_IN_PROSE = re.compile(r"(?<![A-Za-z0-9])[CRDM][1-9][0-9]*(?:\.[PE][1-9][0-9]*)?(?![A-Za-z0-9])")
+
+
+def _prose_ok(g: _Gate, text: Any, where: str, required: bool = True) -> None:
+    if text is None and not required:
+        return
+    if not isinstance(text, str) or (required and not text.strip()):
+        g.bad(where, "must be text")
+        return
+    found = ID_IN_PROSE.findall(text)
+    if found:
+        g.bad(where, f"refers to {', '.join(sorted(set(found)))} in prose: each text stands on its own, "
+                     "and references go in the structured fields")
+
+
+def check_concepts(c: Any) -> list[Finding]:
+    """The concept file's gate: its shape, its numbers, and prose that stands on
+    its own. What it cannot check -- whether the meaning is right, whether a
+    requirement is written as a state rather than a feature -- is the brief's."""
+    g = _Gate(ANALYSIS)
+    if not isinstance(c, dict) or c.get("format") != "loop/concepts@1":
+        g.bad("format", "not a loop/concepts@1 document")
+        return g.findings
+    if not isinstance(c.get("request"), str) or not c["request"].strip():
+        g.bad("request", "the request, verbatim, is missing")
+    if c.get("background") is not None and not isinstance(c.get("background"), str):
+        g.bad("background", "background is free text, or absent")
+    concepts = c.get("concepts")
+    if not isinstance(concepts, list) or not concepts:
+        g.bad("concepts", "there are no concepts")
+        concepts = []
+    ids, properties = [], set()
+    for k in concepts:
+        cid = k.get("id", "?") if isinstance(k, dict) else "?"
+        w = f"concepts[{cid}]"
+        if not isinstance(k, dict):
+            g.bad(w, "a concept is an object")
+            continue
+        ids.append(cid)
+        if not CONCEPT_ID.match(str(cid)):
+            g.bad(w, "a concept's id is C<n>")
+        if k.get("kind") not in ("thing", "quality"):
+            g.bad(w, "kind is thing or quality")
+        if k.get("status") not in ("active", "retired"):
+            g.bad(w, "status is active or retired")
+        for f in ("name", "source"):
+            if not isinstance(k.get(f), str) or not k[f].strip():
+                g.bad(w, f"{f} must be text")
+        _prose_ok(g, k.get("meaning"), f"{w}.meaning")
+        props = k.get("properties")
+        if not isinstance(props, list) or not props:
+            g.bad(w, "a concept without properties cannot be checked")
+            props = []
+        for p in props:
+            pid = p.get("id", "?") if isinstance(p, dict) else "?"
+            pw = f"{w}.properties[{pid}]"
+            if not isinstance(p, dict):
+                g.bad(pw, "a property is an object")
+                continue
+            ids.append(pid)
+            if not re.fullmatch(rf"{re.escape(str(cid))}\.P[1-9][0-9]*", str(pid)):
+                g.bad(pw, f"a property of {cid} has the id {cid}.P<n>")
+            if p.get("check") not in CHECKS:
+                g.bad(pw, "check is example or evaluation")
+            if p.get("status", "active") not in ("active", "retired"):
+                g.bad(pw, "status is active or retired")
+            _prose_ok(g, p.get("text"), f"{pw}.text")
+            properties.add(pid)
+        nots = k.get("not", [])
+        if not isinstance(nots, list):
+            g.bad(f"{w}.not", "counter-examples are a list of texts")
+            nots = []
+        for i, t in enumerate(nots):
+            _prose_ok(g, t, f"{w}.not[{i}]")
+    reqs = c.get("requirements", [])
+    if not isinstance(reqs, list):
+        g.bad("requirements", "requirements are a list")
+        reqs = []
+    for r in reqs:
+        rid = r.get("id", "?") if isinstance(r, dict) else "?"
+        w = f"requirements[{rid}]"
+        if not isinstance(r, dict):
+            g.bad(w, "a requirement is an object")
+            continue
+        ids.append(rid)
+        if not REQUIREMENT_ID.match(str(rid)):
+            g.bad(w, "a requirement's id is R<n>")
+        if r.get("check") not in CHECKS:
+            g.bad(w, "check is example or evaluation")
+        if r.get("status") not in ("active", "retired"):
+            g.bad(w, "status is active or retired")
+        _prose_ok(g, r.get("text"), f"{w}.text")
+        if not isinstance(r.get("source"), str) or not r["source"].strip():
+            g.bad(w, "source is the request's words, or implied")
+        elif r["source"] == "implied":
+            # Not in the request: the machine cannot tell an inference from an
+            # invention, so the reason has to be written down.
+            if not isinstance(r.get("reason"), str) or not r["reason"].strip():
+                g.bad(w, "an implied requirement needs its reason")
+        _prose_ok(g, r.get("reason"), f"{w}.reason", required=False)
+        for ref in r.get("concepts", []) or []:
+            if ref not in properties and ref not in {k.get("id") for k in concepts if isinstance(k, dict)}:
+                g.bad(w, f"refers to {ref!r}, which is not a concept or property here")
+    _ids_ok(g, ids, "concepts")
+    oos = c.get("out_of_scope", [])
+    if not isinstance(oos, list) or not all(isinstance(t, str) for t in oos):
+        g.bad("out_of_scope", "out of scope is a list of texts")
+    else:
+        for i, t in enumerate(oos):
+            _prose_ok(g, t, f"out_of_scope[{i}]")
+    return g.findings
+
+
+def check_coverage(concepts: dict, definition: dict) -> list[Finding]:
+    """The coverage gate, at the definition's exit (DESIGN 4): every property
+    and requirement the concept file says is checked by an example is
+    referenced by a definition item -- and items have examples, or the
+    definition's own gate refuses them. Being able to read the concept file is
+    not enough; the maze's definer could read 「迷路」 and still wrote a
+    corridor. A definition that does not cover goes back to the definer."""
+    g = _Gate(DEFINITION)
+    active, by_id = {}, {}
+    for k in concepts.get("concepts", []):
+        for p in k.get("properties", []):
+            by_id[p["id"]] = p
+            if k.get("status") == "active" and p.get("status", "active") == "active":
+                active[p["id"]] = p
+    for r in concepts.get("requirements", []):
+        by_id[r["id"]] = r
+        if r.get("status") == "active":
+            active[r["id"]] = r
+    if not isinstance(definition.get("summary"), str) or not definition["summary"].strip():
+        g.bad("summary", "say in a sentence or two what is made, and for what")
+    covered = set()
+    for item in definition.get("items", []):
+        refs = item.get("concepts", [])
+        if not isinstance(refs, list):
+            g.bad(f"items[{item.get('id')}].concepts", "a list of property and requirement ids")
+            continue
+        for ref in refs:
+            if ref not in by_id:
+                g.bad(f"items[{item.get('id')}].concepts", f"{ref!r} is not a property or requirement of the concept file")
+            elif ref not in active:
+                g.bad(f"items[{item.get('id')}].concepts", f"{ref!r} is retired")
+            elif item.get("examples"):
+                covered.add(ref)
+    for ref, x in active.items():
+        if x.get("check") == "example" and ref not in covered:
+            g.bad(f"concepts.{ref}", f"「{x.get('text', '')}」 is to be checked by examples, and no item's "
+                                     "examples check it: add or extend an item that does, and list it there")
     return g.findings
 
 

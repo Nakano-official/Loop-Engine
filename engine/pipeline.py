@@ -299,11 +299,29 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # 1. The definition, by the definer, held at the definition gate.
+    # 0. The concept file, by the analyst, held at its gate (DESIGN 4): what
+    #    the request's words mean and what the person needs. The request is put
+    #    in by the machine, verbatim -- the one original everyone reads.
+    def concepts_gate(doc):
+        if isinstance(doc, dict):
+            doc["request"] = requirements.strip()
+        return artifacts.check_concepts(doc)
+
+    concepts, findings = _write_by_role(
+        window, f"{ws}-ana", "analyst", "concepts.json",
+        lambda f: upstream_briefs.analyze(requirements, findings=f), concepts_gate, gate_rounds, log)
+    if findings:
+        return Outcome(artifacts.ANALYSIS, "the concept file did not pass its gate", detail={"findings": findings})
+    (workdir / "concepts.json").write_text(json.dumps(concepts, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # 1. The definition, by the definer: what to make, decided against the
+    #    concept file. Held at the definition gate and the coverage gate.
     definition, findings = _write_by_role(
         window, f"{ws}-def", "definer", "definition.json",
-        lambda f: upstream_briefs.define(requirements, platform=platform, findings=f),
-        lambda doc: _on_platform(doc, platform), gate_rounds, log)
+        lambda f: upstream_briefs.define(concepts, platform=platform, findings=f),
+        lambda doc: _on_platform(doc, platform) + (artifacts.check_coverage(concepts, doc)
+                                                   if isinstance(doc, dict) else []),
+        gate_rounds, log)
     if findings:
         return Outcome(artifacts.DEFINITION, "the definition did not pass its gate",
                        detail={"findings": findings})
@@ -320,7 +338,7 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
             return Outcome("stopped", "stopped by a person")
 
         def brief(f, prev=previous, v=verdict):
-            return upstream_briefs.design(definition, findings=f, previous=prev, verdict=v)
+            return upstream_briefs.design(definition, findings=f, previous=prev, verdict=v, concepts=concepts)
 
         def gate(ds):
             ds["definition"] = "definition.json"

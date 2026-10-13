@@ -1,7 +1,8 @@
-"""Briefs for the upstream roles: the definer and the designer (DESIGN 2).
+"""Briefs for the upstream roles: the analyst, the definer and the designer (DESIGN 2).
 
-    define(requirements, platform, findings)                 -> the definer's brief
-    design(definition, findings, previous, verdict)          -> the designer's brief
+    analyze(request, findings)                               -> the analyst's brief
+    define(concepts, platform, findings)                     -> the definer's brief
+    design(definition, findings, previous, verdict, concepts) -> the designer's brief
 
 A part, not a flow. A brief is all a role sees, so what it says about the
 formats is said here, once, and is the same every time: FORMATS.md, shortened
@@ -59,25 +60,115 @@ def _findings(findings: list[str], what: str) -> list[str]:
             "Fix every one of these and keep everything else:"] + [f"- {f}" for f in findings]
 
 
-def define(requirements: str, platform: str = "browser-dom", findings: list[str] | None = None) -> str:
+# The shape of a concept file, from a domain no app here is about: an example
+# from the app being built would hand the analyst its own answer.
+CONCEPTS_SHAPE = """\
+{"format": "loop/concepts@1",
+ "request": "(filled in by the machine: the request, verbatim)",
+ "background": "(optional, free text: context the request gives about the person or the situation)",
+ "concepts": [
+  {"id": "C1", "name": "家計の支出", "kind": "thing", "status": "active",
+   "source": "毎月なににいくら使ったか分からない",
+   "meaning": "ある日に、ある目的で、ある金額を払ったという記録の集まり。日付・金額・使い道を持つ",
+   "properties": [
+    {"id": "C1.P1", "text": "同じ月の支出を合計すると、その月に使った金額になる", "check": "example"},
+    {"id": "C1.P2", "text": "使い道ごとに分けて合計できる", "check": "example"}],
+   "not": ["金額だけで日付の無い記録は支出の記録ではない"]},
+  {"id": "C2", "name": "迷わず記録できる", "kind": "quality", "status": "active",
+   "source": "（共通の質の概念: アプリは説明なしで開かれる）",
+   "meaning": "開いた人が、説明を読まずに、支出を一件記録するところまで進める",
+   "properties": [
+    {"id": "C2.P1", "text": "最初の画面で、何を入力すればよいかが分かる", "check": "evaluation"}],
+   "not": ["最初の画面に入力する場所が無い"]}],
+ "requirements": [
+  {"id": "R1", "text": "月ごとに、いくら使ったかが分かる", "status": "active",
+   "source": "毎月なににいくら使ったか分からない", "reason": "要求にある",
+   "check": "example", "concepts": ["C1.P1"]},
+  {"id": "R2", "text": "閉じて開き直しても、記録した支出が残っている", "status": "active",
+   "source": "implied", "reason": "記録を後で見返すことが目的なので、消えれば意味が無い",
+   "check": "example", "concepts": []}],
+ "out_of_scope": ["銀行口座との連携", "家族での共有"]}"""
+
+
+def analyze(request: str, findings: list[str] | None = None) -> str:
+    """The analyst's brief (DESIGN 4): what the request's words mean and what
+    the person needs to reach their goal -- not what to make. That is the
+    definer's, and it is decided against this file."""
+    parts = [
+        "# Task",
+        "You are the analyst. Read the request below, written by a person, and write the CONCEPT",
+        "FILE: what the words of the request mean, and what the person needs in order to reach",
+        "what they are after. You do NOT decide what to make -- a definer decides that later, and",
+        "is held to this file. Everyone downstream reads your file and nothing else of the request.",
+        "",
+        "Write exactly one file, `concepts.json`, in the current directory. Nothing else.",
+        "Write every text in Japanese.",
+        "",
+        "# The request",
+        request.strip(),
+        "",
+        "# What to write",
+        "- concepts: each word or idea of the request that carries meaning. kind \"thing\" for what",
+        "  the request is about, \"quality\" for how it must feel to the person using it. For each:",
+        "  - source: the request's own words it comes from, quoted exactly",
+        "  - meaning: what it is made of and what it is, in full -- assume the reader does not know",
+        "    the word. A downstream model will take the easiest reading it can; write down what",
+        "    makes the concept what it is, so the easy reading is visibly wrong",
+        "  - properties: what must always hold of it, each checkable. check \"example\" when a",
+        "    concrete input and its expected result could show it; \"evaluation\" when only using",
+        "    the finished thing could (how it looks, whether it is clear)",
+        "  - not: counter-examples -- what is NOT this concept, above all the shrunken forms a",
+        "    careless reading would produce",
+        "- requirements: what the person needs in order to reach their goal. Write each as a STATE",
+        "  the person wants to be in (\"月ごとにいくら使ったかが分かる\"), never as a feature, screen or",
+        "  button -- choosing those is the definer's job. source is the request's words, or",
+        "  \"implied\" for something the request does not say but plainly needs; an implied one",
+        "  needs its reason. Never invent what the person wants beyond what the request supports",
+        "- whatever the request specifies is binding: record it, never change or contradict it",
+        "- out_of_scope: what will not be made, so improvement does not spread without end",
+        "- background is optional free text. Leave it out unless the request gives context",
+        "- ids: concepts C<n>, properties C<n>.P<m>, requirements R<n>. Every text stands on its",
+        "  own: never refer to another entry by its id inside a sentence; references go only in",
+        "  the \"concepts\" field of a requirement",
+        "",
+        "# The format of concepts.json (an example from another domain, for the shape only)",
+        CONCEPTS_SHAPE,
+    ]
+    parts += _findings(findings or [], "concept file")
+    return "\n".join(parts) + "\n"
+
+
+def define(concepts: dict, platform: str = "browser-dom", findings: list[str] | None = None) -> str:
     plat = _platform(platform)
     sig = "\n".join(f"  {fn}({', '.join(p['name'] + ': ' + p['type'] for p in s['params'])}) -> {s['returns']}"
                     for fn, s in plat["interface"].items())
     parts = [
         "# Task",
-        "You are the definer. Read the requirements below and write the DEFINITION of the app: its",
-        "external interface (what the app's shell can call) and, item by item, what it must do, each",
-        "with concrete examples. A designer will turn it into modules later; you do not design them.",
+        "You are the definer. Read the concept file below -- what a person asked for, what their",
+        "words mean, and what they need -- decide WHAT TO MAKE to meet those needs, and write it",
+        "as the DEFINITION of the app: its external interface (what the app's shell can call) and,",
+        "item by item, what it must do, each with concrete examples. A designer will turn it into",
+        "modules later; you do not design them.",
         "",
         "Write exactly one file, `definition.json`, in the current directory. Nothing else.",
-        "Write titles, statements and any text shown to the player in Japanese.",
+        "Write the summary, titles, statements and any text shown to the user in Japanese.",
         "",
-        "# The requirements",
-        requirements.strip(),
+        "# The concept file",
+        "It binds you. Do not narrow a concept to whatever is easiest to define: its meaning,",
+        "properties and counter-examples (\"not\") say what it must be, and an example set that a",
+        "counter-example could satisfy is wrong. Whatever the request specifies stays as specified.",
+        json.dumps(concepts, ensure_ascii=False, indent=1),
+        "",
+        "# What the definition must cover",
+        "- \"summary\": in a sentence or two, what you make and for what",
+        "- every property and requirement whose check is \"example\" is listed in the \"concepts\"",
+        "  field of at least one item, and that item's examples actually show it. A gate checks the",
+        "  listing; the examples have to make it true",
+        "- \"evaluation\" ones are checked later by using the app; list them where they apply",
         "",
         f"# The platform: {platform}",
         "How the app is delivered is fixed: one HTML file, drawn by a generic shell. Ignore any",
-        "requirement about servers, build steps or files -- the platform decides those. The shell",
+        "need for servers, build steps or files -- the platform decides those. The shell",
         "calls exactly these functions, which your interface must contain with exactly these",
         "parameters ($State is a record type you declare: the app's whole state):",
         sig,
@@ -92,9 +183,11 @@ def define(requirements: str, platform: str = "browser-dom", findings: list[str]
         "# The format of definition.json",
         """{"format": "loop/definition@1",
  "title": "<the app's name, Japanese>",
+ "summary": "<what is made, and for what -- a sentence or two, Japanese>",
  "types": {...}, "errors": {"ErrorName": "<what it means>", ...},
  "interface": {"<fn>": {"params": [{"name": ..., "type": ...}], "returns": ..., "raises": [...]}, ...},
  "items": [{"id": "D1", "title": ..., "statement": "<what must hold, Japanese>",
+            "concepts": ["C1.P1", "R2", ...],
             "examples": [<example>, ...]}, ...],
  "shell": {"platform": "%s", "duties": ["<what the shell does, one line each>"]}}""" % platform,
         "- the interface may have functions beyond the platform's five; every one needs examples",
@@ -110,7 +203,7 @@ def define(requirements: str, platform: str = "browser-dom", findings: list[str]
 
 
 def design(definition: dict, findings: list[str] | None = None, previous: dict | None = None,
-           verdict: dict | None = None) -> str:
+           verdict: dict | None = None, concepts: dict | None = None) -> str:
     example = json.loads(EXAMPLE_DESIGN.read_text(encoding="utf-8"))
     sample = next(m for m in example["modules"] if m["name"] == "economy")
     platform = definition.get("shell", {}).get("platform", "browser-dom")
@@ -135,6 +228,9 @@ def design(definition: dict, findings: list[str] | None = None, previous: dict |
         "# The definition",
         json.dumps(definition, ensure_ascii=False, indent=1),
         "",
+        *(["# The concept file the definition answers to",
+           "What the words mean and what the person needs. A module must not narrow them either.",
+           json.dumps(concepts, ensure_ascii=False, indent=1), ""] if concepts else []),
         "# The format of design.json",
         """{"format": "loop/design@1",
  "definition": "definition.json",

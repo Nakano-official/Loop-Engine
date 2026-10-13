@@ -3,7 +3,8 @@ flow: it reads and writes files, and decides nothing.
 
     apps/<name>/
       app.json            {"name", "title", "platform"} -- platform only for apps from requirements
-      requirements.md     what a person asked for -- the definer's input
+      requirements.md     what a person asked for -- the analyst's input
+      concepts.json       the latest concept file: what the request's words mean, what is needed
       definition.json     the latest definition -- the host holds the canonical copy (SYSTEM 5)
       design.json         the latest design; its "definition" field names definition.json
       decisions.jsonl     what a person decided about a run: append-only
@@ -163,7 +164,7 @@ class Run:
 
     def upstream(self) -> list[dict]:
         """The definer's and designer's rounds and every return to the design."""
-        keep = {"DEFINER", "DESIGNER", "DESIGN_ROUND", "BACK_TO_DESIGN"}
+        keep = {"ANALYST", "DEFINER", "DESIGNER", "DESIGN_ROUND", "BACK_TO_DESIGN"}
         return [{k: v for k, v in e.items() if k != "t"} for e in self.ledger() if e.get("event") in keep]
 
     def now(self) -> dict | None:
@@ -183,7 +184,8 @@ class Run:
 
     # ---- what the ledger points at (pipeline.Ledger.keep) -----------------
 
-    KEPT = re.compile(r"^(?:(?:attempts|upstream)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*|design\.json|definition\.json)$")
+    KEPT = re.compile(r"^(?:(?:attempts|upstream)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+                      r"|concepts\.json|design\.json|definition\.json)$")
 
     def file(self, rel: str) -> str:
         """One file the ledger points at, as text. Only what the pipeline keeps
@@ -210,7 +212,7 @@ class Run:
             if e.get("event") == "BEGIN":
                 began[(e.get("step"), e.get("module"), e.get("n"))] = e.get("t")
                 continue
-            step = {"ATTEMPT": "attempt", "RED_GATE": "red_gate", "DEFINER": "definer",
+            step = {"ATTEMPT": "attempt", "RED_GATE": "red_gate", "ANALYST": "analyst", "DEFINER": "definer",
                     "DESIGNER": "designer"}.get(e.get("event"))
             if not step:
                 continue

@@ -187,3 +187,71 @@ def test_the_assembly_says_how_while_the_definition_says_what():
     assert DESIGN["modules"][-1]["functions"]["load"]["doc"]
     assert "doc" not in DEFINITION["interface"]["load"]
     assert artifacts.check_design(DESIGN, DEFINITION) == []
+
+
+# ---- the concept file and the coverage gate (DESIGN 4, FORMATS 11) ----------------
+
+CONCEPTS = json.loads((EX / "idlegame.concepts.json").read_text(encoding="utf-8"))
+
+
+def concept(c, cid):
+    return next(k for k in c["concepts"] if k["id"] == cid)
+
+
+def test_the_idle_game_concepts_pass_and_its_definition_covers_them():
+    assert artifacts.check_concepts(CONCEPTS) == []
+    assert artifacts.check_coverage(CONCEPTS, DEFINITION) == []
+
+
+def broken_concepts():
+    def prose_ref(c): concept(c, "C1")["meaning"] = "C2で定めた設備を使う"
+    def bad_id(c): concept(c, "C2")["properties"][0]["id"] = "C1.P9"
+    def dup(c): c["requirements"][1]["id"] = "R1"
+    def implied_no_reason(c): del c["requirements"][1]["reason"]
+    def bad_check(c): concept(c, "C1")["properties"][0]["check"] = "maybe"
+    def no_props(c): concept(c, "C3")["properties"] = []
+    def no_request(c): c["request"] = ""
+    def ref_missing(c): c["requirements"][0]["concepts"] = ["C9.P1"]
+    def bad_kind(c): concept(c, "C1")["kind"] = "feature"
+    def not_ref(c): concept(c, "C1")["not"].append("R1 を満たさないものは違う")
+    return [prose_ref, bad_id, dup, implied_no_reason, bad_check, no_props, no_request, ref_missing,
+            bad_kind, not_ref]
+
+
+@pytest.mark.parametrize("breakit", broken_concepts(), ids=lambda f: f.__name__)
+def test_a_broken_concept_file_goes_back_to_the_analysis(breakit):
+    c = copy.deepcopy(CONCEPTS)
+    breakit(c)
+    found = artifacts.check_concepts(c)
+    assert found and all(f.stage == artifacts.ANALYSIS for f in found), found
+
+
+def test_ascii_words_in_japanese_are_not_taken_for_references():
+    c = copy.deepcopy(CONCEPTS)
+    concept(c, "C1")["meaning"] = "3D迷路のように W/A/S/D で歩く。CPU も R&D も関係ない"
+    assert artifacts.check_concepts(c) == []
+
+
+def test_a_property_no_item_checks_sends_the_definition_back():
+    d = copy.deepcopy(DEFINITION)
+    for it in d["items"]:
+        it["concepts"] = [r for r in it.get("concepts", []) if r != "C2.P2"]
+    found = artifacts.check_coverage(CONCEPTS, d)
+    assert [f.where for f in found] == ["concepts.C2.P2"]
+    assert found[0].stage == artifacts.DEFINITION
+
+
+def test_evaluation_properties_need_no_item_and_retired_ones_may_not_be_cited():
+    c = copy.deepcopy(CONCEPTS)
+    assert all(f.where != "concepts.C3.P1" for f in artifacts.check_coverage(c, DEFINITION))
+    c["requirements"][0]["status"] = "retired"
+    found = artifacts.check_coverage(c, DEFINITION)
+    assert any("'R1' is retired" in f.message for f in found)
+
+
+def test_a_definition_must_say_what_it_makes_and_cite_only_what_exists():
+    d = copy.deepcopy(DEFINITION)
+    del d["summary"]
+    item(d, "D1")["concepts"] = ["C7.P1"]
+    found = {f.where for f in artifacts.check_coverage(CONCEPTS, d)}
+    assert found == {"summary", "items[D1].concepts"}

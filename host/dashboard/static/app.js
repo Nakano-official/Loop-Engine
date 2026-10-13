@@ -56,7 +56,8 @@ function doing(now) {
   const m = now.module, n = now.n;
   switch (now.step) {
     case "start": return "通しを始めたところです";
-    case "definer": return `definer が要求から定義を書いています（${n} 回目）`;
+    case "analyst": return `analyst が要求を分析して概念ファイルを書いています（${n} 回目）`;
+    case "definer": return `definer が概念ファイルから、何を作るかを決めて定義を書いています（${n} 回目）`;
     case "designer": return `designer が定義から設計を書いています（${n} 回目）`;
     case "red_gate": return `${m} のテストを用意して、スタブで赤になることを確かめています`;
     case "attempt": return `モデルが ${m} を実装しています（${n} 回目）`;
@@ -213,30 +214,31 @@ const esc = (s) => String(s ?? "").replace(/[\r\n]+/g, " ").replace(/"/g, "#quot
   .replace(/>/g, "#gt;").replace(/;/g, "；").replace(/`/g, "'").slice(0, 200);
 
 const FLOW = [
-  ["req", "要求（人）"], ["def", "definer：定義"], ["des", "designer：設計"],
+  ["req", "要求（人）"], ["ana", "analyst：概念ファイル"], ["def", "definer：定義"], ["des", "designer：設計"],
   ["gen", "テスト生成と赤の関門（exec）"], ["sol", "solver（9B）：実装"], ["chk", "参照の検査（runner）"],
   ["ver", "検証（exec）"], ["bld", "build-app：app.html"],
 ];
-const REACHED = { DEFINER: "def", DESIGNER: "des", RED_GATE: "gen", ATTEMPT: "ver", GREEN: "ver",
+const REACHED = { ANALYST: "ana", DEFINER: "def", DESIGNER: "des", RED_GATE: "gen", ATTEMPT: "ver", GREEN: "ver",
   OUTPUT: "bld", OUTPUT_FAILED: "bld" };
-const AT_FAULT = { "要件定義": "def", "モジュール設計": "des", "実装": "sol" };
+const AT_FAULT = { "要求分析": "ana", "要件定義": "def", "モジュール設計": "des", "実装": "sol" };
 
 // 1. The whole flow: where the data goes, and where the run is now.
 function flowSource(run) {
   const order = FLOW.map((f) => f[0]);
-  const fromRequirements = run.ledger.some((e) => e.event === "DEFINER" || (e.event === "BEGIN" && e.step === "definer"));
+  const fromRequirements = run.ledger.some((e) => ["ANALYST", "DEFINER"].includes(e.event)
+    || (e.event === "BEGIN" && ["analyst", "definer"].includes(e.step)));
   let furthest = 0;
   for (const e of run.ledger) {
     const at = REACHED[e.event];
     if (at) furthest = Math.max(furthest, order.indexOf(at));
   }
   const step = run.now ? run.now.step : null;
-  const current = { definer: ["def"], designer: ["des"], red_gate: ["gen"], attempt: ["sol", "chk", "ver"],
+  const current = { analyst: ["ana"], definer: ["def"], designer: ["des"], red_gate: ["gen"], attempt: ["sol", "chk", "ver"],
     build: ["bld"] }[step] || [];
   const cls = {};
   const at = current.length ? order.indexOf(current[0]) : -1;
   order.forEach((id, i) => {
-    if (!fromRequirements && (id === "def" || id === "des")) cls[id] = "skip";
+    if (!fromRequirements && ["ana", "def", "des"].includes(id)) cls[id] = "skip";
     else if (run.status === "done" || (at >= 0 ? i < at : i <= furthest)) cls[id] = "done";
   });
   cls.req = "done";
@@ -344,7 +346,8 @@ function sequenceSource(run, name) {
 
 const FILE_LABEL = {
   "brief.md": "ブリーフ（渡した指示）", "records.json": "例ごとの結果", "feedback.txt": "次の試行へ渡した指摘",
-  "solver.log": "solver のログ", "output.txt": "テストや役の出力", "definition.json": "書いた定義",
+  "solver.log": "solver のログ", "output.txt": "テストや役の出力", "concepts.json": "書いた概念ファイル",
+  "definition.json": "書いた定義",
   "design.json": "書いた設計",
 };
 
@@ -406,7 +409,8 @@ function fileViews(app, run, step, previous) {
   const get1 = async (rel) => (await get(fileUrl(app, run, rel))).text;
   const views = [];
   const code = step.files.find((f) => /\.(ts|py)$/.test(f));
-  const order = ["brief.md", code, "records.json", "feedback.txt", "definition.json", "design.json", "solver.log", "output.txt"];
+  const order = ["brief.md", code, "records.json", "feedback.txt", "concepts.json", "definition.json", "design.json",
+    "solver.log", "output.txt"];
   for (const f of order) {
     if (!f || !step.files.includes(f)) continue;
     const rel = `${step.dir}/${f}`;
@@ -428,7 +432,7 @@ function fileViews(app, run, step, previous) {
 
 // ---- one app ----------------------------------------------------------------------
 
-function appParts(app, running) {
+function appParts(app, running, shown) {
   const busy = Boolean(running);
   const start = h("button", {
     class: "act primary", disabled: !session.can_start || busy,
@@ -440,8 +444,10 @@ function appParts(app, running) {
   const runs = h("table", {},
     h("tr", {}, h("th", {}, "通し"), h("th", {}, "状態"), h("th", {}, "結果"), h("th", {}, "判断")),
     ...app.runs.map((r) => h("tr", {
-      class: `pick ${r.id === selected.run ? "on" : ""}`,
-      onclick: () => { selected.run = r.id; refresh(); },
+      class: `pick ${r.id === shown ? "on" : ""}`,
+      // The newest run is followed: picking it means "always the newest".
+      // Picking an older one keeps the page on it.
+      onclick: () => { selected.run = r.id === app.runs[0].id ? null : r.id; refresh(); },
     },
       h("td", {}, r.id),
       h("td", {}, chip(STATUS[r.status] || [r.status, "info"])),
@@ -453,7 +459,9 @@ function appParts(app, running) {
     h("div", { class: "row" }, start,
       busy ? h("span", { class: "note" }, `実行中の通しがあります（${running.app}）。同時に1つだけです。`) : null,
       !session.can_start ? h("span", { class: "note" }, "通しはこの PC から始めます。") : null),
-    h("h3", {}, "通し"),
+    h("h3", {}, "通し", app.runs.length ? h("span", { class: "note" }, selected.run
+      ? "  選んだ通しを表示しています（一番上を押すと、最新の通しを追いかける表示に戻ります）"
+      : "  最新の通しを追いかけて表示しています") : null),
     app.runs.length ? runs : h("p", { class: "muted" }, "まだ通していません。"),
   ];
 }
@@ -499,7 +507,7 @@ function drawInspector(app, run, name) {
       fileViews(app, run, s, attempts[i - 1])))) : h("p", { class: "note" }, "まだ試行していません。"));
 }
 
-const UPSTREAM = { DEFINER: "定義（definer）", DESIGNER: "設計（designer）" };
+const UPSTREAM = { ANALYST: "概念ファイル（analyst）", DEFINER: "定義（definer）", DESIGNER: "設計（designer）" };
 
 function drawUpstream(app, run) {
   if (!run.upstream || !run.upstream.length) return null;
@@ -532,6 +540,8 @@ function restParts(app, run) {
       h("td", {}, String(m.attempts)),
       h("td", {}, m.reason || ""))));
   const docs = run.design ? h("div", { class: "files" },
+    run.has_concepts ? lazy("この通しの概念ファイル（concepts.json）", async () =>
+      text((await get(fileUrl(app, run, "concepts.json"))).text)) : null,
     lazy("この通しの定義（definition.json）", async () => text((await get(fileUrl(app, run, "definition.json"))).text)),
     lazy("この通しの設計（design.json）", async () => text((await get(fileUrl(app, run, "design.json"))).text))) : null;
   return [drawUpstream(app, run),
@@ -604,11 +614,14 @@ async function drawApp(running) {
   if (!selected.app) return;
   drawnFrom = "";
   const app = await get(`/api/apps/${encodeURIComponent(selected.app)}`);
-  if (!selected.run && app.runs.length) selected.run = app.runs[0].id;
-  const run = selected.run
-    ? await get(`/api/apps/${encodeURIComponent(app.name)}/runs/${encodeURIComponent(selected.run)}`) : null;
+  // No run picked means the newest one, whichever that is now -- a run started
+  // from the terminal or another device appears here without a reload.
+  if (selected.run && !app.runs.some((r) => r.id === selected.run)) selected.run = null;
+  const shown = selected.run || (app.runs.length ? app.runs[0].id : null);
+  const run = shown
+    ? await get(`/api/apps/${encodeURIComponent(app.name)}/runs/${encodeURIComponent(shown)}`) : null;
   const p = skeleton(box);
-  if (changed("app", [app, running, selected.run])) put(p.app, appParts(app, running));
+  if (changed("app", [app, running, selected.run, shown])) put(p.app, appParts(app, running, shown));
   if (!run) {
     for (const k of ["head", "pics", "inspector", "rest", "out"]) p[k].replaceChildren();
     view.run = null;
