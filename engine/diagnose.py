@@ -12,7 +12,8 @@ framework's output, which is read only for the message, never for the verdict.
 Who is at fault, by where it failed:
 
     red gate, generated tests      the engine (adapter or generator) -> a person
-    attempt                        the implementation -> try again
+    attempt                        the implementation -> try again (also when
+                                   the reference check refused it)
     attempts used up               the module design: boundary or granularity
     assembly's attempts used up    the module design: decomposition / assembly
 """
@@ -91,6 +92,21 @@ def attempt(design, module: dict, run: dict, green: list[dict]) -> Verdict:
     previous = [ex["id"] for m in green for ex in design.examples(m)]
     started, checks = _split(run)
 
+    undeclared, forbidden = run.get("undeclared", []), run.get("forbidden", [])
+    if undeclared or forbidden:
+        # The reference check refused it before it ran (DESIGN 5).
+        feedback = []
+        if undeclared:
+            feedback.append(f"imports {', '.join(undeclared)}, which the design does not let this module "
+                            "import: import only the types and the modules you depend on")
+        if forbidden:
+            feedback.append(f"uses {', '.join(forbidden)}, which a module may not use: everything that "
+                            "changes from call to call comes in through the parameters")
+        return Verdict(IMPLEMENTATION, "refused before it ran: it reaches for what it may not",
+                       feedback=tuple(feedback),
+                       facts={"built": True, "failed": own, "broke": [],
+                              "undeclared": undeclared, "forbidden": forbidden})
+
     if not any(i in started for i in own):
         # Nothing of this module ran: it does not build or load.
         return Verdict(IMPLEMENTATION, "the module does not build or load",
@@ -116,8 +132,7 @@ def attempt(design, module: dict, run: dict, green: list[dict]) -> Verdict:
         feedback.append(_tail(run.get("output", "")))
     return Verdict(IMPLEMENTATION, f"{len(failed)} examples red, {len(broke)} earlier ones broken",
                    feedback=tuple(feedback),
-                   facts={"built": True, "failed": failed, "broke": broke,
-                          "undeclared": run.get("undeclared", [])})
+                   facts={"built": True, "failed": failed, "broke": broke})
 
 
 # ---- the attempts used up ---------------------------------------------------
@@ -134,6 +149,11 @@ def exhausted(design, module: dict, attempts: list[Verdict]) -> Verdict:
     if attempts and all(a.facts.get("undeclared") for a in attempts):
         return Verdict(DESIGN, "boundary: every attempt needed a module the design does not declare",
                        facts=facts)
+    if attempts and all(a.facts.get("forbidden") for a in attempts):
+        # The module was asked for something only the shell has (the time,
+        # randomness, I/O): the design must pass it in as a parameter.
+        return Verdict(DESIGN, "boundary: every attempt reached outside the module -- what it needs "
+                               "must come in as a parameter", facts=facts)
     if attempts and all(a.facts.get("broke") for a in attempts):
         return Verdict(DESIGN, "boundary: every attempt broke a module that was already green",
                        facts=facts)

@@ -4,7 +4,9 @@
                                    (re)build the workspace from the design and
                                    run <module>'s tests against its stub
     verify <ws> <module>           stdin: {"files": {path: text}, "green": [names]}
-                                   put one candidate implementation in place and
+                                   put one candidate implementation in place,
+                                   refuse it if it reaches for what it may not
+                                   (undeclared modules, forbidden globals), and
                                    run <module>'s tests and every green module's
     accept <ws> <module>           keep <module>'s current implementation: it is
                                    green, and every later build restores it
@@ -216,8 +218,31 @@ class Window:
             return {"refused": f"a candidate for {module} may write {allowed} and nothing else, "
                                f"got {sorted(files)}", "records": [], "output": ""}
         (ws / allowed).write_text(files[allowed], encoding="utf-8")
+        found = self._references(ws / allowed, d, emit, self._module(d, module))
+        if "engine" in found:
+            return found
+        if found.get("undeclared") or found.get("forbidden"):
+            # Refused before it runs: what it reaches for is the verdict, and
+            # its tests would only add noise to it.
+            return {"records": [], "output": "", **found}
         green = [g for g in payload.get("green", []) if g in d.by_name]
         return self._run(ws, emit, green + [module])
+
+    def _references(self, path: Path, d: Design, emit, module: dict) -> dict:
+        """The reference check (DESIGN 5): what the candidate imports and which
+        globals it uses, read by the adapter's refs tool and held against the
+        design. The file is parsed, not run, so runner reads it itself. A file
+        that does not parse passes here: its tests say it does not build."""
+        proc = subprocess.run(emit.references_command(TOOLS, path), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=120)
+        try:
+            facts = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            return {"engine": "the reference check printed no verdict",
+                    "output": (proc.stdout + proc.stderr)[-3000:]}
+        if "error" in facts:
+            return {}
+        return emit.check_references(d, module, facts)
 
     def attempt(self, ws_name: str, module: str, payload: dict) -> dict:
         """One attempt by the solver role: stage, solve, verify.
@@ -298,7 +323,7 @@ class Window:
             return {"error": "the bundler failed", "output": output}
         js = bundle.read_text(encoding="utf-8").replace("</script", "<\\/script")
         page = (plat / "page.html").read_text(encoding="utf-8")
-        html = page.replace("__TITLE__", _escape(title)).replace("__BUNDLE__", js)
+        html = _seal(page.replace("__TITLE__", _escape(title)).replace("__BUNDLE__", js))
         app = ws / ".loop" / "app.html"
         app.write_text(html, encoding="utf-8")
 
@@ -365,6 +390,21 @@ class Window:
 
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _seal(html: str) -> str:
+    """The page's CSP lets exactly its one script run: the hash of that
+    script, put where the platform's page says __SCRIPT_HASH__ (DESIGN 1).
+    A hash, not 'unsafe-inline' -- a script that got into the page any other
+    way does not run. The browser hashes the script's text after its parser
+    has turned every CR LF into LF, so the hash is taken of that."""
+    import base64
+    import hashlib
+    start = html.index("<script>") + len("<script>")
+    end = html.index("</script>", start)
+    text = html[start:end].replace("\r\n", "\n").replace("\r", "\n")
+    digest = base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii")
+    return html.replace("__SCRIPT_HASH__", f"sha256-{digest}", 1)
 
 
 def main(argv: list[str]) -> int:

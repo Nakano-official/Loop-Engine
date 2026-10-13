@@ -108,6 +108,38 @@ def test_a_candidate_writing_outside_its_file_is_refused_and_retried(setup):
     assert calls.count("format") == 2
 
 
+def test_a_candidate_reaching_outside_is_refused_before_it_runs_and_retried(setup):
+    path, win, ledger = setup
+    calls = []
+
+    def clocked(d, module, feedback):
+        calls.append((module["name"], feedback))
+        files = reference(d, module, feedback)
+        if module["name"] == "rules" and len([c for c in calls if c[0] == "rules"]) == 1:
+            files["app/rules.py"] = "import time\n" + files["app/rules.py"]
+        return files
+
+    out = pipeline.run(path, clocked, win, "run5", ledger=pipeline.Ledger(ledger), build=False)
+    assert out.stage == "done"
+    second = [f for name, f in calls if name == "rules"][1]
+    assert any("import time" in line for line in second)
+
+
+def test_a_module_that_always_reaches_outside_sends_the_design_back(setup):
+    path, win, ledger = setup
+
+    def random_rules(d, module, feedback):
+        files = reference(d, module, feedback)
+        if module["name"] == "rules":
+            files["app/rules.py"] = "import random\n" + files["app/rules.py"]
+        return files
+
+    out = pipeline.run(path, random_rules, win, "run6", max_attempts=2, ledger=pipeline.Ledger(ledger),
+                       build=False)
+    assert out.stage == "モジュール設計" and "reached outside the module" in out.reason
+    assert out.green == ["catalog", "economy", "scale", "format"]
+
+
 def test_a_design_that_fails_its_gate_never_reaches_the_box(setup):
     path, win, ledger = setup
     broken = json.loads(path.read_text(encoding="utf-8"))

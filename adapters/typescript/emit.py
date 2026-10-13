@@ -215,6 +215,28 @@ def run_command(vitest: str, ws: Path, modules: list[str] | str | None = None) -
         [f"tests/{m}.test.ts" for m in modules or []]
 
 
+def references_command(tools: dict, path: Path) -> list[str]:
+    """How the window reads what one module file reaches for (refs.mjs): with
+    node and the parser rolldown carries in the frozen toolchain."""
+    parser = Path(tools["node_modules"]) / "rolldown" / "dist" / "parse-ast-index.mjs"
+    return [tools["node"], str(HERE / "refs.mjs"), str(path), str(parser)]
+
+
+def check_references(d: Design, module: dict, facts: dict) -> dict:
+    """refs.mjs's report against the design: a module may import the types and
+    the modules it depends on, through the paths the brief gives it."""
+    allowed = {"../loop_types"} | {f"./{d.modules[m]['name']}" for m in module["depends_on"]}
+
+    def bare(spec: str) -> str:
+        for ext in (".ts", ".js", ".mjs"):
+            if spec.endswith(ext):
+                return spec[: -len(ext)]
+        return spec
+
+    return {"undeclared": sorted({s for s in facts.get("imports", []) if bare(s) not in allowed}),
+            "forbidden": sorted(facts.get("forbidden", []))}
+
+
 def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) -> None:
     impls = impls or {}
     ws = Path(ws)
@@ -252,7 +274,12 @@ def implementation_guide(d: Design, module: dict) -> str:
         lines += [f'    import * as m_{dep} from "./{dep}";' for dep in deps]
     else:
         lines.append("- You depend on no other module of the design.")
-    lines += ["- Import nothing else.", "",
+    lines += ["- Import nothing else.",
+              "- Use only the language's tools for computing: Math, JSON, Number, String, Boolean,",
+              "  Array, Object, Map, Set and the Error classes. Everything that changes from call",
+              "  to call -- the time, randomness -- comes in through your parameters: Date,",
+              "  Math.random, console, fetch, document, window, timers and import() are refused.",
+              "",
               "The generated types (loop_types.ts):", "```ts", emit_types(d), "```"]
     for dep in deps:
         lines += ["", f"The contract of `{dep}` (signatures only):", "```ts",

@@ -202,6 +202,19 @@ EXTENSION = ".py"
 
 # ---- the workspace -------------------------------------------------------
 
+def references_command(tools: dict, path: Path) -> list[str]:
+    """How the window reads what one module file reaches for (refs.py)."""
+    return [tools["python"], str(HERE / "refs.py"), str(path)]
+
+
+def check_references(d: Design, module: dict, facts: dict) -> dict:
+    """refs.py's report against the design: a module may import the types and
+    the modules it depends on."""
+    allowed = {"loop_types"} | {f"app.{d.modules[m]['name']}" for m in module["depends_on"]}
+    return {"undeclared": sorted({s for s in facts.get("imports", []) if s not in allowed}),
+            "forbidden": sorted(facts.get("forbidden", []))}
+
+
 def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) -> None:
     """impls: module name -> source. Modules without one get their stub."""
     impls = impls or {}
@@ -239,7 +252,12 @@ def implementation_guide(d: Design, module: dict) -> str:
         lines += [f"    from app import {dep} as m_{dep}" for dep in deps]
     else:
         lines.append("- You depend on no other module of the design.")
-    lines += ["- Use only the Python standard library besides these.", "",
+    lines += ["- Besides these, import only standard library modules that compute: math, json,",
+              "  dataclasses, typing, enum, functools, itertools, collections, decimal, fractions,",
+              "  operator, re, string, copy, bisect, heapq, statistics. Everything that changes from",
+              "  call to call -- the time, randomness -- comes in through your parameters: time,",
+              "  datetime, random, os, open, print and input are refused.",
+              "",
               "The generated types (loop_types.py):", "```python", emit_types(d), "```"]
     for dep in deps:
         lines += ["", f"The contract of `{dep}` (signatures only):", "```python",

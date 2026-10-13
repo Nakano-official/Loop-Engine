@@ -113,6 +113,22 @@ def test_used_up_needing_undeclared_modules_every_time_is_a_boundary():
     assert v.reason.startswith("boundary: every attempt needed")
 
 
+def test_used_up_reaching_outside_the_module_every_time_is_a_boundary():
+    v = diagnose.exhausted(DESIGN, M["rules"], [failing({"failed": ["M4.E2"], "forbidden": ["Date"]})] * 3)
+    assert v.reason.startswith("boundary: every attempt reached outside")
+
+
+def test_a_refused_attempt_goes_back_to_the_implementation_with_what_it_reached_for():
+    run_ = {"records": [], "output": "", "undeclared": [], "forbidden": ["Math.random", "fetch"]}
+    v = diagnose.attempt(DESIGN, M["rules"], run_, [])
+    assert v.stage == diagnose.IMPLEMENTATION and v.reason.startswith("refused before it ran")
+    assert "Math.random, fetch" in v.feedback[0]
+    assert v.facts["forbidden"] == ["Math.random", "fetch"]
+    run_ = {"records": [], "output": "", "undeclared": ["app.save"], "forbidden": []}
+    v = diagnose.attempt(DESIGN, M["rules"], run_, [])
+    assert "app.save" in v.feedback[0] and v.facts["undeclared"] == ["app.save"]
+
+
 def test_used_up_on_the_assembly_is_decomposition():
     v = diagnose.exhausted(DESIGN, DESIGN.assembly, [failing({"failed": ["D3.E1"], "broke": []})] * 3)
     assert v.stage == diagnose.DESIGN and v.reason.startswith("decomposition")

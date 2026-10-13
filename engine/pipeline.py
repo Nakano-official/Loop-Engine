@@ -129,15 +129,15 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
                 brief = briefs.implement(d, module, feedback)
                 log("BEGIN", step="attempt", module=name, n=n)
                 result = window.call("attempt", ws, name, {"brief": brief, "green": names})
-                if "engine" in result:
-                    log("ATTEMPT", module=name, n=n, stage=diagnose.ENGINE, reason=result["engine"])
-                    return Outcome(diagnose.ENGINE, f"{name}: {result['engine']}", names,
-                                   detail={"output": result.get("output", "")[-3000:]})
             else:
                 # A stand-in: a function that returns the module's file.
                 files = solver(d, module, feedback)
                 log("BEGIN", step="attempt", module=name, n=n)
                 result = window.call("verify", ws, name, {"files": files, "green": names})
+            if "engine" in result:
+                log("ATTEMPT", module=name, n=n, stage=diagnose.ENGINE, reason=result["engine"])
+                return Outcome(diagnose.ENGINE, f"{name}: {result['engine']}", names,
+                               detail={"output": result.get("output", "")[-3000:]})
             if "refused" in result:
                 verdict = diagnose.Verdict(diagnose.IMPLEMENTATION, result["refused"],
                                            feedback=(result["refused"],),
