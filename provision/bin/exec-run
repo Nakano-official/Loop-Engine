@@ -28,6 +28,19 @@ esac
 [ -d "$WS" ] || { echo "exec-run: not a directory: $WS" >&2; exit 2; }
 
 cd "$WS"
+
+# Nothing exec started before may still be running. Generated code can leave a
+# process behind (setsid, nohup, a fork); one that outlived its run could read
+# the next workspace and write the next run's record -- a red implementation
+# reported green. kill -1, as exec, reaches every exec process but this shell.
+kill -KILL -1 2>/dev/null || true
+
+# A TMPDIR of its own, gone after the run: /tmp is shared by every uid, and the
+# tools write there (vite's cache holds the code under test). umask 027 keeps
+# what exec writes from every other role; the window reads out/ through the group.
+umask 027
+TMP="$(mktemp -d -p /home/exec)"
+
 # A clean environment: nothing the window's shell had leaks into the run.
 # LOOP_RECORD_DIR is where the comparison function writes its record
 # (DESIGN 5); it is exec's own out/, which the window reads back.
@@ -35,8 +48,10 @@ cd "$WS"
 # (FORMATS 10) -- the expected values the tests compare against.
 # PYTHONDONTWRITEBYTECODE: exec cannot write the workspace, so Python must not
 # try to leave .pyc files in it.
-exec env -i \
+set +e
+env -i \
   HOME=/home/exec \
+  TMPDIR="$TMP" \
   PATH=/usr/local/bin:/usr/bin:/bin \
   LANG=C.UTF-8 \
   LOOP_RECORD_DIR=/srv/loop/roles/exec/out \
@@ -45,3 +60,9 @@ exec env -i \
   GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=mod \
   CARGO_NET_OFFLINE=true \
   timeout --kill-after=10 "$LIMIT" "$@"
+rc=$?
+set -e
+# And nothing it started stays behind it.
+kill -KILL -1 2>/dev/null || true
+rm -rf "$TMP"
+exit "$rc"

@@ -66,8 +66,12 @@ unset ANTHROPIC_API_KEY_CONSOLE
 
 # A throwaway HOME for every invocation: no settings, no memory, no session to
 # resume. Two runs on the same brief must not be able to agree by remembering.
+# It is also the role's TMPDIR: /tmp is shared by every uid, and whatever one
+# role leaves there another could read. umask 027: what this role writes is
+# readable by its own group (the window reads out/ through it) and no one else.
+umask 027
 HOME="$(mktemp -d)"
-export HOME
+export HOME TMPDIR="$HOME"
 trap 'rm -rf "$HOME"' EXIT
 
 # out/ is the one place this role writes. The window reads it, checks it, and
@@ -76,15 +80,22 @@ cd "$OUT"
 
 # --safe-mode / --setting-sources "" / --no-session-persistence
 #     the brief is the only input.
+# --tools
+#     from the table: the ONLY tools the agent has. Read, Write, Edit at most:
+#     no Bash and no WebFetch, which is why the Claude roles need no egress
+#     list (SYSTEM 8-3). Add either here and that line has to be revisited.
+#     --allowedTools alone is not this: it only pre-approves tools, and every
+#     other one -- Bash, WebFetch, WebSearch, Task, ... -- stays available,
+#     read-only shell commands running without asking. So it was until
+#     2026-10-13, when a definer was seen running `ls` (SYSTEM 8-3).
 # --allowedTools
-#     from the table. Read, Write, Edit at most: no Bash and no WebFetch, which
-#     is why the Claude roles need no egress list (SYSTEM 8-3). Add either
-#     here and that line has to be revisited.
+#     the same list, pre-approved: nothing is asked in a non-interactive run.
 set +e
 timeout --kill-after=30 "$LIMIT" claude -p \
   --safe-mode \
   --setting-sources "" \
   --no-session-persistence \
+  --tools "$TOOLS" \
   --allowedTools "$TOOLS" \
   < "$BRIEF"
 rc=$?

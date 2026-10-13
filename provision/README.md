@@ -182,12 +182,16 @@ interop を切ると Windows 側の `npm`/`node` が PATH から消えるので�
 `/mnt/c` が無いので、ファイルの受け渡しは **scp** で行う（保守用ユーザーで）。
 
 ```bash
-ssh loop-dev 'rm -rf /tmp/loop-provision && mkdir -p /tmp/loop-provision'
+ssh loop-dev 'rm -rf ~/loop-provision && install -d -m 700 ~/loop-provision'
 scp -r -P 2222 provision adapters engine /c/Users/<you>/.ssh/loop-runner_ed25519.pub \
-    <maint>@127.0.0.1:/tmp/loop-provision/
-ssh loop-dev "cd /tmp/loop-provision/provision && \
-    sed -i 's/\r\$//' *.sh bin/* roles.py && sudo bash provision.sh"
+    <maint>@127.0.0.1:loop-provision/
+ssh loop-dev "cd ~/loop-provision/provision && \
+    sed -i 's/\r\$//' *.sh bin/* roles.py && sudo bash provision.sh && rm -rf ~/loop-provision"
 ```
+
+**送り込む先は `/tmp` にしない。** `/tmp` は全部の役が読めるので、置いたリポジトリの写し（アダプタの適合テストに
+ある、見本アプリの正解の実装を含む）を役が読めてしまう。保守用ユーザーのホーム（700）に置き、終わったら消す
+（2026-10-13、`/tmp` に置いていたのを見つけて改めた。SYSTEM §8-6）。
 
 最後の行が非対話で通るのは、WSL の既定ユーザーに `NOPASSWD` の sudoers が入っているから。
 **保守用ユーザーは実質 root** なので、ループの役に含めないこと（役は権限で縛られているが、保守用ユーザーは

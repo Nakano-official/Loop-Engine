@@ -45,6 +45,8 @@ An example is data, not code:
   within 1e-9) or {"raises": "ErrorName"} -- the LAST step must throw it, and its function
   must declare it in "raises"
 - the same call on the same input must never expect two different results
+- you have no shell, and nothing runs your examples before the gate: choose inputs whose
+  results are simple to work out by hand (whole numbers, right angles, short durations)
 - compute every expected value yourself, exactly. Avoid values that need rounding at a
   tie (x.xx5) -- languages round them differently"""
 
@@ -114,6 +116,11 @@ def analyze(request: str, findings: list[str] | None = None) -> str:
         "  - meaning: what it is made of and what it is, in full -- assume the reader does not know",
         "    the word. A downstream model will take the easiest reading it can; write down what",
         "    makes the concept what it is, so the easy reading is visibly wrong",
+        "  - the request's own specifications (sizes, keys, colours, positions) are NOT the",
+        "    meaning of its words. For the thing the request is about, write what anyone means by",
+        "    that word even where the request does not say it -- what makes it that thing and not",
+        "    a lesser one -- as properties and counter-examples. A request may fix the details and",
+        "    still rely on the word for everything else: record the details too, never instead",
         "  - properties: what must always hold of it, each checkable. check \"example\" when a",
         "    concrete input and its expected result could show it; \"evaluation\" when only using",
         "    the finished thing could (how it looks, whether it is clear)",

@@ -15,3 +15,11 @@ if ! command -v setfacl >/dev/null 2>&1; then
 fi
 
 python3 roles.py apply roles.json
+
+# cron and at: only root and the maintenance user. The roles are started by the
+# runner and nothing else; a job a role could schedule -- above all exec, which
+# runs generated code -- would run again later, outside any run and its limits.
+# With an allow file present, everyone not in it is refused.
+printf 'root\n%s\n' "${ADMIN_USER:?}" > /etc/cron.allow
+printf 'root\n%s\n' "${ADMIN_USER:?}" > /etc/at.allow
+chmod 644 /etc/cron.allow /etc/at.allow

@@ -34,9 +34,16 @@ HELPER=/srv/loop/bin/solver-local
 # sudo does not reliably hand HOME to the target user.
 export HOME=/home/solver
 
+# Its own TMPDIR and umask 027, as every role: /tmp is shared by every uid,
+# and what one role leaves there another could read.
+umask 027
+TMPDIR="$(mktemp -d -p /home/solver)"
+export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+
 # solver-local reads the files it may change from its working directory and
 # writes whole files back into it. That directory is out/, not a workspace: the
 # window stages the current contents here, and afterwards checks every path
 # that came back against the allowlist before anything reaches src/.
 cd "$OUT"
-exec "$HELPER" "$BRIEF" "$LIMIT"
+"$HELPER" "$BRIEF" "$LIMIT"

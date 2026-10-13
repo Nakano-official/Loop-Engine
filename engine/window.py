@@ -150,9 +150,15 @@ UPSTREAM = {"analyst", "definer", "designer"}   # the roles run-role may start
 ROLES = Path("/srv/loop/roles")
 
 
+# How long an upstream role may take. 900 s was not enough: a definer held to
+# a concept file thought for about 13 minutes before writing a 45 KB
+# definition (2026-10-13, the maze), and two rounds were cut off unwritten.
+ROLE_SECONDS = "1800"
+
+
 def role_runner(role: str, brief: Path) -> tuple[int, str]:
     """In the box: start a Claude role on one brief, through its launcher."""
-    proc = subprocess.run(["sudo", "-n", "-u", role, f"/srv/loop/bin/{role}-run", str(brief), "900"],
+    proc = subprocess.run(["sudo", "-n", "-u", role, f"/srv/loop/bin/{role}-run", str(brief), ROLE_SECONDS],
                           capture_output=True, text=True, cwd="/")
     return proc.returncode, (proc.stdout + proc.stderr)[-8000:]
 
