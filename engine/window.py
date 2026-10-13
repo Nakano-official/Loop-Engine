@@ -281,6 +281,9 @@ class Window:
         result = self.verify(ws_name, module, {"files": {allowed: candidate},
                                                "green": payload.get("green", [])})
         result["solver"] = output
+        # The candidate goes back too: the host keeps it beside the ledger, so
+        # a person can read what the solver wrote, green or not.
+        result["files"] = {allowed: candidate}
         return result
 
     def build_app(self, ws_name: str, module: str) -> dict:

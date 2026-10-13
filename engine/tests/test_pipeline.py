@@ -108,6 +108,30 @@ def test_a_candidate_writing_outside_its_file_is_refused_and_retried(setup):
     assert calls.count("format") == 2
 
 
+def test_a_run_keeps_what_each_attempt_wrote_and_what_it_was_told(setup):
+    path, win, ledger = setup
+
+    def once_wrong(d, module, feedback):
+        if module["name"] == "rules" and not feedback:
+            return {"app/rules.py": CORRECT["rules"].replace("state.resource + 1.0", "state.resource + 2.0")}
+        return reference(d, module, feedback)
+
+    out = pipeline.run(path, once_wrong, win, "run7", ledger=pipeline.Ledger(ledger), build=False)
+    assert out.stage == "done"
+    run_dir = ledger.parent
+    assert json.loads((run_dir / "design.json").read_text(encoding="utf-8"))["modules"]
+    assert (run_dir / "definition.json").exists()
+    first, second = run_dir / "attempts" / "rules" / "1", run_dir / "attempts" / "rules" / "2"
+    assert "state.resource + 2.0" in (first / "rules.py").read_text(encoding="utf-8")
+    assert "M4.E1" in (first / "feedback.txt").read_text(encoding="utf-8")
+    records = json.loads((first / "records.json").read_text(encoding="utf-8"))
+    assert any(r.get("id") == "M4.E1" and r.get("ok") is False for r in records)
+    assert (second / "rules.py").exists() and not (second / "feedback.txt").exists()
+    attempts = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()
+                if json.loads(l)["event"] == "ATTEMPT" and json.loads(l)["module"] == "rules"]
+    assert attempts[0]["dir"] == "attempts/rules/1" and attempts[0]["failed"] == ["M4.E1"]
+
+
 def test_a_candidate_reaching_outside_is_refused_before_it_runs_and_retried(setup):
     path, win, ledger = setup
     calls = []

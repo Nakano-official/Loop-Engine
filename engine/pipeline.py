@@ -12,6 +12,7 @@ requirements and puts the definer and the designer in front of it.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -43,7 +44,13 @@ class Outcome:
 
 
 class Ledger:
-    """One JSON line per event, on the host (SYSTEM 7: the ledger is the host's)."""
+    """One JSON line per event, on the host (SYSTEM 7: the ledger is the host's).
+
+    Beside it, the files an event points at (keep): what a role was told and
+    what it wrote, what each test compared. The ledger says what happened;
+    these say with what. They are for a person reading the run -- no stage
+    reads them back, so keeping them shows no role anything it was not shown.
+    """
 
     def __init__(self, path: Path | None):
         self.path = Path(path) if path else None
@@ -53,6 +60,22 @@ class Ledger:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"t": time.time(), "event": event, **fields}, ensure_ascii=False) + "\n")
+
+    def keep(self, rel: str, text: str | None, once: bool = False) -> None:
+        """Write `text` at `rel` beside the ledger. `once`: not over a file
+        that is already there."""
+        if not self.path or text is None:
+            return
+        p = self.path.parent / rel
+        if once and p.exists():
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+
+def _part(name: str) -> str:
+    """A name a role wrote, made safe as one path component."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name).lstrip(".") or "_"
 
 
 # A run started from the dashboard has no console (so it outlives the
@@ -78,12 +101,35 @@ class RemoteWindow:
             raise RuntimeError(f"loop-window {op} failed: {proc.stderr.strip() or proc.stdout[:500]}")
 
 
+def _keep_attempt(log: Ledger, here: str, files: dict, result: dict) -> None:
+    """One attempt's files, for a person: the code it wrote, what each test
+    compared, the test framework's and the solver's own output."""
+    for path, text in (files or {}).items():
+        log.keep(f"{here}/{_part(Path(path).name)}", text)
+    log.keep(f"{here}/records.json", json.dumps(result.get("records", []), ensure_ascii=False, indent=1))
+    log.keep(f"{here}/output.txt", result.get("output") or None)
+    log.keep(f"{here}/solver.log", result.get("solver") or None)
+
+
 def run(design_path: Path | str, solver: Solver, window, ws: str,
         max_attempts: int = 3, ledger: Ledger | None = None,
         output: Path | str | None = None, build: bool = True,
-        should_stop: Callable[[], bool] = lambda: False) -> Outcome:
+        should_stop: Callable[[], bool] = lambda: False, tag: str = "") -> Outcome:
+    """`tag` names this design round among a run's files (attempts/<tag>/...)
+    when one run goes through more than one design."""
     log = ledger or Ledger(None)
     design_path = Path(design_path)
+    # What this run was built from, for whoever reads it later. A run from
+    # requirements has already written its own; a run from the app's design
+    # gets a copy, since the app's design may change after it.
+    try:
+        log.keep("design.json", design_path.read_text(encoding="utf-8"), once=True)
+        definition_name = json.loads(design_path.read_text(encoding="utf-8")).get("definition")
+        if definition_name:
+            log.keep("definition.json", (design_path.parent / definition_name).read_text(encoding="utf-8"),
+                     once=True)
+    except (OSError, ValueError):
+        pass                                # the gate below says what is wrong with it
 
     # 1. The exit gates. A finding names the stage to go back to.
     findings = artifacts.check_files(design_path)
@@ -123,19 +169,23 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
             if should_stop():
                 log("STOPPED", module=name, n=n)
                 return Outcome("stopped", "stopped by a person", names)
+            here = f"attempts/{tag + '/' if tag else ''}{_part(name)}/{n}"
             if solver == "box":
                 # The solver role, in the box: the brief is composed here, on
                 # the host, and the window stages, solves and verifies.
                 brief = briefs.implement(d, module, feedback)
+                log.keep(f"{here}/brief.md", brief)
                 log("BEGIN", step="attempt", module=name, n=n)
                 result = window.call("attempt", ws, name, {"brief": brief, "green": names})
+                files = result.get("files", {})
             else:
                 # A stand-in: a function that returns the module's file.
                 files = solver(d, module, feedback)
                 log("BEGIN", step="attempt", module=name, n=n)
                 result = window.call("verify", ws, name, {"files": files, "green": names})
+            _keep_attempt(log, here, files, result)
             if "engine" in result:
-                log("ATTEMPT", module=name, n=n, stage=diagnose.ENGINE, reason=result["engine"])
+                log("ATTEMPT", module=name, n=n, stage=diagnose.ENGINE, reason=result["engine"], dir=here)
                 return Outcome(diagnose.ENGINE, f"{name}: {result['engine']}", names,
                                detail={"output": result.get("output", "")[-3000:]})
             if "refused" in result:
@@ -144,7 +194,11 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
                                            facts={"built": False, "failed": [], "broke": []})
             else:
                 verdict = diagnose.attempt(d, module, result, green)
-            log("ATTEMPT", module=name, n=n, stage=verdict.stage, reason=verdict.reason)
+            if verdict.stage != diagnose.GREEN:
+                log.keep(f"{here}/feedback.txt", "\n".join(verdict.feedback))
+            log("ATTEMPT", module=name, n=n, stage=verdict.stage, reason=verdict.reason, dir=here,
+                **{k: verdict.facts[k] for k in ("failed", "broke", "forbidden", "undeclared")
+                   if verdict.facts.get(k)})
             if verdict.stage == diagnose.GREEN:
                 window.call("accept", ws, name, None)
                 green.append(module)
@@ -207,14 +261,20 @@ def _on_platform(definition, platform: str) -> list:
     return findings
 
 
-def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, rounds: int, log) -> tuple:
+def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, rounds: int, log,
+                   tag: str = "") -> tuple:
     """Ask a role for one JSON file until its gate passes. -> (doc, findings)"""
     findings: list[str] = []
     doc = None
     for n in range(1, rounds + 1):
+        here = f"upstream/{tag or role}/{n}"
+        brief = brief_for(findings)
+        log.keep(f"{here}/brief.md", brief)
         log("BEGIN", step=role, n=n)
-        res = window.call("run-role", ws, role, {"brief": brief_for(findings)})
+        res = window.call("run-role", ws, role, {"brief": brief})
         text = res.get("files", {}).get(name)
+        log.keep(f"{here}/{name}", text)
+        log.keep(f"{here}/output.txt", res.get("output") or None)
         if text is None:
             findings = [f"{role} wrote no {name} (exit {res.get('code')}); write exactly that file"]
         else:
@@ -223,7 +283,7 @@ def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, round
                 findings = [str(f) for f in gate(doc)]
             except json.JSONDecodeError as e:
                 findings = [f"{name} is not JSON: {e}"]
-        log(role.upper(), n=n, findings=findings[:20])
+        log(role.upper(), n=n, findings=findings[:20], dir=here)
         if not findings:
             return doc, []
     return doc, findings
@@ -267,7 +327,7 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
             return artifacts.check_design(ds, definition)
 
         design, findings = _write_by_role(window, f"{ws}-des{round_}", "designer", "design.json",
-                                          brief, gate, gate_rounds, log)
+                                          brief, gate, gate_rounds, log, tag=f"designer-r{round_}")
         if findings:
             return Outcome(artifacts.DESIGN, "the design did not pass its gate", detail={"findings": findings})
         design["definition"] = "definition.json"
@@ -275,7 +335,7 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
         log("DESIGN_ROUND", round=round_)
 
         out = run(workdir / "design.json", solver, window, f"{ws}-r{round_}", max_attempts=max_attempts,
-                  ledger=log, output=output, build=build, should_stop=should_stop)
+                  ledger=log, output=output, build=build, should_stop=should_stop, tag=f"r{round_}")
         if out.stage != diagnose.DESIGN:
             return out
         module = out.reason.split(":", 1)[0]

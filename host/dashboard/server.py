@@ -25,7 +25,7 @@ import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     from .access import LOCAL, Reach
@@ -40,6 +40,16 @@ except ImportError:  # direct execution: python host/dashboard/server.py
 apps = runs_mod.apps
 STATIC = Path(__file__).with_name("static")
 APP_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'"
+# The pictures (DESIGN of the dashboard: drawn by the machine from the run's
+# records, never by a model). Their labels are text a model wrote -- module
+# names, reasons -- so they are drawn in a sandbox of their own: an opaque
+# origin that cannot read this page, its token or anything else here, and
+# cannot reach out. Mermaid is shipped with the dashboard, never fetched.
+DIAGRAM_CSP = ("sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
+               "img-src data:; font-src data:")
+MERMAID = "vendor/mermaid-11.17.2.min.js"
+STATIC_FILES = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css",
+                "/diagram.html": "diagram.html", "/diagram.js": "diagram.js", f"/{MERMAID}": MERMAID}
 
 
 def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Box"):
@@ -48,10 +58,11 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
             print("dashboard: " + format % args)
 
         def _send(self, body: bytes, kind: str, status=HTTPStatus.OK, extra: dict | None = None) -> None:
+            extra = dict(extra or {})
             self.send_response(status)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
             self.send_header("X-Content-Type-Options", "nosniff")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
@@ -113,7 +124,17 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                 if m:
                     run = store.app(m.group(1)).run(m.group(2))
                     self._json({**run.summary(), "ledger": run.ledger()[-200:], "outcome": run.outcome(),
+                                "steps": run.steps(), "design": run.design_summary(),
                                 "decisions": [d for d in run.app.decisions() if d.get("run") == run.id]})
+                    return
+                m = re.fullmatch(r"/api/apps/([^/]+)/runs/([^/]+)/file", path)
+                if m:
+                    # A file the ledger points at (a brief, the code, the
+                    # records), as JSON text: the page puts it in with
+                    # textContent, like everything else it shows.
+                    rel = parse_qs(urlparse(self.path).query).get("path", [""])[0]
+                    run = store.app(m.group(1)).run(m.group(2))
+                    self._json({"path": rel, "text": run.file(rel)})
                     return
                 m = re.fullmatch(r"/play/([^/]+)/([^/]+)", path)
                 if m:
@@ -126,14 +147,20 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
             except KeyError:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
-            files = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}
-            name = files.get(path)
+            name = STATIC_FILES.get(path)
             if name is None:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
             kind = "text/html" if name.endswith(".html") else (
                 "text/css" if name.endswith(".css") else "text/javascript")
-            self._send((STATIC / name).read_bytes(), kind + "; charset=utf-8")
+            extra = {}
+            if name == "diagram.html":
+                extra["Content-Security-Policy"] = DIAGRAM_CSP
+            if name == MERMAID:
+                # The name carries the version, so it can be kept: 3.5 MB once,
+                # not on every picture.
+                extra["Cache-Control"] = "public, max-age=604800, immutable"
+            self._send((STATIC / name).read_bytes(), kind + "; charset=utf-8", extra=extra)
 
         def do_POST(self) -> None:
             scope, user = self._caller()

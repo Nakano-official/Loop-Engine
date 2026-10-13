@@ -128,6 +128,55 @@ class DashboardTest(unittest.TestCase):
                      "/play/idle/r0", "/api/apps/idle/runs/..%2f..%2fapp.json"]:
             self.assertEqual(self.request("GET", path)[0], 404, path)
 
+    # ---- what a run kept, and the pictures -----------------------------------------
+
+    def keep_an_attempt(self):
+        run_dir = self.store.app("idle").run(self.run_id).dir
+        (run_dir / "design.json").write_text((EX / "idlegame.design.json").read_text(encoding="utf-8"),
+                                             encoding="utf-8")
+        here = run_dir / "attempts" / "rules" / "1"
+        here.mkdir(parents=True)
+        (here / "rules.ts").write_text("export const x = 1;\n", encoding="utf-8")
+        (here / "brief.md").write_text("write rules", encoding="utf-8")
+        with (run_dir / "ledger.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": 10.0, "event": "BEGIN", "step": "attempt", "module": "rules", "n": 1}) + "\n")
+            f.write(json.dumps({"t": 12.5, "event": "ATTEMPT", "module": "rules", "n": 1, "stage": "green",
+                                "reason": "ok", "dir": "attempts/rules/1"}) + "\n")
+
+    def test_a_run_says_its_steps_and_its_design(self):
+        self.keep_an_attempt()
+        run = json.loads(self.request("GET", f"/api/apps/idle/runs/{self.run_id}")[2])
+        [step] = [s for s in run["steps"] if s["step"] == "attempt"]
+        self.assertEqual((step["seconds"], step["files"]), (2.5, ["brief.md", "rules.ts"]))
+        names = [m["name"] for m in run["design"]["modules"]]
+        self.assertIn("rules", names)
+        self.assertEqual([m["name"] for m in run["design"]["modules"] if m["assembly"]], ["game"])
+
+    def test_a_kept_file_can_be_read_and_nothing_else(self):
+        self.keep_an_attempt()
+        base = f"/api/apps/idle/runs/{self.run_id}/file?path="
+        s, _, body = self.request("GET", base + "attempts/rules/1/rules.ts")
+        self.assertEqual((s, json.loads(body)["text"]), (200, "export const x = 1;\n"))
+        self.assertEqual(self.remote("GET", base + "attempts/rules/1/brief.md")[0], 200)
+        for rel in ["outcome.json", "app.html", "attempts/../outcome.json", "attempts/rules/1/../../../app.json",
+                    "../../idle/app.json", "/etc/passwd", "attempts/rules/1/missing.ts", "attempts/%2e%2e/x",
+                    "upstream", "attempts/rules/1"]:
+            self.assertEqual(self.request("GET", base + rel)[0], 404, rel)
+        self.assertEqual(self.request("GET", base + "attempts/rules/1/rules.ts", host="evil.example")[0], 403)
+
+    def test_pictures_are_drawn_in_a_sandbox_with_mermaid_shipped_here(self):
+        s, headers, body = self.request("GET", "/diagram.html")
+        self.assertEqual(s, 200)
+        csp = headers.get("Content-Security-Policy", "")
+        self.assertIn("sandbox allow-scripts", csp)
+        self.assertNotIn("allow-same-origin", csp)
+        self.assertIn("default-src 'none'", csp)
+        self.assertNotIn("http", body.decode("utf-8").split("<body>")[1])   # no script from elsewhere
+        s, headers, body = self.request("GET", "/" + server.MERMAID)
+        self.assertEqual(s, 200)
+        self.assertIn("immutable", headers.get("Cache-Control", ""))
+        self.assertGreater(len(body), 1_000_000)
+
     def test_the_app_list_reads_the_store(self):
         data = json.loads(self.request("GET", "/api/apps")[2])
         self.assertEqual([a["name"] for a in data["apps"]], ["idle"])

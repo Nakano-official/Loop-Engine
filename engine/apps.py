@@ -13,6 +13,10 @@ flow: it reads and writes files, and decides nothing.
         design.json
         outcome.json      how it ended
         app.html          the output, when it built and booted
+        attempts/<module>/<n>/   what each attempt was told and wrote: brief.md, the
+                          module's file, records.json, feedback.txt, solver.log
+        upstream/<role>/<n>/     each round of the definer and designer: brief.md and
+                          what it wrote -- all for a person reading the run (pipeline.Ledger.keep)
         run.pid           while it runs
 
 The dashboard reads this and the command line writes it; neither keeps state
@@ -176,6 +180,60 @@ class Run:
             return {k: last.get(k) for k in ("step", "module", "n")} | {"since": last.get("t")}
         return {"step": "between", "after": last.get("event"), "module": last.get("module"),
                 "since": last.get("t")}
+
+    # ---- what the ledger points at (pipeline.Ledger.keep) -----------------
+
+    KEPT = re.compile(r"^(?:(?:attempts|upstream)/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*|design\.json|definition\.json)$")
+
+    def file(self, rel: str) -> str:
+        """One file the ledger points at, as text. Only what the pipeline keeps
+        beside the ledger -- attempts/, upstream/, the run's definition and
+        design -- and nothing that climbs out of the run."""
+        if not self.KEPT.match(rel) or any(part in ("", ".", "..") for part in rel.split("/")):
+            raise KeyError(rel)
+        p = (self.dir / rel).resolve()
+        if self.dir.resolve() not in p.parents or not p.is_file() or p.stat().st_size > 2_000_000:
+            raise KeyError(rel)
+        return p.read_text(encoding="utf-8", errors="replace")
+
+    def _files_in(self, rel: str | None) -> list[str]:
+        if not rel or not self.KEPT.match(rel):
+            return []
+        d = self.dir / rel
+        return sorted(p.name for p in d.iterdir() if p.is_file()) if d.is_dir() else []
+
+    def steps(self) -> list[dict]:
+        """Every attempt, red gate and upstream round, with how long it took
+        (from the BEGIN before it) and the files kept for it."""
+        out, began = [], {}
+        for e in self.ledger():
+            if e.get("event") == "BEGIN":
+                began[(e.get("step"), e.get("module"), e.get("n"))] = e.get("t")
+                continue
+            step = {"ATTEMPT": "attempt", "RED_GATE": "red_gate", "DEFINER": "definer",
+                    "DESIGNER": "designer"}.get(e.get("event"))
+            if not step:
+                continue
+            start = began.get((step, e.get("module"), e.get("n")))
+            out.append({k: v for k, v in e.items() if k != "t"} | {
+                "step": step, "end": e.get("t"),
+                "seconds": round(e["t"] - start, 1) if start and e.get("t") else None,
+                "files": self._files_in(e.get("dir"))})
+        return out
+
+    def design_summary(self) -> dict | None:
+        """The run's design, as much of it as a picture needs: modules, what
+        each depends on, its functions, which one is the assembly."""
+        try:
+            d = json.loads((self.dir / "design.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        mods = d.get("modules", [])
+        by_id = {m.get("id"): m.get("name") for m in mods}
+        return {"target": d.get("target", {}), "modules": [
+            {"id": m.get("id"), "name": m.get("name"), "assembly": m.get("kind") == "assembly",
+             "depends_on": [by_id.get(x, x) for x in m.get("depends_on", [])],
+             "functions": sorted((m.get("functions") or {}).keys())} for m in mods]}
 
     def summary(self) -> dict:
         out = self.outcome() or {}

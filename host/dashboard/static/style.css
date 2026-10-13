@@ -62,3 +62,22 @@ details { margin: .4rem 0 .8rem; }
 .live { color: var(--blue); display: flex; align-items: center; gap: .35rem; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+/* pictures, and the files behind each step */
+iframe.diagram { display: block; width: 100%; height: 120px; border: 1px solid var(--line); border-radius: .4rem;
+  background: var(--panel); }
+.inspector { border: 1px solid var(--blue); border-radius: .5rem; padding: .4rem .9rem .8rem; margin: .8rem 0;
+  background: var(--panel); }
+.inspector h3 { margin: .4rem 0; }
+details.attempt { border-top: 1px solid var(--line); padding: .4rem 0; margin: 0; }
+details.attempt > summary { cursor: pointer; }
+.files { display: flex; flex-direction: column; gap: .2rem; margin: .3rem 0 .3rem 1rem; }
+details.lazy { margin: 0; }
+details.lazy > summary { cursor: pointer; color: var(--blue); }
+pre.code { white-space: pre; overflow: auto; max-height: 32rem; background: var(--bg); border: 1px solid var(--line);
+  border-radius: .35rem; padding: .5rem .7rem; font-size: 12.5px; line-height: 1.45; margin: .3rem 0; }
+pre.diff .add { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); display: block; }
+pre.diff .del { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); display: block; }
+pre.diff .same { color: var(--muted); display: block; }
+table.records code { font-size: 12px; word-break: break-all; }
+tr.bad-row td { background: color-mix(in srgb, var(--red) 6%, transparent); }
+ul.upstream > li { margin: .3rem 0; }
