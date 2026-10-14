@@ -90,6 +90,16 @@ cd "$OUT"
 #     2026-10-13, when a definer was seen running `ls` (SYSTEM 8-3).
 # --allowedTools
 #     the same list, pre-approved: nothing is asked in a non-interactive run.
+# --output-format stream-json --verbose
+#     the agent's progress, one event per line: how much it has thought, the
+#     tools it called and what came back, errors, the account's rate limit,
+#     and at the end the tokens it used. Written to trace/ in out/ (the window
+#     makes it), where the window reads it while the role runs and takes it
+#     back after. Without that line nobody could tell an agent thinking from
+#     one that had stopped answering. Only the last answer goes to stdout, as
+#     before.
+TRACE="$OUT/trace/progress.jsonl"
+[ -d "$OUT/trace" ] || TRACE="$HOME/progress.jsonl"
 set +e
 timeout --kill-after=30 "$LIMIT" claude -p \
   --safe-mode \
@@ -97,7 +107,23 @@ timeout --kill-after=30 "$LIMIT" claude -p \
   --no-session-persistence \
   --tools "$TOOLS" \
   --allowedTools "$TOOLS" \
-  < "$BRIEF"
+  --output-format stream-json --verbose \
+  < "$BRIEF" > "$TRACE"
 rc=$?
 set -e
+python3 - "$TRACE" "$rc" <<'EOF'
+import json, sys
+result = None
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if e.get("type") == "result":
+        result = e
+if result is not None:
+    print(result.get("result") or result.get("subtype") or "")
+else:
+    print(f"(no answer: the agent was stopped, exit {sys.argv[2]})")
+EOF
 exit "$rc"

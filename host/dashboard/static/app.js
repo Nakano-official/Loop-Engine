@@ -235,6 +235,27 @@ const STAGE_STATE = {
 const JUMP = { ana: "sec-upstream", def: "sec-upstream", des: "sec-upstream", imp: "sec-modules", out: "sec-out" };
 
 const sum = (xs) => xs.reduce((a, b) => a + (b || 0), 0);
+const kTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+const QUIET_WARN = 90;           // seconds without a word from the agent before it is called quiet
+
+// A Claude role at work, from its trace (the window's progress): thinking,
+// writing, or silent. Thinking sends a word every few seconds; a long silence
+// is what an agent that stopped answering looks like.
+function liveLines(live) {
+  if (!live) return { lines: [], badges: [] };
+  if (live.error) return { lines: [], badges: [`経過を読めない: ${live.error}`] };
+  if (!live.running) return { lines: [], badges: [] };
+  const lines = [], badges = [];
+  const last = live.tools && live.tools.length ? live.tools[live.tools.length - 1] : null;
+  lines.push(`考えた量 約 ${kTokens(live.thinking_tokens || 0)} トークン（この手番）`);
+  if (last) lines.push(`直近の道具: ${last.name}${last.file ? ` ${last.file}` : ""}（計 ${live.tool_count} 回）`);
+  const quiet = Math.round(live.quiet_seconds || 0);
+  if (quiet >= QUIET_WARN) badges.push(`応答なし ${quiet} 秒 ⚠`);
+  else lines.push(`最後の経過 ${quiet} 秒前`);
+  if (live.errors) badges.push(`エラー ${live.errors} 件`);
+  if (live.rate_limit && live.rate_limit !== "allowed") badges.push(`利用枠: ${live.rate_limit}`);
+  return { lines, badges };
+}
 
 function stageFacts(run) {
   const step = run.now ? run.now.step : null;
@@ -256,10 +277,15 @@ function stageFacts(run) {
     else if (step === st.step) {
       f.state = "now";
       f.since = run.now.since;
-      f.lines.push(`${run.now.n} 回目を書いています`);
+      f.lines.push(`${run.now.n} 回目`);
+      const live = liveLines(run.live);
+      f.lines.push(...live.lines);
+      f.badges.push(...live.badges);
     } else if (last && !(last.findings || []).length) f.state = "done";
     else if (last && ended) f.state = "bad";
     else if (last) f.state = "now";
+    const used = sum(rounds.map((r) => (r.usage || {}).output_tokens));
+    if (used) f.lines.push(`出力 約 ${kTokens(used)} トークン`);
     const refused = rounds.filter((r) => (r.findings || []).length).length;
     if (refused) f.badges.push(`関門の指摘で書き直し ${refused} 回`);
     if (st.id === "ana" && p.analysis) {
@@ -634,6 +660,8 @@ function appParts(app, running, shown) {
 function headParts(app, run) {
   const now = run.now ? h("div", { class: "now" },
     h("div", { class: "row" }, h("span", { class: "dot" }), h("strong", {}, "いま"), doing(run.now)),
+    run.live ? h("div", { class: "row note" }, liveLines(run.live).lines.join(" ・ "),
+      ...liveLines(run.live).badges.map((b) => h("span", { class: "chip warn" }, b))) : null,
     h("div", { class: "row note" },
       "この段の経過 ", elapsed(run.now.since), " ・ 通しの開始から ", elapsed(run.started),
       " ・ プロセスは動いています（止まれば「中断」と出ます）")) : null;
@@ -807,10 +835,10 @@ async function drawApp(running) {
   }
   view.names = run.design ? run.design.modules.map((m) => m.name) : [];
 
-  if (changed("head", [run.status, run.now, run.reason, run.stage, run.started])) {
+  if (changed("head", [run.status, run.now, run.reason, run.stage, run.started, run.live])) {
     put(p.head, headParts(app, run));
   }
-  if (changed("flow", [run.status, run.stage, run.now, run.steps, run.modules, run.products, run.output,
+  if (changed("flow", [run.status, run.stage, run.now, run.steps, run.modules, run.products, run.output, run.live,
     run.upstream, run.has_concepts, run.ledger.filter((e) => ["UNTIL", "OUTPUT_FAILED"].includes(e.event))])) {
     put(p.flow, [h("h3", {}, "ループ", h("span", { class: "note" }, "  周を押すと、その中の流れが開きます")), roundTrack(run)]);
   }

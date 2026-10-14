@@ -241,17 +241,25 @@ def apply(roles) -> None:
         os.chmod(env, 0o640)
 
     # Launchers: one root-owned script per invoked role, and the window.
+    # Written beside and renamed over, never rewritten in place: bash reads a
+    # script as it runs, and a launcher replaced under a role that is running
+    # would hand it the rest of a different file.
+    def replace(src: Path, dst: Path) -> None:
+        tmp = dst.with_name(f".{dst.name}.new")
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+
     for name, r in roles.items():
         if r.get("invoked"):
             src = launcher_source(name, r)
             if not src.exists():
                 sys.exit(f"apply: no launcher for {name} (looked for {src})")
-            shutil.copyfile(src, launcher(name))
+            replace(src, launcher(name))
             place(launcher(name), "root", "root", 0o755, directory=False)
-    shutil.copyfile(HERE / "bin" / "loop-window", BIN / "loop-window")
+    replace(HERE / "bin" / "loop-window", BIN / "loop-window")
     place(BIN / "loop-window", "root", "root", 0o755, directory=False)
     if Path(__file__).resolve() != (LIB / "roles.py").resolve():
-        shutil.copyfile(Path(__file__).resolve(), LIB / "roles.py")
+        replace(Path(__file__).resolve(), LIB / "roles.py")
     place(LIB / "roles.py", "root", "root", 0o644, directory=False)
 
     # sudoers: runner may start each invoked role through its launcher, as that

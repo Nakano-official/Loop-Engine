@@ -70,6 +70,7 @@ class Box:
         self.every = every
         self._at = 0.0
         self._last: dict = {}
+        self._progress: dict = {}
 
     def status(self) -> dict:
         if time.time() - self._at < self.every:
@@ -88,3 +89,20 @@ class Box:
             self._last = {"window": "down", "error": str(e)[:200]}
         self._at = time.time()
         return self._last
+
+    def progress(self, role: str) -> dict:
+        """What an upstream role is doing now (the window's progress op): how
+        much it has thought, what it called, how long it has been quiet. Asked
+        at most every few seconds, and only while a run is at that role."""
+        at, last = self._progress.get(role, (0.0, {}))
+        if time.time() - at < 3:
+            return last
+        try:
+            proc = subprocess.run(["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", self.host,
+                                   f"progress live {role}"], capture_output=True, text=True, timeout=10,
+                                  stdin=subprocess.DEVNULL, creationflags=0x08000000 if os.name == "nt" else 0)
+            last = json.loads(proc.stdout) if proc.returncode == 0 else {"error": (proc.stderr.strip() or "no answer")[:200]}
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
+            last = {"error": str(e)[:200]}
+        self._progress[role] = (time.time(), last)
+        return last

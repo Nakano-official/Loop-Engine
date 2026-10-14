@@ -33,6 +33,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -374,6 +375,12 @@ class Window:
                 p.unlink(missing_ok=True)
             else:
                 shutil.rmtree(p, ignore_errors=True)
+        # trace/: where the launcher writes the agent's progress (stream-json),
+        # read by `progress` while the role runs. No sticky bit, so the next
+        # run-role can clear what the role wrote there.
+        trace = out / "trace"
+        trace.mkdir()
+        os.chmod(trace, 0o2770)
         stage = payload.get("stage") or {}
         if stage:
             work = out / "edit"
@@ -399,7 +406,23 @@ class Window:
                 # Left as it was, beside a new file written from scratch: the new one.
                 if edited != text or name not in files:
                     files[name] = edited
-        return {"code": code, "files": files, "output": output}
+        progress = trace / "progress.jsonl"
+        text = progress.read_text(encoding="utf-8", errors="replace") if progress.is_file() else ""
+        return {"code": code, "files": files, "output": output, "trace": text[-5_000_000:],
+                "usage": trace_summary(text).get("usage")}
+
+    def progress(self, role: str) -> dict:
+        """What an upstream role is doing now, from the trace its launcher is
+        writing: read only, a summary only. quiet_seconds is how long since the
+        agent last said anything -- thinking keeps it near zero."""
+        if role not in UPSTREAM:
+            raise ValueError(f"progress is for {sorted(UPSTREAM)}, not {role!r}")
+        p = self.roles / role / "out" / "trace" / "progress.jsonl"
+        if not p.is_file():
+            return {"running": False}
+        summary = trace_summary(p.read_text(encoding="utf-8", errors="replace"))
+        return {"running": not summary["done"], "quiet_seconds": round(time.time() - p.stat().st_mtime, 1),
+                **summary}
 
     def accept(self, ws_name: str, module: str) -> dict:
         ws = self._ws(ws_name)
@@ -423,7 +446,49 @@ class Window:
             return self.build_app(ws, module)
         if op == "run-role":
             return self.run_role(ws, module, payload)
+        if op == "progress":
+            return self.progress(module)
         raise ValueError(f"unknown operation {op!r}")
+
+
+def trace_summary(text: str) -> dict:
+    """A Claude role's stream-json trace, summed up: how much it has thought in
+    its current turn, the tools it called, failed tool calls and API errors,
+    the rate limit it was last told, and -- once it has finished -- the tokens
+    it used. Lines that are not JSON (a cut-off last line) are skipped."""
+    thinking, tools, errors, turns = 0, [], 0, 0
+    rate, usage, done = None, None, False
+    for line in text.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        kind, sub = e.get("type"), e.get("subtype", "")
+        if kind == "system" and sub == "thinking_tokens":
+            thinking = e.get("estimated_tokens", thinking)
+        elif kind == "system" and ("retry" in sub or "error" in sub):
+            errors += 1
+        elif kind == "assistant":
+            turns += 1
+            for c in e.get("message", {}).get("content", []):
+                if c.get("type") == "tool_use":
+                    inp = c.get("input") or {}
+                    tools.append({"name": c.get("name"), "file": str(inp.get("file_path", "")).rsplit("/", 1)[-1]})
+        elif kind == "user":
+            content = e.get("message", {}).get("content")
+            for c in content if isinstance(content, list) else []:
+                if c.get("type") == "tool_result" and c.get("is_error"):
+                    errors += 1
+        elif kind == "rate_limit_event":
+            rate = (e.get("rate_limit_info") or {}).get("status")
+        elif kind == "result":
+            done = True
+            u = e.get("usage") or {}
+            usage = {k: u.get(k) for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                                           "cache_creation_input_tokens") if u.get(k) is not None}
+            usage.update({k: e.get(k) for k in ("duration_ms", "num_turns", "total_cost_usd") if e.get(k) is not None})
+    return {"thinking_tokens": thinking, "tools": tools[-5:], "tool_count": len(tools), "errors": errors,
+            "turns": turns, "rate_limit": rate, "usage": usage, "done": done}
 
 
 def _escape(text: str) -> str:

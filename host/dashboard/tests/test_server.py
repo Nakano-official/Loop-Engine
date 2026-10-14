@@ -25,6 +25,9 @@ class FakeBox:
     def status(self):
         return {"window": "ok", "llm": "active", "egress": "active"}
 
+    def progress(self, role):
+        return {"running": True, "thinking_tokens": 1000, "quiet_seconds": 1.0, "tools": [], "tool_count": 0}
+
 
 class DashboardTest(unittest.TestCase):
     def setUp(self):

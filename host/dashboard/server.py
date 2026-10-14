@@ -48,6 +48,7 @@ APP_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'
 DIAGRAM_CSP = ("sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
                "img-src data:; font-src data:")
 MERMAID = "vendor/mermaid-11.17.2.min.js"
+LIVE_ROLES = {"analyst", "definer", "designer"}
 STATIC_FILES = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css",
                 "/diagram.html": "diagram.html", "/diagram.js": "diagram.js", f"/{MERMAID}": MERMAID}
 
@@ -126,6 +127,9 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                     self._json({**run.summary(), "ledger": run.ledger()[-200:], "outcome": run.outcome(),
                                 "steps": run.steps(), "design": run.design_summary(),
                                 "has_concepts": (run.dir / "concepts.json").exists(), "products": run.products(),
+                                # While a Claude role works, what it is doing: thinking, writing, or quiet.
+                                "live": box.progress(run.now()["step"])
+                                if run.status() == "running" and (run.now() or {}).get("step") in LIVE_ROLES else None,
                                 "decisions": [d for d in run.app.decisions() if d.get("run") == run.id]})
                     return
                 m = re.fullmatch(r"/api/apps/([^/]+)/runs/([^/]+)/file", path)

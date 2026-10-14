@@ -296,6 +296,7 @@ def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, round
         refused = text
         log.keep(f"{here}/{name}", text)
         log.keep(f"{here}/output.txt", res.get("output") or None)
+        log.keep(f"{here}/trace.jsonl", res.get("trace") or None)
         if text is None:
             findings = [f"{role} wrote no {name} (exit {res.get('code')}); write exactly that file"]
         else:
@@ -304,7 +305,8 @@ def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, round
                 findings = [str(f) for f in gate(doc)]
             except json.JSONDecodeError as e:
                 findings = [f"{name} is not JSON: {e}"]
-        log(role.upper(), n=n, findings=findings[:20], dir=here)
+        log(role.upper(), n=n, findings=findings[:20], dir=here,
+            **({"usage": res["usage"]} if res.get("usage") else {}))
         if not findings:
             return doc, []
     return doc, findings
