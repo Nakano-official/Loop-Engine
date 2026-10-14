@@ -81,7 +81,7 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
             out = pipeline.run_from_requirements(requirements, run.dir, pipeline.RemoteWindow(), run.workspace,
                                                  max_attempts=args.attempts, ledger=ledger,
                                                  output=run.dir / "app.html", should_stop=stop_file.exists,
-                                                 platform=app.platform())
+                                                 platform=app.platform(), until=args.until)
             for name in ("concepts.json", "definition.json", "design.json"):
                 if (run.dir / name).exists():
                     (app.dir / name).write_bytes((run.dir / name).read_bytes())
@@ -99,7 +99,7 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
     (run.dir / "outcome.json").write_text(json.dumps(outcome, ensure_ascii=False, indent=1), encoding="utf-8")
     (run.dir / "run.pid").unlink(missing_ok=True)
     print(json.dumps({"app": app.name, "run": run.id, **outcome}, ensure_ascii=False))
-    return 0 if outcome["stage"] == "done" else 1
+    return 0 if outcome["stage"] in ("done", pipeline.UNTIL) else 1
 
 
 def cmd_stop(store: apps.Store, args) -> int:
@@ -129,6 +129,8 @@ def main(argv=None) -> int:
     r = sub.add_parser("run")
     r.add_argument("name")
     r.add_argument("--attempts", type=int, default=3)
+    r.add_argument("--until", choices=("analysis", "definition", "design"),
+                   help="stop once this stage has passed its gate (from requirements only)")
     r.add_argument("--from-design", action="store_true",
                    help="start from the app's latest definition and design, not its requirements")
     s = sub.add_parser("stop")

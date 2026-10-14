@@ -125,7 +125,7 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                     run = store.app(m.group(1)).run(m.group(2))
                     self._json({**run.summary(), "ledger": run.ledger()[-200:], "outcome": run.outcome(),
                                 "steps": run.steps(), "design": run.design_summary(),
-                                "has_concepts": (run.dir / "concepts.json").exists(),
+                                "has_concepts": (run.dir / "concepts.json").exists(), "products": run.products(),
                                 "decisions": [d for d in run.app.decisions() if d.get("run") == run.id]})
                     return
                 m = re.fullmatch(r"/api/apps/([^/]+)/runs/([^/]+)/file", path)

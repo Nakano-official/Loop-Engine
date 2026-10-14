@@ -42,6 +42,7 @@ sys.path.insert(0, str(ADAPTERS))
 from design import Design  # noqa: E402
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+NAME_FILE = re.compile(r"^[a-z][a-z0-9_]*\.json$")         # a file staged for a role to edit
 
 # The toolchains, frozen by provisioning. Overridable for the host's tests.
 TOOLS = {
@@ -356,7 +357,14 @@ class Window:
         out/ is emptied first: runner owns it, so it may remove what the role
         left there (the sticky bit stops the role, not the directory's owner).
         Only top-level regular files come back -- the brief asks for exactly
-        the file it wants."""
+        the file it wants.
+
+        payload["stage"] ({name: text}), when given: files put in out/edit/ for
+        the role to change in place -- what its gate refused, to be fixed rather
+        than written again from nothing. edit/ has no sticky bit: in a sticky
+        directory a file owned by runner cannot be replaced by the role (the
+        Edit tool writes a new file and renames it over the old). What is in
+        edit/ afterwards is what comes back under that name."""
         self._ws(ws_name)                       # the name check
         if role not in UPSTREAM:
             raise ValueError(f"run-role starts {sorted(UPSTREAM)}, not {role!r}")
@@ -366,6 +374,16 @@ class Window:
                 p.unlink(missing_ok=True)
             else:
                 shutil.rmtree(p, ignore_errors=True)
+        stage = payload.get("stage") or {}
+        if stage:
+            work = out / "edit"
+            work.mkdir()
+            os.chmod(work, 0o2770)
+            for name, text in stage.items():
+                if not NAME_FILE.match(name):
+                    raise ValueError(f"bad file name to stage: {name!r}")
+                (work / name).write_text(text, encoding="utf-8")
+                os.chmod(work / name, 0o664)
         brief = self.roles / role / "in" / f"{ws_name}.md"
         brief.write_text(payload["brief"], encoding="utf-8")
         code, output = self.run_role_fn(role, brief)
@@ -374,6 +392,13 @@ class Window:
         for p in sorted(out.iterdir()):
             if p.is_file() and not p.is_symlink() and p.stat().st_size <= 1_000_000:
                 files[p.name] = p.read_text(encoding="utf-8", errors="replace")
+        for name, text in stage.items():
+            p = out / "edit" / name
+            if p.is_file() and not p.is_symlink() and p.stat().st_size <= 1_000_000:
+                edited = p.read_text(encoding="utf-8", errors="replace")
+                # Left as it was, beside a new file written from scratch: the new one.
+                if edited != text or name not in files:
+                    files[name] = edited
         return {"code": code, "files": files, "output": output}
 
     def accept(self, ws_name: str, module: str) -> dict:

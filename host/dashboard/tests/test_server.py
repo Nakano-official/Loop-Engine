@@ -148,9 +148,20 @@ class DashboardTest(unittest.TestCase):
         run = json.loads(self.request("GET", f"/api/apps/idle/runs/{self.run_id}")[2])
         [step] = [s for s in run["steps"] if s["step"] == "attempt"]
         self.assertEqual((step["seconds"], step["files"]), (2.5, ["brief.md", "rules.ts"]))
+        self.assertEqual(run["products"], {"design": {"modules": 8}})
         names = [m["name"] for m in run["design"]["modules"]]
         self.assertIn("rules", names)
         self.assertEqual([m["name"] for m in run["design"]["modules"] if m["assembly"]], ["game"])
+
+    def test_a_run_counts_what_each_upstream_stage_wrote(self):
+        run_dir = self.store.app("idle").run(self.run_id).dir
+        for name in ("concepts.json", "definition.json", "design.json"):
+            (run_dir / name).write_text((EX / f"idlegame.{name}").read_text(encoding="utf-8"), encoding="utf-8")
+        run = json.loads(self.request("GET", f"/api/apps/idle/runs/{self.run_id}")[2])
+        self.assertEqual(run["products"], {
+            "analysis": {"concepts": 3, "properties": 5, "by_example": 4, "requirements": 2},
+            "definition": {"items": 7, "examples": 25}, "design": {"modules": 8}})
+        self.assertTrue(run["has_concepts"])
 
     def test_a_kept_file_can_be_read_and_nothing_else(self):
         self.keep_an_attempt()

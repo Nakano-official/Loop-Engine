@@ -37,6 +37,7 @@ def win(tmp_path, monkeypatch):
         (roles / role / "out").mkdir(parents=True)
     w = window_mod.Window(tmp_path / "work", window_mod.local_runner, roles=roles)
     w.briefs = {"analyst": [], "definer": [], "designer": []}
+    w.staged = {}
     return w
 
 
@@ -48,7 +49,10 @@ def roles(win, definitions, designs, concepts=(CONCEPTS,)):
         win.briefs[role].append(Path(brief).read_text(encoding="utf-8"))
         name = {"analyst": "concepts.json", "definer": "definition.json", "designer": "design.json"}[role]
         text = queue[role].pop(0) if len(queue[role]) > 1 else queue[role][0]
-        (win.roles / role / "out" / name).write_text(text, encoding="utf-8")
+        # Given back what it wrote (out/edit/), a role fixes it there, as the Edit tool would.
+        edit = win.roles / role / "out" / "edit"
+        win.staged.setdefault(role, []).append((edit / name).read_text(encoding="utf-8") if edit.is_dir() else None)
+        (edit if edit.is_dir() else win.roles / role / "out").joinpath(name).write_text(text, encoding="utf-8")
         return 0, f"[{role}] wrote {name}"
 
     win.run_role_fn = run_role
@@ -70,6 +74,9 @@ def test_requirements_to_green_through_both_gates(win, tmp_path):
     # The definer was refused once, and told why.
     assert len(win.briefs["definer"]) == 2
     assert "types.Screen" in win.briefs["definer"][1]
+    # ... and given back what it wrote, to fix in place rather than write again.
+    assert "edit/definition.json" in win.briefs["definer"][1]
+    assert win.staged["definer"][0] is None and "Screen" not in json.loads(win.staged["definer"][1])["types"]
     entries = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()]
     events = [e["event"] for e in entries if e["event"] != "BEGIN"]
     assert events[:5] == ["ANALYST", "DEFINER", "DEFINER", "DESIGNER", "DESIGN_ROUND"]
@@ -146,3 +153,13 @@ def test_a_definition_that_leaves_a_property_unchecked_goes_back_to_the_definer(
     out = pipeline.run_from_requirements("x", tmp_path / "app", win, "up6", solver=reference, build=False)
     assert out.stage == "done"
     assert len(win.briefs["definer"]) == 2 and "concepts.C2.P2" in win.briefs["definer"][1]
+
+
+def test_a_run_can_stop_after_the_analysis(win, tmp_path):
+    roles(win, [DEFINITION], [json.dumps(DESIGN)])
+    ledger = tmp_path / "ledger.jsonl"
+    out = pipeline.run_from_requirements("x", tmp_path / "app", win, "up7", solver=reference, build=False,
+                                         ledger=pipeline.Ledger(ledger), until="analysis")
+    assert out.stage == pipeline.UNTIL
+    assert (tmp_path / "app" / "concepts.json").exists() and win.briefs["definer"] == []
+    assert json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])["event"] == "UNTIL"

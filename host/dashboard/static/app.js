@@ -45,7 +45,8 @@ async function post(path, body) {
 }
 
 const STATUS = {
-  running: ["実行中", "info"], done: ["完了", "ok"], failed: ["戻り先あり", "bad"], stopped: ["停止", "warn"],
+  running: ["実行中", "info"], done: ["完了", "ok"], partial: ["指定の段まで", "ok"], failed: ["戻り先あり", "bad"],
+  stopped: ["停止", "warn"],
   interrupted: ["中断", "warn"],
 };
 const MODULE = {
@@ -213,67 +214,228 @@ addEventListener("message", (e) => {
 const esc = (s) => String(s ?? "").replace(/[\r\n]+/g, " ").replace(/"/g, "#quot;").replace(/</g, "#lt;")
   .replace(/>/g, "#gt;").replace(/;/g, "；").replace(/`/g, "'").slice(0, 200);
 
-const FLOW = [
-  ["req", "要求（人）"], ["ana", "analyst：概念ファイル"], ["def", "definer：定義"], ["des", "designer：設計"],
-  ["gen", "テスト生成と赤の関門（exec）"], ["sol", "solver（9B）：実装"], ["chk", "参照の検査（runner）"],
-  ["ver", "検証（exec）"], ["bld", "build-app：app.html"],
+// ---- the flow: one card per stage ---------------------------------------------------
+//
+// The stages never change, so they are drawn here as they are -- in HTML, with
+// textContent, no picture library -- and only their state comes from the run:
+// what is done, what is running now and for how long, what each produced, and
+// where the run went back.
+
+const STAGES = [
+  { id: "req", name: "要求", who: "人が書く" },
+  { id: "ana", name: "分析", who: "analyst（Claude・箱）", step: "analyst", fault: "要求分析" },
+  { id: "def", name: "定義", who: "definer（Claude・箱）", step: "definer", fault: "要件定義" },
+  { id: "des", name: "設計", who: "designer（Claude・箱）", step: "designer", fault: "モジュール設計" },
+  { id: "imp", name: "実装", who: "solver（9B）と exec・箱", fault: "実装" },
+  { id: "out", name: "出力", who: "build-app と起動確認・箱" },
 ];
-const REACHED = { ANALYST: "ana", DEFINER: "def", DESIGNER: "des", RED_GATE: "gen", ATTEMPT: "ver", GREEN: "ver",
-  OUTPUT: "bld", OUTPUT_FAILED: "bld" };
-const AT_FAULT = { "要求分析": "ana", "要件定義": "def", "モジュール設計": "des", "実装": "sol" };
+const STAGE_STATE = {
+  done: "済み", now: "いま", wait: "待ち", skip: "使わない", bad: "ここで止まった", held: "指定で止めた",
+};
+const JUMP = { ana: "sec-upstream", def: "sec-upstream", des: "sec-upstream", imp: "sec-modules", out: "sec-out" };
 
-// 1. The whole flow: where the data goes, and where the run is now.
-function flowSource(run) {
-  const order = FLOW.map((f) => f[0]);
-  const fromRequirements = run.ledger.some((e) => ["ANALYST", "DEFINER"].includes(e.event)
-    || (e.event === "BEGIN" && ["analyst", "definer"].includes(e.step)));
-  let furthest = 0;
-  for (const e of run.ledger) {
-    const at = REACHED[e.event];
-    if (at) furthest = Math.max(furthest, order.indexOf(at));
-  }
+const sum = (xs) => xs.reduce((a, b) => a + (b || 0), 0);
+
+function stageFacts(run) {
   const step = run.now ? run.now.step : null;
-  const current = { analyst: ["ana"], definer: ["def"], designer: ["des"], red_gate: ["gen"], attempt: ["sol", "chk", "ver"],
-    build: ["bld"] }[step] || [];
-  const cls = {};
-  const at = current.length ? order.indexOf(current[0]) : -1;
-  order.forEach((id, i) => {
-    if (!fromRequirements && ["ana", "def", "des"].includes(id)) cls[id] = "skip";
-    else if (run.status === "done" || (at >= 0 ? i < at : i <= furthest)) cls[id] = "done";
-  });
-  cls.req = "done";
-  for (const id of current) cls[id] = "now";
-  if (run.status === "failed") cls[AT_FAULT[run.stage] || order[furthest]] = "bad";
+  const ended = run.status !== "running";
+  const fromRequirements = Boolean(run.has_concepts)
+    || run.steps.some((s) => s.step === "analyst" || s.step === "definer")
+    || ["analyst", "definer"].includes(step);
+  const until = run.ledger.find((e) => e.event === "UNTIL");
+  const heldAfter = until ? { analysis: "ana", definition: "def", design: "des" }[until.stage] : null;
+  const order = STAGES.map((s) => s.id);
+  const p = run.products || {};
+  const facts = { req: { state: "done", lines: [] } };
 
-  const lines = [
-    "flowchart LR",
-    '  subgraph H["ホスト ── 判断しない"]',
-    "    direction TB",
-    `    req["${FLOW[0][1]}"]`,
-    '    pipe["pipeline：段の順序と戻り"]',
-    '    led[("台帳と記録")]',
-    "  end",
-    '  subgraph B["箱 ── 判断する・実行する"]',
-    ...FLOW.slice(1).map(([id, label]) => `    ${id}["${label}"]`),
-    "  end",
-  ];
-  const edges = [];
-  for (let i = 0; i + 1 < order.length; i++) {
-    edges.push([order[i], order[i + 1]]);
-    lines.push(`  ${order[i]} e${i}@--> ${order[i + 1]}`);
+  for (const st of STAGES.filter((s) => s.step)) {
+    const rounds = run.steps.filter((s) => s.step === st.step);
+    const f = { state: "wait", lines: [], badges: [], seconds: sum(rounds.map((r) => r.seconds)) };
+    const last = rounds[rounds.length - 1];
+    if (!fromRequirements) f.state = "skip";
+    else if (step === st.step) {
+      f.state = "now";
+      f.since = run.now.since;
+      f.lines.push(`${run.now.n} 回目を書いています`);
+    } else if (last && !(last.findings || []).length) f.state = "done";
+    else if (last && ended) f.state = "bad";
+    else if (last) f.state = "now";
+    const refused = rounds.filter((r) => (r.findings || []).length).length;
+    if (refused) f.badges.push(`関門の指摘で書き直し ${refused} 回`);
+    if (st.id === "ana" && p.analysis) {
+      f.lines.push(`概念 ${p.analysis.concepts}・性質 ${p.analysis.properties}（例で確かめる ${p.analysis.by_example}）`,
+        `必要なこと ${p.analysis.requirements}`);
+    }
+    if (st.id === "def" && p.definition) f.lines.push(`項目 ${p.definition.items}・例 ${p.definition.examples}`);
+    if (st.id === "des") {
+      if (p.design) f.lines.push(`モジュール ${p.design.modules}`);
+      const back = (run.upstream || []).filter((e) => e.event === "BACK_TO_DESIGN").length;
+      if (back) f.badges.push(`実装から設計へ戻った ${back} 回`);
+    }
+    facts[st.id] = f;
   }
-  lines.push('  ver -. "赤なら次の試行" .-> sol', '  ver -. "使い切ったら設計へ" .-> des', "  pipe -.- led");
-  lines.push(
-    "  classDef now fill:#2457c5,stroke:#2457c5,color:#fff",
-    "  classDef done fill:#e3f3e6,stroke:#1a7f37,color:#14532d",
-    "  classDef bad fill:#fde7e7,stroke:#c62828,color:#7f1d1d",
-    "  classDef skip fill:none,stroke:#999,color:#999,stroke-dasharray:4 3");
-  for (const c of ["now", "done", "bad", "skip"]) {
-    const ids = order.filter((id) => cls[id] === c);
-    if (ids.length) lines.push(`  class ${ids.join(",")} ${c}`);
+
+  // The modules: green out of all, the one being worked on, the retries.
+  const total = p.design ? p.design.modules : null;
+  const green = run.modules.filter((m) => m.state === "green").length;
+  const work = run.steps.filter((s) => s.step === "attempt" || s.step === "red_gate");
+  const imp = { state: "wait", lines: [], badges: [], seconds: sum(work.map((s) => s.seconds)) };
+  if (step === "attempt" || step === "red_gate") {
+    imp.state = "now";
+    imp.since = run.now.since;
+    imp.lines.push(step === "attempt" ? `いま ${run.now.module} の ${run.now.n} 回目` : `いま ${run.now.module} のテストを準備`);
+  } else if (total && green === total) imp.state = "done";
+  else if (run.modules.length && ended) imp.state = "bad";
+  else if (run.modules.length) imp.state = "now";
+  if (total != null || run.modules.length) imp.lines.unshift(`緑 ${green}${total != null ? ` / ${total}` : ""}`);
+  const retries = sum(run.modules.map((m) => Math.max((m.attempts || 0) - 1, 0)));
+  if (retries) imp.badges.push(`やり直し ${retries} 回`);
+  facts.imp = imp;
+
+  const out = { state: "wait", lines: [], badges: [] };
+  if (step === "build") {
+    out.state = "now";
+    out.since = run.now.since;
+    out.lines.push("束ねて、起動を確かめています");
+  } else if (run.output) {
+    out.state = "done";
+    out.lines.push("app.html・起動確認 ✓");
+  } else if (ended && run.ledger.some((e) => e.event === "OUTPUT_FAILED")) {
+    out.state = "bad";
+    out.lines.push("起動確認で落ちた");
   }
-  edges.forEach(([a, b], i) => { if (cls[b] === "now") lines.push(`  e${i}@{ animate: true }`); });
-  return lines.join("\n");
+  facts.out = out;
+
+  // A run told to stop after a stage: what comes after it was never meant to run.
+  if (heldAfter) for (const id of order.slice(order.indexOf(heldAfter) + 1)) facts[id].state = "held";
+  // A run that ended by going back somewhere: that stage is where it stopped.
+  if (run.status === "failed") {
+    const at = STAGES.find((s) => s.fault === run.stage);
+    if (at) facts[at.id].state = "bad";
+  }
+  return facts;
+}
+
+function stageCards(run) {
+  const facts = stageFacts(run);
+  const cards = [];
+  STAGES.forEach((st, i) => {
+    const f = facts[st.id];
+    if (i) cards.push(h("span", { class: "stage-arrow", "aria-hidden": "true" }, "→"));
+    const time = f.state === "now" && f.since ? elapsed(f.since) : f.seconds ? fmt(f.seconds) : null;
+    cards.push(h("button", {
+      class: `stage ${f.state}`, title: `${st.name}: ${STAGE_STATE[f.state]}`,
+      onclick: () => {
+        const el = JUMP[st.id] && document.getElementById(JUMP[st.id]);
+        if (el) el.scrollIntoView({ behavior: "smooth" });
+      },
+    },
+      h("div", { class: "stage-top" }, h("span", { class: "stage-name" }, st.name),
+        h("span", { class: "stage-state" }, f.state === "now" ? h("span", { class: "dot" }) : null, STAGE_STATE[f.state])),
+      h("div", { class: "stage-who" }, st.who),
+      ...f.lines.map((l) => h("div", { class: "stage-line" }, l)),
+      ...(f.badges || []).map((b) => h("div", { class: "stage-badge" }, b)),
+      time ? h("div", { class: "stage-time" }, time) : null));
+  });
+  return h("div", { class: "stages" }, ...cards);
+}
+
+// ---- the outer loop: the rounds, on one rail ------------------------------------
+//
+// The rounds are fixed too (DESIGN 6): the MVP, then one round per topic in a
+// fixed order, then a person looks. Only the rail is shown; a round opens to
+// the stages inside it. A round of the definition goes evaluation -> improvement
+// file -> the definition as it now stands -> design -> implementation -> output;
+// the round of the design (maintainability) goes from the reviewer's note to a
+// new design. The outer loop is not built yet: until it is, the first round is
+// this run and the others show what they will run.
+
+const ROUNDS = [
+  { id: "r1", mark: "1", name: "1周目", sub: "MVP", kind: "要求から一通り" },
+  { id: "t1", mark: "①", name: "機能適合性", kind: "定義の周" },
+  { id: "t2", mark: "②", name: "信頼性", kind: "定義の周" },
+  { id: "t3", mark: "③", name: "保守性", kind: "設計の周" },
+  { id: "t4", mark: "④", name: "インタラクション能力", kind: "定義の周" },
+  { id: "t5", mark: "⑤", name: "性能効率性", kind: "定義の周" },
+  { id: "end", mark: "✓", name: "一通り完成", kind: "人が見る" },
+];
+const ROUND_STAGES = {
+  "定義の周": [["評価", "評価役（critic・箱）"], ["改良ファイル", "レビュアー（definer・箱）"], ["今の定義", "機械が重ねる"],
+    ["設計", "designer（Claude・箱）"], ["実装", "solver（9B）と exec・箱"], ["出力", "build-app と起動確認・箱"]],
+  "設計の周": [["指摘", "レビュアー（definer・箱）"], ["設計", "designer（Claude・箱）"], ["実装", "solver（9B）と exec・箱"],
+    ["出力", "build-app と起動確認・箱"]],
+  "人が見る": [["実物を見る", "人"]],
+};
+const RUN_ROUND_STATE = { running: "now", done: "done", partial: "held", failed: "bad", stopped: "bad", interrupted: "bad" };
+const ROUND_LABEL = { now: "いま", done: "済み", held: "指定で止めた", bad: "止まった", todo: "未着手" };
+
+function openRound() {
+  try { return localStorage.getItem("loop:round") || ""; } catch { return ""; }
+}
+function setOpenRound(id) {
+  try { localStorage.setItem("loop:round", id); } catch { /* private mode: only for this page */ }
+  view.round = id;
+}
+
+function roundTrack(run) {
+  const open = view.round ?? openRound();
+  const states = ROUNDS.map((r) => (r.id === "r1" ? RUN_ROUND_STATE[run.status] || "todo" : "todo"));
+  // How far the rail is filled: up to the last round done, half into the one running.
+  const doneUpTo = states.lastIndexOf("done");
+  const nowAt = states.indexOf("now");
+  const reach = nowAt >= 0 ? nowAt : Math.max(doneUpTo, 0);
+  const fill = ROUNDS.length > 1 ? (reach / (ROUNDS.length - 1)) * 100 : 0;
+
+  const nodes = ROUNDS.map((r, i) => h("button", {
+    class: `round ${states[i]}${open === r.id ? " open" : ""}`,
+    title: `${r.name}（${r.kind}）: ${ROUND_LABEL[states[i]]}`,
+    onclick: () => {
+      setOpenRound(open === r.id ? "" : r.id);
+      view.justOpened = open !== r.id;
+      view.sig.flow = null;
+      refresh();
+    },
+  },
+    h("span", { class: "knob" }, states[i] === "done" ? "✓" : r.mark),
+    h("span", { class: "round-name" }, r.name),
+    h("span", { class: "round-kind" }, r.sub ? `${r.sub} · ${r.kind}` : r.kind),
+    h("span", { class: "round-state" }, ROUND_LABEL[states[i]])));
+
+  const rail = h("div", { class: "rail", style: `--fill: ${fill}%; --flow-at: ${nowAt >= 0 ? fill : -1}%` },
+    h("div", { class: "rail-line" }), h("div", { class: "rail-fill" }),
+    nowAt >= 0 ? h("div", { class: "rail-flow" }) : null,
+    h("div", { class: "rail-nodes" }, ...nodes));
+
+  const out = [rail];
+  const at = ROUNDS.findIndex((r) => r.id === open);
+  if (at >= 0) {
+    const r = ROUNDS[at];
+    const panel = h("div", {
+      class: `round-panel${view.justOpened ? " opening" : ""}`,
+      style: `--at: ${((at + 0.5) / ROUNDS.length) * 100}%`,
+    },
+      h("div", { class: "round-panel-head" }, h("span", { class: "round-tag" }, r.id === "r1" ? r.name : `${r.mark} ${r.name}`),
+        h("span", { class: "note" }, r.kind)),
+      r.id === "r1" ? stageCards(run) : plannedStages(r));
+    out.push(panel);
+  }
+  view.justOpened = false;
+  return h("div", { class: "rounds" }, ...out);
+}
+
+// A round the outer loop has not run yet: the stages it will go through, idle.
+function plannedStages(r) {
+  const stages = ROUND_STAGES[r.kind] || [];
+  const cards = [];
+  stages.forEach(([name, who], i) => {
+    if (i) cards.push(h("span", { class: "stage-arrow", "aria-hidden": "true" }, "→"));
+    cards.push(h("div", { class: "stage skip" },
+      h("div", { class: "stage-top" }, h("span", { class: "stage-name" }, name), h("span", { class: "stage-state" }, "未着手")),
+      h("div", { class: "stage-who" }, who)));
+  });
+  return h("div", {},
+    h("div", { class: "stages" }, ...cards),
+    h("p", { class: "note" }, "外側の輪はまだ動いていません。評価役と改良ファイルができると、この周の流れがここに出ます。"));
 }
 
 const MODULE_TEXT = {
@@ -424,7 +586,10 @@ function fileViews(app, run, step, previous) {
     } else if (f === "records.json") {
       views.push(lazy(FILE_LABEL[f], async () => recordsTable(await get1(rel))));
     } else {
-      views.push(lazy(FILE_LABEL[f] || f, async () => text(await get1(rel))));
+      // output.txt is what a Claude role printed, or what the test framework did.
+      const label = f === "output.txt" ? (["analyst", "definer", "designer"].includes(step.step) ? "役の出力" : "テストの出力")
+        : FILE_LABEL[f] || f;
+      views.push(lazy(label, async () => text(await get1(rel))));
     }
   }
   return views.length ? h("div", { class: "files" }, ...views) : h("p", { class: "note" }, "この回の記録はありません（記録を残す前の通しです）。");
@@ -525,7 +690,7 @@ function drawUpstream(app, run) {
       ok ? null : h("ul", {}, ...e.findings.slice(0, 5).map((f) => h("li", { class: "note" }, f))),
       step ? fileViews(app, run, step, null) : null);
   });
-  return h("div", {}, h("h3", {}, "上流"), h("ul", { class: "upstream" }, ...rows));
+  return h("div", { id: "sec-upstream" }, h("h3", {}, "上流"), h("ul", { class: "upstream" }, ...rows));
 }
 
 function restParts(app, run) {
@@ -545,7 +710,7 @@ function restParts(app, run) {
     lazy("この通しの定義（definition.json）", async () => text((await get(fileUrl(app, run, "definition.json"))).text)),
     lazy("この通しの設計（design.json）", async () => text((await get(fileUrl(app, run, "design.json"))).text))) : null;
   return [drawUpstream(app, run),
-    run.modules.length ? h("h3", {}, "モジュール", h("span", { class: "note" }, "  行を押すと、試行の中身を開きます")) : null,
+    run.modules.length ? h("h3", { id: "sec-modules" }, "モジュール", h("span", { class: "note" }, "  行を押すと、試行の中身を開きます")) : null,
     run.modules.length ? modules : null,
     docs ? h("h3", {}, "文書") : null, docs];
 }
@@ -560,7 +725,7 @@ function outParts(app, run) {
       catch (e) { alert(e.message); }
     };
     out.push(
-      h("h3", {}, "出力されたアプリ"),
+      h("h3", { id: "sec-out" }, "出力されたアプリ"),
       // sandbox="allow-scripts": runs, but with an opaque origin -- no access to
       // this page, its token, or its storage. The server's CSP says the same.
       h("iframe", { class: "play", src, sandbox: "allow-scripts", title: "出力されたアプリ" }),
@@ -586,15 +751,15 @@ function outParts(app, run) {
 // The detail pane is in parts, each redrawn only when what it shows changed:
 // redrawing a picture's frame would reload it, and redrawing the output would
 // restart the app being tried.
-let view = { run: null, frames: null, names: [], sig: {} };
+let view = { run: null, frames: null, names: [], sig: {}, round: null, justOpened: false };
 
 function skeleton(box) {
   if (box._parts) return box._parts;
-  const p = { app: h("div"), head: h("div"), pics: h("div", { class: "pics" }), inspector: h("div"),
+  const p = { app: h("div"), head: h("div"), flow: h("div"), pics: h("div", { class: "pics" }), inspector: h("div"),
     rest: h("div"), out: h("div") };
-  box.replaceChildren(p.app, p.head, p.pics, p.inspector, p.rest, p.out);
+  box.replaceChildren(p.app, p.head, p.flow, p.pics, p.inspector, p.rest, p.out);
   box._parts = p;
-  view = { run: null, frames: null, names: [], sig: {} };
+  view = { run: null, frames: null, names: [], sig: {}, round: view.round, justOpened: false };
   return p;
 }
 
@@ -623,7 +788,7 @@ async function drawApp(running) {
   const p = skeleton(box);
   if (changed("app", [app, running, selected.run, shown])) put(p.app, appParts(app, running, shown));
   if (!run) {
-    for (const k of ["head", "pics", "inspector", "rest", "out"]) p[k].replaceChildren();
+    for (const k of ["head", "flow", "pics", "inspector", "rest", "out"]) p[k].replaceChildren();
     view.run = null;
     return;
   }
@@ -633,13 +798,11 @@ async function drawApp(running) {
     if (view.run !== null) selected.module = null;     // another run: nothing is open in it yet
     view.run = key;
     view.sig = { app: view.sig.app };
-    const flow = diagramFrame("全体のデータフロー");
     const map = diagramFrame("設計の依存図", (name) => {
       if (view.names.includes(name)) { selected.module = name; refresh(); }
     });
-    view.frames = { flow, map };
+    view.frames = { map };
     p.pics.replaceChildren(
-      h("h3", {}, "全体のデータフロー", h("span", { class: "note" }, "  いまの段が青く光ります")), flow,
       h("h3", {}, "設計の依存図", h("span", { class: "note" }, "  モジュールを押すと、試行の中身を開きます")), map);
   }
   view.names = run.design ? run.design.modules.map((m) => m.name) : [];
@@ -647,7 +810,10 @@ async function drawApp(running) {
   if (changed("head", [run.status, run.now, run.reason, run.stage, run.started])) {
     put(p.head, headParts(app, run));
   }
-  drawIn(view.frames.flow, flowSource(run));
+  if (changed("flow", [run.status, run.stage, run.now, run.steps, run.modules, run.products, run.output,
+    run.upstream, run.has_concepts, run.ledger.filter((e) => ["UNTIL", "OUTPUT_FAILED"].includes(e.event))])) {
+    put(p.flow, [h("h3", {}, "ループ", h("span", { class: "note" }, "  周を押すと、その中の流れが開きます")), roundTrack(run)]);
+  }
   if (run.design) {
     const { source, nodes } = mapSource(run);
     drawIn(view.frames.map, source, nodes);
@@ -672,10 +838,12 @@ async function drawApp(running) {
 function fromAddress() {
   const q = new URLSearchParams(location.hash.slice(1));
   if (q.get("app")) selected = { app: q.get("app"), run: q.get("run") || null, module: q.get("module") || null };
+  if (q.has("round")) setOpenRound(q.get("round"));
 }
 function toAddress() {
   const q = new URLSearchParams();
   for (const k of ["app", "run", "module"]) if (selected[k]) q.set(k, selected[k]);
+  if (view.round) q.set("round", view.round);
   const hash = q.toString() ? `#${q}` : "";
   if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname);
 }

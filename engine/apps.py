@@ -123,7 +123,7 @@ class Run:
             return None
 
     def status(self) -> str:
-        """running | done | stopped | failed | interrupted -- from the files,
+        """running | done | partial | stopped | failed | interrupted -- from the files,
         never remembered. "failed" is a run that ended and said where it went
         back to; "interrupted" is one that ended without saying anything --
         its process died."""
@@ -131,6 +131,8 @@ class Run:
         if out is not None:
             if out.get("stage") == "done":
                 return "done"
+            if out.get("stage") == "until":
+                return "partial"
             return "stopped" if out.get("stage") == "stopped" else "failed"
         pid = self.pid()
         if pid and _alive(pid):
@@ -221,6 +223,31 @@ class Run:
                 "step": step, "end": e.get("t"),
                 "seconds": round(e["t"] - start, 1) if start and e.get("t") else None,
                 "files": self._files_in(e.get("dir"))})
+        return out
+
+    def products(self) -> dict:
+        """What each upstream stage of this run produced, counted: for the
+        stage cards (how much the analyst, the definer and the designer wrote)."""
+        def load(name):
+            try:
+                doc = json.loads((self.dir / name).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            return doc if isinstance(doc, dict) else None
+        out = {}
+        c = load("concepts.json")
+        if c:
+            props = [p for k in c.get("concepts", []) for p in k.get("properties", [])]
+            out["analysis"] = {"concepts": len(c.get("concepts", [])), "properties": len(props),
+                               "by_example": sum(1 for p in props if p.get("check") == "example"),
+                               "requirements": len(c.get("requirements", []))}
+        d = load("definition.json")
+        if d:
+            items = d.get("items", [])
+            out["definition"] = {"items": len(items), "examples": sum(len(i.get("examples", [])) for i in items)}
+        ds = load("design.json")
+        if ds:
+            out["design"] = {"modules": len(ds.get("modules", []))}
         return out
 
     def design_summary(self) -> dict | None:

@@ -30,6 +30,19 @@ host\loop-dashboard.cmd
 
 その後、<http://127.0.0.1:8443> を開く。
 
+**SSH でこの PC に入っているときは、`loop-dashboard.cmd` で起動しない。** SSH のセッションの中で起動した
+プロセス（`cmd`・`Start-Process`・`start /b` のどれでも）から呼ぶ `ssh` は、設定ファイルを読む前に止まり、
+ダッシュボードは箱を「応答なし」と表示し、ダッシュボードから始めた通しも箱に届かない（2026-10-14 に確認。
+ssh のフラグを変えても直らない）。セッションから切り離して作れば動く:
+
+```powershell
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+  CommandLine = "`"$((Get-Command python).Source)`" `"C:\dev\Loop-Engine\Loop\host\dashboard\server.py`""
+  CurrentDirectory = "C:\dev\Loop-Engine\Loop" }
+```
+
+この PC の画面の前で起動するときは、これまでどおり `loop-dashboard.cmd` でよい。
+
 スマホや他のPCから見るときは `tailscale serve` を前に置く（`dashboard/README.md`）。
 **サーバはループバックのまま**で、LAN には一切出さない。
 

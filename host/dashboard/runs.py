@@ -75,8 +75,11 @@ class Box:
         if time.time() - self._at < self.every:
             return self._last
         try:
-            proc = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", self.host, "status"],
-                                  capture_output=True, text=True, timeout=10,
+            # -n and stdin=DEVNULL: ssh is given no input. (Not the cure for a
+            # dashboard started inside an SSH session, where ssh hangs before it
+            # reads its config whatever its flags -- see host/README.md.)
+            proc = subprocess.run(["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", self.host, "status"],
+                                  capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
                                   # no console window for ssh (see engine/pipeline.py, NO_WINDOW)
                                   creationflags=0x08000000 if os.name == "nt" else 0)
             self._last = json.loads(proc.stdout) if proc.returncode == 0 else {

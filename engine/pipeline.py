@@ -35,6 +35,9 @@ from design import Design  # noqa: E402
 Solver = Callable[[Design, dict, tuple], dict] | str
 
 
+UNTIL = "until"                       # an Outcome's stage when a run stopped where it was told to
+
+
 @dataclass
 class Outcome:
     stage: str                       # "done", or the stage the loop goes back to
@@ -261,18 +264,36 @@ def _on_platform(definition, platform: str) -> list:
     return findings
 
 
+EDIT_BACK = """
+# Your previous {name} is in this directory, at edit/{name}
+It is the file the gate refused. Do not write a new {name} from the start: open
+edit/{name} and fix each finding above in it with the Edit tool, changing nothing
+else. What is in edit/{name} when you finish is what is read.
+"""
+
+
 def _write_by_role(window, ws: str, role: str, name: str, brief_for, gate, rounds: int, log,
                    tag: str = "") -> tuple:
     """Ask a role for one JSON file until its gate passes. -> (doc, findings)"""
     findings: list[str] = []
     doc = None
+    refused = None              # the text the gate refused last round, to be fixed in place
     for n in range(1, rounds + 1):
         here = f"upstream/{tag or role}/{n}"
         brief = brief_for(findings)
+        payload = {"brief": brief}
+        if refused is not None:
+            # Not written again from nothing: the role gets back what it wrote
+            # and fixes the findings in it (the window puts it in its out/edit/).
+            # Writing it again cost a whole round of thinking, and could bring
+            # new mistakes where nothing was wrong.
+            brief += EDIT_BACK.format(name=name)
+            payload = {"brief": brief, "stage": {name: refused}}
         log.keep(f"{here}/brief.md", brief)
         log("BEGIN", step=role, n=n)
-        res = window.call("run-role", ws, role, {"brief": brief})
+        res = window.call("run-role", ws, role, payload)
         text = res.get("files", {}).get(name)
+        refused = text
         log.keep(f"{here}/{name}", text)
         log.keep(f"{here}/output.txt", res.get("output") or None)
         if text is None:
@@ -294,7 +315,10 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
                           redesigns: int = 2, ledger: Ledger | None = None,
                           output: Path | str | None = None, build: bool = True,
                           should_stop: Callable[[], bool] = lambda: False,
-                          platform: str = "browser-dom") -> Outcome:
+                          platform: str = "browser-dom", until: str | None = None) -> Outcome:
+    """`until`: "analysis", "definition" or "design" -- stop once that stage
+    has passed its gate, to try one stage without the rest. The run is a run
+    like any other (ledger, kept files), so the dashboard shows it."""
     log = ledger or Ledger(None)
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +337,9 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
     if findings:
         return Outcome(artifacts.ANALYSIS, "the concept file did not pass its gate", detail={"findings": findings})
     (workdir / "concepts.json").write_text(json.dumps(concepts, ensure_ascii=False, indent=1), encoding="utf-8")
+    if until == "analysis":
+        log("UNTIL", stage="analysis")
+        return Outcome(UNTIL, "stopped after the analysis, as asked")
 
     # 1. The definition, by the definer: what to make, decided against the
     #    concept file. Held at the definition gate and the coverage gate.
@@ -327,6 +354,9 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
                        detail={"findings": findings})
     (workdir / "definition.json").write_text(json.dumps(definition, ensure_ascii=False, indent=1),
                                              encoding="utf-8")
+    if until == "definition":
+        log("UNTIL", stage="definition")
+        return Outcome(UNTIL, "stopped after the definition, as asked")
 
     # 2-4. The design, by the designer; then the modules; back to the designer
     #      when the loop says the design is at fault.
@@ -351,6 +381,9 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
         design["definition"] = "definition.json"
         (workdir / "design.json").write_text(json.dumps(design, ensure_ascii=False, indent=1), encoding="utf-8")
         log("DESIGN_ROUND", round=round_)
+        if until == "design":
+            log("UNTIL", stage="design")
+            return Outcome(UNTIL, "stopped after the design, as asked")
 
         out = run(workdir / "design.json", solver, window, f"{ws}-r{round_}", max_attempts=max_attempts,
                   ledger=log, output=output, build=build, should_stop=should_stop, tag=f"r{round_}")
