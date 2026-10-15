@@ -80,7 +80,7 @@ class Box:
             # dashboard started inside an SSH session, where ssh hangs before it
             # reads its config whatever its flags -- see host/README.md.)
             proc = subprocess.run(["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", self.host, "status"],
-                                  capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, stdin=subprocess.DEVNULL,
                                   # no console window for ssh (see engine/pipeline.py, NO_WINDOW)
                                   creationflags=0x08000000 if os.name == "nt" else 0)
             self._last = json.loads(proc.stdout) if proc.returncode == 0 else {
@@ -99,10 +99,21 @@ class Box:
             return last
         try:
             proc = subprocess.run(["ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", self.host,
-                                   f"progress live {role}"], capture_output=True, text=True, timeout=10,
+                                   f"progress live {role}"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                                   stdin=subprocess.DEVNULL, creationflags=0x08000000 if os.name == "nt" else 0)
-            last = json.loads(proc.stdout) if proc.returncode == 0 else {"error": (proc.stderr.strip() or "no answer")[:200]}
-        except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as e:
-            last = {"error": str(e)[:200]}
-        self._progress[role] = (time.time(), last)
-        return last
+            got = json.loads(proc.stdout) if proc.returncode == 0 else {"error": (proc.stderr.strip() or "no answer")[:200]}
+        # Never the page's problem: whatever the box says, or fails to, the
+        # run is still shown. (The draft brought Japanese into this answer,
+        # read once as cp932 -- the request died and the page went blank.)
+        except (subprocess.TimeoutExpired, ValueError, TypeError, OSError) as e:
+            got = {"error": str(e)[:200]}
+        # The file the role is writing, counted -- not sent on to the page.
+        # Caught half-way through an Edit it is not JSON: the last count that
+        # was stands, marked as such.
+        draft = apps.draft_summary(role, got.pop("draft", None))
+        if draft is None and last.get("draft") and got.get("running"):
+            draft = {**last["draft"], "stale": True}
+        if draft is not None:
+            got["draft"] = draft
+        self._progress[role] = (time.time(), got)
+        return got

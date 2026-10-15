@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Run one piece of code for a Claude role, as calc -- to compute, never to reach.
+#
+#     sudo -u calc /srv/loop/bin/calc-run <python|javascript> <seconds>   (the code on stdin)
+#
+# A Claude role has no shell: its uid can reach the internet (it talks to the
+# API) and read its own credentials, so whatever ran as that uid could too.
+# What it may have is this: the code it wants run, handed sideways to calc,
+# which has neither. calc has no network at all (roles.json: egress none),
+# reads no workspace (not in workr), writes only its home, and nothing it
+# starts outlives the call. The tool is code-mcp; this is the wall
+# (DECISIONS 45).
+set -euo pipefail
+
+[ "$(id -un)" = calc ] || { echo "calc-run: must run as calc" >&2; exit 2; }
+[ "$#" -eq 2 ] || { echo "usage: calc-run <python|javascript> <seconds>" >&2; exit 2; }
+LANGUAGE="$1"
+LIMIT="$2"
+case "$LIMIT" in ""|*[!0-9]*) echo "calc-run: bad time limit: $LIMIT" >&2; exit 2 ;; esac
+[ "$LIMIT" -le 120 ] || { echo "calc-run: at most 120 seconds" >&2; exit 2; }
+case "$LANGUAGE" in
+  python)     FILE=main.py;  RUN=(/usr/bin/python3 -I main.py) ;;
+  javascript) FILE=main.mjs; RUN=(/usr/bin/node main.mjs) ;;
+  *) echo "calc-run: python or javascript, not $LANGUAGE" >&2; exit 2 ;;
+esac
+
+# Nothing an earlier call started may still be running, and nothing this one
+# starts stays: kill -1, as calc, reaches every calc process but this shell.
+kill -KILL -1 2>/dev/null || true
+
+umask 077
+TMP="$(mktemp -d -p /home/calc)"
+trap 'kill -KILL -1 2>/dev/null || true; rm -rf "$TMP"' EXIT
+head -c 200000 > "$TMP/$FILE"
+cd "$TMP"
+
+# Files it writes stay small. Its output goes to a file, not a pipe: a
+# process it left behind holds a pipe open, and whatever reads the pipe waits
+# for that process -- the first check of this wall waited five minutes on a
+# sleep the probe had left (2026-10-15). With a file, the call ends when the
+# program does; everything still running is killed; then the output is read.
+ulimit -f 10240
+set +e
+env -i HOME="$TMP" TMPDIR="$TMP" PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
+  timeout --kill-after=5 "$LIMIT" "${RUN[@]}" < /dev/null > "$TMP/.output" 2>&1
+rc=$?
+set -e
+kill -KILL -1 2>/dev/null || true
+head -c 20000 "$TMP/.output"
+exit "$rc"

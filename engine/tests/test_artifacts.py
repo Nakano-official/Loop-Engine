@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "engine"))
 import artifacts  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shapes import draft_of, examples_of, platform_design  # noqa: E402
+
 EX = ROOT / "docs" / "formats" / "examples"
 DEFINITION = json.loads((EX / "idlegame.definition.json").read_text(encoding="utf-8"))
 DESIGN = json.loads((EX / "idlegame.design.json").read_text(encoding="utf-8"))
@@ -35,9 +38,6 @@ def test_the_idle_game_passes_both_gates():
 
 def d_unknown_type(d):
     d["types"]["GameState"]["record"][0]["type"] = "Money"
-
-def d_item_without_examples(d):
-    item(d, "D4")["examples"] = []
 
 def d_missing_argument(d):
     del item(d, "D3")["examples"][0]["steps"][0]["args"]["name"]
@@ -72,7 +72,6 @@ def d_map_with_dollar_key(d):
 
 @pytest.mark.parametrize("breaks, where", [
     (d_unknown_type, "types.GameState"),
-    (d_item_without_examples, "items[D4]"),
     (d_missing_argument, "examples[D3.E1]"),
     (d_wrong_value_type, "examples[D1.E1]"),
     (d_unbound_reference, "examples[D2.E1]"),
@@ -200,7 +199,11 @@ def concept(c, cid):
 
 def test_the_idle_game_concepts_pass_and_its_definition_covers_them():
     assert artifacts.check_concepts(CONCEPTS) == []
-    assert artifacts.check_coverage(CONCEPTS, DEFINITION) == []
+    draft = draft_of(DEFINITION)
+    assert artifacts.check_draft(draft, "browser-dom", CONCEPTS) == []
+    d = artifacts.complete(draft, "browser-dom")
+    assert artifacts.check_examples(CONCEPTS, d, examples_of(DEFINITION)) == []
+    assert artifacts.check_design(platform_design(DESIGN), artifacts.with_examples(d, examples_of(DEFINITION))) == []
 
 
 def broken_concepts():
@@ -232,26 +235,124 @@ def test_ascii_words_in_japanese_are_not_taken_for_references():
     assert artifacts.check_concepts(c) == []
 
 
-def test_a_property_no_item_checks_sends_the_definition_back():
-    d = copy.deepcopy(DEFINITION)
-    for it in d["items"]:
-        it["concepts"] = [r for r in it.get("concepts", []) if r != "C2.P2"]
-    found = artifacts.check_coverage(CONCEPTS, d)
+def test_a_property_no_item_answers_to_sends_the_definition_back():
+    draft = draft_of(DEFINITION)
+    for it in draft["items"]:
+        it["concepts"] = [r for r in it["concepts"] if r != "C2.P2"]
+    found = artifacts.check_draft(draft, "browser-dom", CONCEPTS)
     assert [f.where for f in found] == ["concepts.C2.P2"]
     assert found[0].stage == artifacts.DEFINITION
 
 
 def test_evaluation_properties_need_no_item_and_retired_ones_may_not_be_cited():
     c = copy.deepcopy(CONCEPTS)
-    assert all(f.where != "concepts.C3.P1" for f in artifacts.check_coverage(c, DEFINITION))
+    draft = draft_of(DEFINITION)
+    assert all(f.where != "concepts.C3.P1" for f in artifacts.check_draft(draft, "browser-dom", c))
     c["requirements"][0]["status"] = "retired"
-    found = artifacts.check_coverage(c, DEFINITION)
+    found = artifacts.check_draft(draft, "browser-dom", c)
     assert any("'R1' is retired" in f.message for f in found)
 
 
 def test_a_definition_must_say_what_it_makes_and_cite_only_what_exists():
-    d = copy.deepcopy(DEFINITION)
-    del d["summary"]
-    item(d, "D1")["concepts"] = ["C7.P1"]
-    found = {f.where for f in artifacts.check_coverage(CONCEPTS, d)}
-    assert found == {"summary", "items[D1].concepts"}
+    draft = draft_of(DEFINITION)
+    del draft["summary"]
+    draft["items"][0]["concepts"].append("C7.P1")
+    found = {f.where for f in artifacts.check_draft(draft, "browser-dom", CONCEPTS)}
+    assert found == {"summary", "items[D7].concepts"}
+
+
+# ---- what the definer writes, and what the machine adds (DECISIONS 44) -----
+
+def test_the_platform_part_is_the_machines():
+    d = artifacts.complete(draft_of(DEFINITION), "browser-dom")
+    assert list(d["interface"]) == ["start", "step", "act", "screen", "save"]
+    assert d["interface"]["screen"] == {"params": [{"name": "state", "type": "GameState"}], "returns": "Screen"}
+    assert d["interface"]["act"]["raises"] == ["NotEnough", "UnknownGenerator"]
+    assert "raises" not in d["interface"]["screen"]
+    assert {"NodeKind", "Node", "Screen", "GameState"} <= set(d["types"])
+    assert d["shell"] == {"platform": "browser-dom"} and "examples" not in d["items"][0]
+
+
+def broken_drafts():
+    def platform_type(d): d["types"]["Screen"] = {"record": [{"name": "title", "type": "string"}]}
+    def interface(d): d["interface"] = {}
+    def examples(d): d["items"][0]["examples"] = []
+    def no_state(d): d["state"] = "Nothing"
+    def state_not_record(d): d["state"] = "Generator"
+    def raises_elsewhere(d): d["raises"] = {"buy": ["NotEnough"]}
+    def raises_undeclared(d): d["raises"] = {"act": ["Exploded"]}
+    def bad_item_id(d): d["items"][0]["id"] = "X1"
+    def prose_ref(d): d["items"][0]["statement"] = "D2 と同じ"
+    def no_refs(d): d["items"][0]["concepts"] = []
+    return [(platform_type, "types.Screen"), (interface, "definition"), (examples, "items[D7]"),
+            (no_state, "state"), (state_not_record, "state"), (raises_elsewhere, "raises.buy"),
+            (raises_undeclared, "interface.act"), (bad_item_id, "items[X1]"),
+            (prose_ref, "items[D7].statement"), (no_refs, "items[D7].concepts")]
+
+
+@pytest.mark.parametrize("breaks, where", broken_drafts(), ids=lambda x: getattr(x, "__name__", ""))
+def test_a_broken_draft_goes_back_to_the_definer(breaks, where):
+    draft = draft_of(DEFINITION)
+    if breaks.__name__ == "state_not_record":
+        draft["types"]["Generator"] = {"enum": ["a", "b"]}
+    breaks(draft)
+    found = artifacts.check_draft(draft, "browser-dom", CONCEPTS)
+    assert found and all(f.stage == artifacts.DEFINITION for f in found), found
+    assert any(f.where == where for f in found), [str(f) for f in found]
+
+
+# ---- what the tester writes ------------------------------------------------
+
+DRAFT2 = {**draft_of(DEFINITION), "items": draft_of(DEFINITION)["items"] + [
+    {"id": "D8", "title": "見て分かる", "statement": "最初の画面で何を押せばよいかが分かる", "concepts": ["C3.P1"]}]}
+
+
+def test_an_item_checked_only_by_use_needs_no_examples():
+    d = artifacts.complete(DRAFT2, "browser-dom")
+    assert artifacts.check_examples(CONCEPTS, d, examples_of(DEFINITION)) == []
+
+
+def test_an_item_checked_by_example_without_examples_goes_back_to_the_tester():
+    d = artifacts.complete(DRAFT2, "browser-dom")
+    found = artifacts.check_examples(CONCEPTS, d, {"format": "loop/examples@1", "items": {}})
+    assert [f.where for f in found if f.where.startswith("items.")] == ["items.D7"]
+    assert all(f.stage == artifacts.EXAMPLES for f in found)
+    # Its examples call what the definition offers, nothing else.
+    ex = examples_of(DEFINITION)
+    ex["items"]["D7"][0]["steps"][0]["call"] = "new_game"
+    found = artifacts.check_examples(CONCEPTS, d, ex)
+    assert any("cannot reach" in f.message for f in found) and all(f.stage == artifacts.EXAMPLES for f in found)
+    found = artifacts.check_examples(CONCEPTS, d, {"format": "loop/examples@1", "items": {"D9": []}})
+    assert [f.where for f in found] == ["items.D9"]
+
+
+def judged(then):
+    d = artifacts.with_examples(artifacts.complete(draft_of(DEFINITION), "browser-dom"), examples_of(DEFINITION))
+    ex = copy.deepcopy(item(d, "D7")["examples"][0])          # s = start(...); observe s
+    ex["id"] = "D7.E99"
+    ex["then"] = then
+    item(d, "D7")["examples"].append(ex)
+    return d
+
+
+def test_a_part_of_a_value_may_leave_fields_out_and_only_those():
+    observed = item(DEFINITION, "D7")["examples"][0]["then"]["observe"]
+    assert artifacts.check_definition(judged({"observe": observed, "matches": [{"resource": 0.0}]})) == []
+    found = artifacts.check_definition(judged({"observe": observed, "matches": [{"gold": 1}]}))
+    assert [f.where for f in found] == ["examples[D7.E99].matches"]
+    found = artifacts.check_definition(judged({"observe": observed, "equals": [{"resource": 0.0}]}))
+    assert "examples[D7.E99].equals" in [f.where for f in found]
+
+
+def test_a_condition_is_javascript_and_only_for_typescript():
+    observed = item(DEFINITION, "D7")["examples"][0]["then"]["observe"]
+    d = judged({"observe": observed, "holds": "(s) => s.resource === 0"})
+    assert artifacts.check_definition(d) == []
+    assert artifacts.conditions(d) == {"D7.E99": {"source": "(s) => s.resource === 0", "arity": 1}}
+    assert [f.where for f in artifacts.check_definition(judged({"observe": observed, "holds": 3}))] \
+        == ["examples[D7.E99]"]
+    assert artifacts.check_definition(judged({"observe": observed, "holds": "() => true", "equals": [1]}))
+    ds = platform_design(DESIGN)
+    ds["target"]["language"] = "python"
+    found = artifacts.check_design(ds, d)
+    assert any("only for an app built in TypeScript" in f.message for f in found)

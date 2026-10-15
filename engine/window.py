@@ -10,6 +10,10 @@
                                    run <module>'s tests and every green module's
     accept <ws> <module>           keep <module>'s current implementation: it is
                                    green, and every later build restores it
+    check-conditions <ws> typescript
+                                   stdin: {"conditions": {id: {"source", "arity"}}}
+                                   read each condition of the tester's examples
+                                   (parsed, never run) -> {"findings": {id: why}}
 
 Each answers one JSON object on stdout: {"records": [...], "output": "..."} for
 the two that run tests, {"ok": true} for accept. A part, not a flow: it never
@@ -31,8 +35,10 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable
@@ -148,7 +154,12 @@ def tool_out(tool) -> Path:
     return Path("/srv/loop/roles/exec/out") if tool is exec_tool else None
 
 
-UPSTREAM = {"analyst", "definer", "designer"}   # the roles run-role may start
+UPSTREAM = {"analyst", "definer", "tester", "designer"}   # the roles run-role may start
+# The one file each upstream role writes -- what `progress` shows of it while
+# it is being written.
+WRITES = {"analyst": "concepts.json", "definer": "definition.json", "tester": "examples.json",
+          "designer": "design.json"}
+DRAFT_BYTES = 1_000_000
 ROLES = Path("/srv/loop/roles")
 
 
@@ -233,12 +244,27 @@ class Window:
         found = self._references(ws / allowed, d, emit, self._module(d, module))
         if "engine" in found:
             return found
+        # An import it does not use, of a module it may not import: taken out,
+        # not held against it. It reaches for nothing, and a 9B implementer
+        # kept writing it whatever it was told (2026-10-15). What it USES
+        # outside the design is refused below, as before (DECISIONS 46).
+        dead = sorted(set(found.get("undeclared", [])) & set(found.get("unused", [])))
+        stripped = emit.strip_imports(files[allowed], dead) if dead and hasattr(emit, "strip_imports") else None
+        if stripped is not None:
+            (ws / allowed).write_text(stripped, encoding="utf-8")
+            found = self._references(ws / allowed, d, emit, self._module(d, module))
+            if "engine" in found:
+                return found
         if found.get("undeclared") or found.get("forbidden"):
             # Refused before it runs: what it reaches for is the verdict, and
             # its tests would only add noise to it.
             return {"records": [], "output": "", **found}
         green = [g for g in payload.get("green", []) if g in d.by_name]
-        return self._run(ws, emit, green + [module])
+        result = self._run(ws, emit, green + [module])
+        if stripped is not None:
+            result["stripped"] = dead
+            result["accepted"] = {allowed: stripped}
+        return result
 
     def _references(self, path: Path, d: Design, emit, module: dict) -> dict:
         """The reference check (DESIGN 5): what the candidate imports and which
@@ -422,7 +448,51 @@ class Window:
             return {"running": False}
         summary = trace_summary(p.read_text(encoding="utf-8", errors="replace"))
         return {"running": not summary["done"], "quiet_seconds": round(time.time() - p.stat().st_mtime, 1),
-                **summary}
+                **summary, "draft": self._draft(role)}
+
+    def _draft(self, role: str) -> str | None:
+        """The file the role is writing, as far as it has got -- for a person
+        to watch it grow (the roles write in parts, DECISIONS 45). In edit/
+        when the role is fixing what its gate refused. Not followed if it is a
+        link: the role owns what is in its out/, and a link would show the
+        dashboard whatever runner can read."""
+        out = self.roles / role / "out"
+        for p in (out / "edit" / WRITES[role], out / WRITES[role]):
+            try:
+                fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))     # 0: the host's tests, on Windows
+            except OSError:
+                continue
+            with os.fdopen(fd, "rb") as f:
+                if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                    continue
+                return f.read(DRAFT_BYTES).decode("utf-8", errors="replace")
+        return None
+
+    def check_conditions(self, ws_name: str, language: str, payload: dict) -> dict:
+        """The tester's conditions, read the way a module is read for the
+        reference check: parsed, never run (runner runs the parser itself, as
+        for _references). What one may use is a module's list. Whether it is
+        strong enough is the loop's evaluation's to see (DECISIONS 44)."""
+        self._ws(ws_name)
+        if language != "typescript":
+            raise ValueError(f"conditions are JavaScript; no {language!r}")
+        emit = adapter(language)
+        found = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, (eid, c) in enumerate(sorted((payload.get("conditions") or {}).items())):
+                path = Path(tmp) / f"c{i}.ts"
+                path.write_text(emit.condition_file(str(c.get("source", ""))), encoding="utf-8")
+                proc = subprocess.run(emit.condition_command(TOOLS, path), capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=120)
+                try:
+                    facts = json.loads(proc.stdout.strip().splitlines()[-1])
+                except (json.JSONDecodeError, IndexError):
+                    return {"engine": "the condition check printed no verdict",
+                            "output": (proc.stdout + proc.stderr)[-3000:]}
+                why = emit.check_condition(facts, int(c.get("arity", 0)))
+                if why:
+                    found[eid] = why
+        return {"findings": found}
 
     def accept(self, ws_name: str, module: str) -> dict:
         ws = self._ws(ws_name)
@@ -448,15 +518,20 @@ class Window:
             return self.run_role(ws, module, payload)
         if op == "progress":
             return self.progress(module)
+        if op == "check-conditions":
+            return self.check_conditions(ws, module, payload or {})
         raise ValueError(f"unknown operation {op!r}")
 
 
 def trace_summary(text: str) -> dict:
     """A Claude role's stream-json trace, summed up: how much it has thought in
-    its current turn, the tools it called, failed tool calls and API errors,
-    the rate limit it was last told, and -- once it has finished -- the tokens
-    it used. Lines that are not JSON (a cut-off last line) are skipped."""
-    thinking, tools, errors, turns = 0, [], 0, 0
+    its current turn, the tools it called, the rate limit it was last told, and
+    -- once it has finished -- the tokens it used. Two kinds of failure are
+    kept apart: tool_errors (a Read of a file that is not there -- the agent's
+    own business, and it carries on) and api_errors (retries and errors of the
+    API itself -- what can stop a role). Lines that are not JSON (a cut-off
+    last line) are skipped."""
+    thinking, tools, tool_errors, api_errors, turns = 0, [], 0, 0, 0
     rate, usage, done = None, None, False
     for line in text.splitlines():
         try:
@@ -467,7 +542,7 @@ def trace_summary(text: str) -> dict:
         if kind == "system" and sub == "thinking_tokens":
             thinking = e.get("estimated_tokens", thinking)
         elif kind == "system" and ("retry" in sub or "error" in sub):
-            errors += 1
+            api_errors += 1
         elif kind == "assistant":
             turns += 1
             for c in e.get("message", {}).get("content", []):
@@ -478,7 +553,7 @@ def trace_summary(text: str) -> dict:
             content = e.get("message", {}).get("content")
             for c in content if isinstance(content, list) else []:
                 if c.get("type") == "tool_result" and c.get("is_error"):
-                    errors += 1
+                    tool_errors += 1
         elif kind == "rate_limit_event":
             rate = (e.get("rate_limit_info") or {}).get("status")
         elif kind == "result":
@@ -487,7 +562,8 @@ def trace_summary(text: str) -> dict:
             usage = {k: u.get(k) for k in ("input_tokens", "output_tokens", "cache_read_input_tokens",
                                            "cache_creation_input_tokens") if u.get(k) is not None}
             usage.update({k: e.get(k) for k in ("duration_ms", "num_turns", "total_cost_usd") if e.get(k) is not None})
-    return {"thinking_tokens": thinking, "tools": tools[-5:], "tool_count": len(tools), "errors": errors,
+    return {"thinking_tokens": thinking, "tools": tools[-5:], "tool_count": len(tools),
+            "tool_errors": tool_errors, "api_errors": api_errors,
             "turns": turns, "rate_limit": rate, "usage": usage, "done": done}
 
 
@@ -516,7 +592,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"error": "usage: <op> <workspace> <module>"}))
         return 2
     op, ws, module = argv
-    payload = json.loads(sys.stdin.read() or "{}") if op in ("prepare-tests", "verify", "attempt", "run-role") else None
+    payload = json.loads(sys.stdin.read() or "{}") if op in ("prepare-tests", "verify", "attempt", "run-role", "check-conditions") else None
     try:
         out = Window(Path("/srv/loop/work"), exec_runner).call(op, ws, module, payload)
     except (ValueError, KeyError) as e:

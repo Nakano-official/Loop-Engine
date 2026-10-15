@@ -3,7 +3,8 @@
 //     node refs.mjs <module.ts> <rolldown/dist/parse-ast-index.mjs>
 //
 // Prints one JSON line:
-//     {"imports": [specifiers], "forbidden": [what it may not use]}
+//     {"imports": [specifiers], "forbidden": [what it may not use],
+//      "unused": [specifiers whose names the file never uses]}
 //     {"error": "..."}            the file does not parse (the tests will say so)
 //
 // A module of the design is a pure function of its arguments: the clock, the
@@ -141,6 +142,20 @@ function inspect(program) {
   const imports = [];
   const forbidden = new Set();
   const free = (name) => !declared.has(name);
+  // Names an import brings in, and every name the file uses: an import none
+  // of whose names is used is dead weight -- the window takes it out rather
+  // than refuse the file for it (DECISIONS 46). A name used anywhere counts
+  // as used, shadowed or not: when unsure, it stays, and is checked as ever.
+  const brought = new Map();
+  const used = new Set();
+  walk(program, (n, parent, key) => {
+    if (n.type === "ImportDeclaration") {
+      brought.set(n.source.value, [...(brought.get(n.source.value) || []),
+        ...n.specifiers.map((s) => s.local.name)]);
+    } else if (n.type === "Identifier" && isReference(parent, key)) {
+      used.add(n.name);
+    }
+  });
 
   walk(program, (n, parent, key) => {
     switch (n.type) {
@@ -185,10 +200,24 @@ function inspect(program) {
   });
 
   for (const spec of imports) if (!spec.startsWith(".")) forbidden.add(`import ${spec}`);
-  return { imports: imports.filter((s) => s.startsWith(".")), forbidden: [...forbidden].sort() };
+  const unused = [...brought].filter(([, names]) => names.length && names.every((x) => !used.has(x)))
+    .map(([spec]) => spec);
+  return { imports: imports.filter((s) => s.startsWith(".")), forbidden: [...forbidden].sort(), unused };
 }
 
-const [file, parser] = process.argv.slice(2);
+// A condition (FORMATS 4, "holds"), with "condition" as the third argument:
+// the file is `export default (<source>);`, and the source must be one
+// function -- nothing before or after it. Reported as {"function": {"params":
+// n}}, or {"function": null} when it is not one. Its globals are a module's:
+// the language's tools for computing, nothing that changes from call to call.
+function theFunction(program) {
+  if (program.body.length !== 1 || program.body[0].type !== "ExportDefaultDeclaration") return null;
+  const f = unwrap(program.body[0].declaration);
+  if (!f || !["ArrowFunctionExpression", "FunctionExpression"].includes(f.type)) return null;
+  return { params: f.params.length };
+}
+
+const [file, parser, mode] = process.argv.slice(2);
 const { parseAst } = await import(pathToFileURL(parser).href);
 let program;
 try {
@@ -197,4 +226,6 @@ try {
   console.log(JSON.stringify({ error: String((e && e.message) || e).slice(0, 500) }));
   process.exit(0);
 }
-console.log(JSON.stringify(inspect(program)));
+const facts = inspect(program);
+if (mode === "condition") facts.function = theFunction(program);
+console.log(JSON.stringify(facts));

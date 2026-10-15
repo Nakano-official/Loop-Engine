@@ -2,6 +2,7 @@
 
     analyze(request, findings)                               -> the analyst's brief
     define(concepts, platform, findings)                     -> the definer's brief
+    examples(definition, concepts, findings)                 -> the tester's brief
     design(definition, findings, previous, verdict, concepts) -> the designer's brief
 
 A part, not a flow. A brief is all a role sees, so what it says about the
@@ -41,14 +42,46 @@ An example is data, not code:
    "then": {"observe": ["a"], "equals": [{"resource": 1.0, "owned": {}, "last_update": 0.0}]}}
 - steps run in order; "args" names every parameter; {"$": "s"} refers to an earlier step's result
 - a step may also bind a literal: {"let": "s", "value": {...}, "type": "GameState"}
-- "then" is either {"observe": [names], "equals": [values]} (compared once, exactly; floats
-  within 1e-9) or {"raises": "ErrorName"} -- the LAST step must throw it, and its function
-  must declare it in "raises"
+- "then" says how the result is judged -- one of:
+  {"observe": [names], "equals": [values]}   the whole value, exactly (floats within 1e-9)
+  {"observe": [names], "matches": [values]}  a part: a record may leave out fields, and only the
+                                             fields written are compared (lists keep their length)
+  {"observe": [names], "holds": "(a, b) => ..."}
+                                             a condition: JavaScript source of a function that is
+                                             given the observed values in order and returns true
+                                             when they are right
+  {"raises": "ErrorName"}                    the LAST step must throw it, and its function must
+                                             declare it in "raises"
+- choose the form by what the statement says. equals when exactly one answer is right and it is
+  short to write. matches to look at the part the statement is about and nothing else. holds
+  when many answers are right (anything generated, a relation between two results, "there is a
+  path") or when working the exact answer out would take more than simple arithmetic: say what
+  must be true and let the machine judge it
+- a condition uses only the language's tools for computing (Math, JSON, Number, String, Array,
+  Object, Map, Set); no Date, no Math.random, no I/O. It must return true, not just something
+  truthy. Write it as strong as the statement: one that any result meets checks nothing
 - the same call on the same input must never expect two different results
-- you have no shell, and nothing runs your examples before the gate: choose inputs whose
-  results are simple to work out by hand (whole numbers, right angles, short durations)
-- compute every expected value yourself, exactly. Avoid values that need rounding at a
-  tie (x.xx5) -- languages round them differently"""
+- compute every value you compare with the run tool, never in your head, and try each condition
+  on the values it must accept and on one it must refuse. Still prefer inputs whose results are
+  plain (whole numbers, right angles, short durations), and avoid values that need rounding at
+  a tie (x.xx5) -- languages differ"""
+
+
+def _writing(name: str, skeleton: str, part: str) -> list[str]:
+    """How to write the file (DECISIONS 45): in parts, computing with the run
+    tool. One response has a limited length: a designer that composed a
+    whole design in its head before writing anything was cut off twice at
+    about 64k tokens of thinking, and had written nothing (2026-10-15)."""
+    return [
+        "# How to write it",
+        f"- Write `{name}` in parts. First Write a skeleton: {skeleton}. Then fill it in with Edit,",
+        f"  {part} per Edit, until it is complete. Do not compose the whole file before writing",
+        "  anything: one response has a limited length, and a long one is cut off unwritten. Keep",
+        "  the file valid JSON after every Edit",
+        "- You have a `run` tool: it runs a short Python or JavaScript program in a sandbox and",
+        "  returns what it printed. Use it for every number you have to work out -- arithmetic,",
+        "  geometry, a layout -- instead of working it out by hand",
+    ]
 
 
 def _platform(name: str) -> dict:
@@ -106,6 +139,9 @@ def analyze(request: str, findings: list[str] | None = None) -> str:
         "Write exactly one file, `concepts.json`, in the current directory. Nothing else.",
         "Write every text in Japanese.",
         "",
+        *_writing("concepts.json", "format and request, every concept with its id, name and kind, every "
+                  "requirement with its id and text, and the rest empty", "one concept or a few requirements"),
+        "",
         "# The request",
         request.strip(),
         "",
@@ -147,45 +183,63 @@ def analyze(request: str, findings: list[str] | None = None) -> str:
     return "\n".join(parts) + "\n"
 
 
+def _signatures(plat: dict, state: str = "$State") -> str:
+    return "\n".join(f"  {fn}({', '.join(p['name'] + ': ' + p['type'].replace('$State', state) for p in s['params'])})"
+                     f" -> {s['returns'].replace('$State', state)}"
+                     for fn, s in plat["interface"].items())
+
+
 def define(concepts: dict, platform: str = "browser-dom", findings: list[str] | None = None) -> str:
+    """The definer's brief (DECISIONS 44): what to make, item by item, and
+    nothing that is not a decision -- the platform's part is the machine's,
+    the examples are the tester's."""
     plat = _platform(platform)
-    sig = "\n".join(f"  {fn}({', '.join(p['name'] + ': ' + p['type'] for p in s['params'])}) -> {s['returns']}"
-                    for fn, s in plat["interface"].items())
     parts = [
         "# Task",
         "You are the definer. Read the concept file below -- what a person asked for, what their",
-        "words mean, and what they need -- decide WHAT TO MAKE to meet those needs, and write it",
-        "as the DEFINITION of the app: its external interface (what the app's shell can call) and,",
-        "item by item, what it must do, each with concrete examples. A designer will turn it into",
-        "modules later; you do not design them.",
+        "words mean, and what they need -- and decide WHAT TO MAKE to meet those needs. Write it as",
+        "the DEFINITION of the app: what it is, what it remembers (its state), and item by item what",
+        "must hold of it. That is all you write. The machine adds the platform's types and",
+        "functions; a tester writes the examples each item is checked by, from your statements",
+        "alone; a designer turns it into modules later. Do not write examples, functions or modules.",
         "",
         "Write exactly one file, `definition.json`, in the current directory. Nothing else.",
         "Write the summary, titles, statements and any text shown to the user in Japanese.",
         "",
+        *_writing("definition.json", "title, summary, state, types, errors, raises, and every item with its "
+                  "id and title and an empty statement", "one item or one type"),
+        "",
         "# The concept file",
-        "It binds you. Do not narrow a concept to whatever is easiest to define: its meaning,",
-        "properties and counter-examples (\"not\") say what it must be, and an example set that a",
-        "counter-example could satisfy is wrong. Whatever the request specifies stays as specified.",
+        "It binds you. Do not narrow a concept to whatever is easiest to make: its meaning,",
+        "properties and counter-examples (\"not\") say what it must be, and an app a counter-example",
+        "describes is wrong. Whatever the request specifies stays as specified.",
         json.dumps(concepts, ensure_ascii=False, indent=1),
         "",
         "# What the definition must cover",
         "- \"summary\": in a sentence or two, what you make and for what",
         "- every property and requirement whose check is \"example\" is listed in the \"concepts\"",
-        "  field of at least one item, and that item's examples actually show it. A gate checks the",
-        "  listing; the examples have to make it true",
+        "  field of at least one item, and that item's statement says what makes it true. The",
+        "  tester can check only what the statement says",
         "- \"evaluation\" ones are checked later by using the app; list them where they apply",
+        "- every item lists at least one property or requirement it answers to",
+        "",
+        "# Items",
+        "- a statement says what must hold of the app, in terms of what it can be shown to do:",
+        "  what start gives, what an action does to the state, what the screen shows, what is",
+        "  always true. Not how it is built",
+        "- say it so exactly that someone who has not read the concept file could write the checks:",
+        "  which action, from which state, with what result. Where several answers are right (a",
+        "  generated layout, a random choice), say what every right answer has in common",
+        "- one item per thing that must hold. Every text stands on its own: no ids inside sentences",
         "",
         f"# The platform: {platform}",
         "How the app is delivered is fixed: one HTML file, drawn by a generic shell. Ignore any",
-        "need for servers, build steps or files -- the platform decides those. The shell",
-        "calls exactly these functions, which your interface must contain with exactly these",
-        "parameters ($State is a record type you declare: the app's whole state):",
-        sig,
-        # How this platform calls the app, from its platform.json: the brief
-        # says what is true of the platform the definition declared, and only
-        # that.
+        "need for servers, build steps or files -- the platform decides those. The shell calls",
+        "exactly these functions, which the machine adds to the definition ($State is the record",
+        "type you name under \"state\": the app's whole state):",
+        _signatures(plat),
         *["- " + line for line in plat["brief"]],
-        "Declare these types exactly as written:",
+        "The platform's own types, which the machine adds too (use them, do not declare them):",
         json.dumps(plat["types"], ensure_ascii=False, indent=1),
         *(["Conventions:"] + plat["conventions"] if plat.get("conventions") else []),
         "",
@@ -193,21 +247,97 @@ def define(concepts: dict, platform: str = "browser-dom", findings: list[str] | 
         """{"format": "loop/definition@1",
  "title": "<the app's name, Japanese>",
  "summary": "<what is made, and for what -- a sentence or two, Japanese>",
- "types": {...}, "errors": {"ErrorName": "<what it means>", ...},
- "interface": {"<fn>": {"params": [{"name": ..., "type": ...}], "returns": ..., "raises": [...]}, ...},
- "items": [{"id": "D1", "title": ..., "statement": "<what must hold, Japanese>",
-            "concepts": ["C1.P1", "R2", ...],
-            "examples": [<example>, ...]}, ...],
- "shell": {"platform": "%s", "duties": ["<what the shell does, one line each>"]}}""" % platform,
-        "- the interface may have functions beyond the platform's five; every one needs examples",
-        "- example ids are <item id>.E<n>; every item has at least one example; every interface",
-        "  function is called by at least one example",
+ "state": "<the name of the record type that is the app's whole state>",
+ "types": {<that record>, <any other type of your own>},
+ "errors": {"ErrorName": "<what it means>", ...},                (optional)
+ "raises": {"act": ["ErrorName", ...], ...},                       (optional: which platform function throws which)
+ "items": [{"id": "D1", "title": "<Japanese>", "statement": "<what must hold, Japanese>",
+            "concepts": ["C1.P1", "R2", ...]}, ...]}""",
+        "",
+        TYPES,
+    ]
+    parts += _findings(findings or [], "definition")
+    return "\n".join(parts) + "\n"
+
+
+def _answers(concepts: dict) -> dict:
+    """Every property and requirement, by id: its text, its check, and for a
+    property the concept it belongs to (name and counter-examples)."""
+    out = {}
+    for k in concepts.get("concepts", []):
+        for p in k.get("properties", []):
+            out[p["id"]] = {"text": p.get("text"), "check": p.get("check"),
+                            "concept": k.get("name"), "not": k.get("not", [])}
+    for r in concepts.get("requirements", []):
+        out[r["id"]] = {"text": r.get("text"), "check": r.get("check")}
+    return out
+
+
+def examples(definition: dict, concepts: dict, findings: list[str] | None = None) -> str:
+    """The tester's brief (DECISIONS 44): the examples each item of the
+    definition is checked by. The tester reads the items -- what the definer
+    wrote -- and what they answer to, and not the concept file as a whole:
+    what a statement leaves unsaid shows up as an example the definer did not
+    mean, where the loop can see it."""
+    platform = definition.get("shell", {}).get("platform", "browser-dom")
+    plat = _platform(platform)
+    answers = _answers(concepts)
+    contract = {k: definition[k] for k in ("types", "errors", "interface") if k in definition}
+    items = []
+    for item in definition.get("items", []):
+        items += ["", f"## {item['id']} {item.get('title', '')}", item.get("statement", "")]
+        for ref in item.get("concepts", []):
+            a = answers.get(ref)
+            if not a:
+                continue
+            how = "examples must show it" if a["check"] == "example" else "checked later by using the app"
+            items.append(f"- answers to {ref} ({how}): {a['text']}")
+            if a.get("not"):
+                items.append(f"  not {a['concept']}: " + " / ".join(a["not"]))
+    parts = [
+        "# Task",
+        "You are the tester. The definition below says what an app must do, item by item. Write",
+        "its EXAMPLES: for each item, concrete calls of the app's functions and how their results",
+        "are judged. They become the tests the finished app is held to -- the app is built until",
+        "they pass, so an example that is wrong or too weak lets a wrong app through.",
+        "",
+        "Write exactly one file, `examples.json`, in the current directory. Nothing else.",
+        "",
+        *_writing("examples.json", "the format and every item id with an empty list", "one item's examples"),
+        "",
+        f"# The definition: {definition.get('title', '')}",
+        definition.get("summary", ""),
+        "",
+        "The app's types, errors and functions (the functions are what the examples call):",
+        json.dumps(contract, ensure_ascii=False, indent=1),
+        "",
+        "# The items",
+        "Each statement, and what it answers to. A counter-example (\"not\") must fail your examples:",
+        "if one could pass them, they are too weak.",
+        *items,
+        "",
+        "# What to write",
+        "- every item that answers to something examples must show gets examples that show it --",
+        "  each such property, not just the item as a whole. An item that answers only to what is",
+        "  checked by using the app needs none",
+        "- every function of the interface is called by at least one example",
+        "- call only these functions; a literal value of a record type has every field",
+        "- example ids are <item id>.E<n>",
+        "",
+        f"# The platform: {platform}",
+        *["- " + line for line in plat["brief"]],
+        *["- " + line for line in plat.get("examples", [])],
+        *(["Conventions:"] + plat["conventions"] if plat.get("conventions") else []),
+        "",
+        "# The format of examples.json",
+        """{"format": "loop/examples@1",
+ "items": {"D1": [<example>, ...], "D2": [...], ...}}""",
         "",
         TYPES,
         "",
         EXAMPLES,
     ]
-    parts += _findings(findings or [], "definition")
+    parts += _findings(findings or [], "examples")
     return "\n".join(parts) + "\n"
 
 
@@ -222,6 +352,9 @@ def design(definition: dict, findings: list[str] | None = None, previous: dict |
         "contracts, a description of HOW each function works, and concrete examples.",
         "",
         "Write exactly one file, `design.json`, in the current directory. Nothing else.",
+        "",
+        *_writing("design.json", "format, definition, target, types, errors, shell, and every module with "
+                  "its id, name, kind and depends_on, empty functions and examples", "one module"),
         "",
         "# Who implements it",
         "A small local model (9B parameters) implements ONE module at a time, seeing only that",

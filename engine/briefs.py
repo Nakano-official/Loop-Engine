@@ -49,9 +49,24 @@ def render_example(d, module: dict, ex: dict) -> str:
     if "raises" in then:
         last = ex["steps"][-1]
         expect = f"the call to {last['call']} throws {then['raises']}"
+    elif "holds" in then:
+        expect = f"({then['holds']})({', '.join(then['observe'])}) returns true"
+    elif "matches" in then:
+        expect = " and ".join(f"{name} has {_value(v)}" for name, v in zip(then["observe"], then["matches"]))
+        expect += " (a part: fields not written there are not checked)"
     else:
         expect = " and ".join(f"{name} == {_value(v)}" for name, v in zip(then["observe"], then["equals"]))
     return f"{ex['id']}:  " + "; ".join(calls) + f"\n    must hold: {expect}"
+
+
+def what_it_does(doc: str | None) -> str:
+    """The first sentence of a function's doc: what it does. A design's doc
+    says what first and then how (FORMATS 3)."""
+    text = (doc or "").strip()
+    if not text:
+        return "(no description)"
+    cut = [i for i in (text.find("。"), text.find(". ")) if i >= 0]
+    return text[: min(cut) + 1] if cut else text
 
 
 def implement(d, module: dict, feedback: tuple = ()) -> str:
@@ -61,7 +76,7 @@ def implement(d, module: dict, feedback: tuple = ()) -> str:
     examples = d.examples(module)
     used = {v["$"] for ex in examples for st in ex["steps"]
             for v in st.get("args", {}).values() if isinstance(v, dict) and set(v) == {"$"}}
-    used |= {v["$"] for ex in examples for v in ex["then"].get("equals", [])
+    used |= {v["$"] for ex in examples for v in ex["then"].get("equals", []) + ex["then"].get("matches", [])
              if isinstance(v, dict) and set(v) == {"$"}}
     fixtures = {k: fx for k, fx in d.fixtures.items() if k in used}
 
@@ -76,8 +91,12 @@ def implement(d, module: dict, feedback: tuple = ()) -> str:
     parts += [f"- {fn}: {sig.get('doc', '(no description)')}" for fn, sig in module["functions"].items()]
     deps = [d.modules[m] for m in module["depends_on"]]
     if deps:
+        # What each one does -- the first sentence of its doc -- and not how:
+        # how it works names the modules IT calls, and a 9B implementer that
+        # read them imported them too, unused, and was refused three times
+        # for it (2026-10-15, wall_list).
         parts += ["", "# What the functions you may call do"]
-        parts += [f"- {dep['name']}.{fn}: {sig.get('doc', '(no description)')}"
+        parts += [f"- {dep['name']}.{fn}: {what_it_does(sig.get('doc'))}"
                   for dep in deps for fn, sig in dep["functions"].items()]
     if module is d.assembly:
         # The assembly's examples are the definition's; it gets the statements

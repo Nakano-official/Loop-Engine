@@ -149,14 +149,56 @@ export function start(id: string): Example {
   return ex;
 }
 
+// A part of a value (FORMATS 4, "matches"): an object in `e` is compared on
+// the fields it has, and the fields it leaves out are not looked at. Lists keep
+// their length; everything else is compared as in equal().
+export function matches(e: Json, a: Json, rel = DEFAULT_REL, abs = DEFAULT_ABS): boolean {
+  if (Array.isArray(e) || Array.isArray(a)) {
+    return Array.isArray(e) && Array.isArray(a) && e.length === a.length
+      && e.every((x, i) => matches(x, a[i], rel, abs));
+  }
+  if (e !== null && typeof e === "object") {
+    return a !== null && typeof a === "object"
+      && Object.keys(e).every(k => k in (a as object) && matches((e as any)[k], (a as any)[k], rel, abs));
+  }
+  return equal(e, a, rel, abs);
+}
+
+// A condition (FORMATS 4, "holds"): JavaScript source of a function that is
+// given the observed values, in order, and returns true when they are right.
+// It was parsed at the tester's gate (refs.mjs --condition); here it runs. A
+// condition that throws, or returns anything but true, is not met -- against a
+// stub that is what red looks like.
+function holds(source: string, actuals: unknown[]): { ok: boolean; error?: string } {
+  try {
+    const fn = new Function(`"use strict"; return (${source});`)();
+    return { ok: fn(...actuals) === true };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message ?? e).slice(0, 300) };
+  }
+}
+
 export function check(ex: Example, ...actuals: unknown[]): void {
-  if (!("equals" in ex.then)) throw new Error(`${ex.id}: expects an error, use checkRaises`);
-  const expected = ex.then.equals.map((v: any) => canon(resolve(v)));
+  const then = ex.then;
+  const rel = ex.tol?.rel ?? DEFAULT_REL, abs = ex.tol?.abs ?? DEFAULT_ABS;
   const actual = actuals.map(canon);
-  const ok = equal(expected, actual, ex.tol?.rel ?? DEFAULT_REL, ex.tol?.abs ?? DEFAULT_ABS);
-  record({ t: "check", id: ex.id, ok, expected, actual });
+  let ok: boolean, expected: Json, error: string | undefined;
+  if ("equals" in then) {
+    expected = then.equals.map((v: any) => canon(resolve(v)));
+    ok = equal(expected, actual, rel, abs);
+  } else if ("matches" in then) {
+    expected = then.matches.map((v: any) => canon(resolve(v)));
+    ok = matches(expected, actual, rel, abs);
+  } else if ("holds" in then) {
+    expected = { holds: then.holds };
+    ({ ok, error } = holds(then.holds, actuals));
+  } else {
+    throw new Error(`${ex.id}: expects an error, use checkRaises`);
+  }
+  record({ t: "check", id: ex.id, ok, expected, actual, ...(error ? { error } : {}) });
   if (!ok) {
-    throw new Error(`${ex.id}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+    throw new Error(`${ex.id}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
+                    + (error ? ` (the condition threw: ${error})` : ""));
   }
 }
 

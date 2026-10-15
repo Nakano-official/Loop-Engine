@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""The `run` tool of a Claude role: an MCP server on stdin/stdout (DECISIONS 45).
+
+claude-run starts it beside the agent, as the role's uid. It runs nothing
+itself: each call is handed to calc through calc-run -- no network, no
+workspace, no credentials, nothing left running -- and what the code printed
+comes back. A role computes with it (an expected value, a condition tried on a
+value) instead of working it out in its head.
+
+The protocol by hand, the few methods a client needs: JSON-RPC 2.0, one
+message per line. No SDK: this file is all there is between the agent and
+calc, and it has to be read whole to be trusted.
+"""
+import json
+import subprocess
+import sys
+
+SECONDS = 60
+DESCRIPTION = (
+    "Run a short Python or JavaScript program and get back what it printed (stdout and stderr, "
+    "at most 20 KB). Use it to compute values exactly -- arithmetic, geometry, a generated layout, "
+    "a condition tried on a value -- instead of working them out by hand. It runs in a sandbox: "
+    "no network, no files of yours, nothing kept between calls, at most %d seconds. Print what "
+    "you want to see." % SECONDS)
+TOOL = {
+    "name": "run",
+    "description": DESCRIPTION,
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "language": {"type": "string", "enum": ["python", "javascript"]},
+            "code": {"type": "string", "description": "the whole program"},
+        },
+        "required": ["language", "code"],
+    },
+}
+
+
+def run(language: str, code: str) -> tuple[str, bool]:
+    if language not in ("python", "javascript"):
+        return "language is python or javascript", True
+    try:
+        proc = subprocess.run(["sudo", "-n", "-u", "calc", "/srv/loop/bin/calc-run", language, str(SECONDS)],
+                              input=code, capture_output=True, text=True, timeout=SECONDS + 30)
+    except subprocess.TimeoutExpired:
+        return f"stopped after {SECONDS} seconds", True
+    out = proc.stdout + (proc.stderr if proc.returncode else "")
+    if proc.returncode == 124:
+        out += f"\n(stopped after {SECONDS} seconds)"
+    elif proc.returncode:
+        out += f"\n(exit {proc.returncode})"
+    return out or "(printed nothing)", proc.returncode != 0
+
+
+def answer(msg: dict) -> dict | None:
+    method, mid = msg.get("method"), msg.get("id")
+    if mid is None:
+        return None                                  # a notification
+    if method == "initialize":
+        version = (msg.get("params") or {}).get("protocolVersion", "2025-06-18")
+        result = {"protocolVersion": version, "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "code", "version": "1"}}
+    elif method == "ping":
+        result = {}
+    elif method == "tools/list":
+        result = {"tools": [TOOL]}
+    elif method == "tools/call":
+        params = msg.get("params") or {}
+        args = params.get("arguments") or {}
+        if params.get("name") != "run":
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32602, "message": "no such tool"}}
+        text, is_error = run(str(args.get("language", "")), str(args.get("code", "")))
+        result = {"content": [{"type": "text", "text": text}], "isError": is_error}
+    else:
+        return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"no method {method}"}}
+    return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+
+def main() -> None:
+    for line in sys.stdin:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        reply = answer(msg) if isinstance(msg, dict) else None
+        if reply is not None:
+            sys.stdout.write(json.dumps(reply) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()

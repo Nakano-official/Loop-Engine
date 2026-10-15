@@ -167,15 +167,30 @@ def start(example_id: str) -> dict:
     return ex
 
 
+def matches(e: Any, a: Any, rel: float = DEFAULT_REL, abs_: float = DEFAULT_ABS) -> bool:
+    """A part of a value (FORMATS 4, "matches"): an object in `e` is compared on
+    the fields it has; lists keep their length; the rest as in equal()."""
+    if isinstance(e, list) or isinstance(a, list):
+        return (isinstance(e, list) and isinstance(a, list) and len(e) == len(a)
+                and all(matches(x, y, rel, abs_) for x, y in zip(e, a)))
+    if isinstance(e, dict):
+        return isinstance(a, dict) and all(k in a and matches(v, a[k], rel, abs_) for k, v in e.items())
+    return equal(e, a, rel, abs_)
+
+
 def check(ex: dict, *actuals: Any) -> None:
-    """Compare the observed values with the example's `then.equals`, once."""
+    """Compare the observed values with the example's `then` -- equals, or
+    matches (a part) -- once. A condition ("holds") is JavaScript and is
+    accepted only for designs in TypeScript (FORMATS 4)."""
     then = ex["then"]
-    if "equals" not in then:
+    if "equals" not in then and "matches" not in then:
         raise AssertionError(f"{ex['id']}: expects {then}, use check_raises")
-    expected = [canon(_resolve(v)) for v in then["equals"]]
+    key = "equals" if "equals" in then else "matches"
+    expected = [canon(_resolve(v)) for v in then[key]]
     actual = [canon(a) for a in actuals]
     tol = ex.get("tol", {})
-    ok = equal(expected, actual, tol.get("rel", DEFAULT_REL), tol.get("abs", DEFAULT_ABS))
+    compare = equal if key == "equals" else matches
+    ok = compare(expected, actual, tol.get("rel", DEFAULT_REL), tol.get("abs", DEFAULT_ABS))
     _record({"t": "check", "id": ex["id"], "ok": ok, "expected": expected, "actual": actual})
     if not ok:
         raise AssertionError(f"{ex['id']}: expected {expected}, got {actual}")

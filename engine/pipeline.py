@@ -117,9 +117,16 @@ def _keep_attempt(log: Ledger, here: str, files: dict, result: dict) -> None:
 def run(design_path: Path | str, solver: Solver, window, ws: str,
         max_attempts: int = 3, ledger: Ledger | None = None,
         output: Path | str | None = None, build: bool = True,
-        should_stop: Callable[[], bool] = lambda: False, tag: str = "") -> Outcome:
+        should_stop: Callable[[], bool] = lambda: False, tag: str = "",
+        greens: dict | None = None) -> Outcome:
     """`tag` names this design round among a run's files (attempts/<tag>/...)
-    when one run goes through more than one design."""
+    when one run goes through more than one design.
+
+    `greens`: {fingerprint: files} of implementations that went green before
+    -- an earlier design of the same run. A module whose fingerprint is there
+    is tried with that implementation first, and only written again if it is
+    not green here (DECISIONS 46). Every module that goes green is added."""
+    greens = {} if greens is None else greens
     log = ledger or Ledger(None)
     design_path = Path(design_path)
     # What this run was built from, for whoever reads it later. A run from
@@ -164,6 +171,24 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
             return Outcome(verdict.stage, f"{name}: {verdict.reason}", [m["name"] for m in green],
                            detail=verdict.facts)
 
+        # 2a'. What an earlier design had green, if this module is the same:
+        #      its tests against that implementation, before any solver.
+        fingerprint = d.fingerprint(module)
+        kept = greens.get(fingerprint)
+        if kept:
+            log("BEGIN", step="reuse", module=name)
+            result = window.call("verify", ws, name, {"files": kept, "green": [m["name"] for m in green]})
+            verdict = diagnose.attempt(d, module, result, green) if "engine" not in result and "refused" not in result \
+                else None
+            if verdict is not None and verdict.stage == diagnose.GREEN:
+                window.call("accept", ws, name, None)
+                green.append(module)
+                log("REUSED", module=name, reason=verdict.reason)
+                log("GREEN", module=name, attempts=0, reused=True)
+                continue
+            log("REUSE_FAILED", module=name, reason=verdict.reason if verdict else str(result.get("engine")
+                                                                                        or result.get("refused")))
+
         # 2b. Attempts, until green or used up.
         attempts: list[diagnose.Verdict] = []
         feedback: tuple = ()
@@ -205,6 +230,7 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
             if verdict.stage == diagnose.GREEN:
                 window.call("accept", ws, name, None)
                 green.append(module)
+                greens[fingerprint] = result.get("accepted") or files
                 log("GREEN", module=name, attempts=n)
                 break
             attempts.append(verdict)
@@ -247,22 +273,12 @@ def run(design_path: Path | str, solver: Solver, window, ws: str,
 
 # ---- from requirements -------------------------------------------------------
 #
-# The upstream stages (DESIGN 2): requirements -> definition -> design, each
-# written by a role in the box (run-role) and held at the host's gate; then
+# The upstream stages (DESIGN 2): requirements -> concepts -> definition (what
+# to make, then its examples) -> design, each written by a role in the box
+# (run-role) and held at the host's gate; then
 # run() above; and when run() sends the loop back to the design, the designer
 # is told which module and why -- ids and the kind of reason, never what the
 # implementation returned -- and the design is written again.
-
-def _on_platform(definition, platform: str) -> list:
-    """The definition gate, and the platform the person chose: a definition
-    for another platform is refused like any other finding."""
-    findings = artifacts.check_definition(definition)
-    got = definition.get("shell", {}).get("platform") if isinstance(definition, dict) else None
-    if got != platform:
-        findings.append(artifacts.Finding(artifacts.DEFINITION, "shell.platform",
-                                          f"must be {platform!r}, the platform this app is built for (got {got!r})"))
-    return findings
-
 
 EDIT_BACK = """
 # Your previous {name} is in this directory, at edit/{name}
@@ -317,13 +333,23 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
                           redesigns: int = 2, ledger: Ledger | None = None,
                           output: Path | str | None = None, build: bool = True,
                           should_stop: Callable[[], bool] = lambda: False,
-                          platform: str = "browser-dom", until: str | None = None) -> Outcome:
-    """`until`: "analysis", "definition" or "design" -- stop once that stage
-    has passed its gate, to try one stage without the rest. The run is a run
-    like any other (ledger, kept files), so the dashboard shows it."""
+                          platform: str = "browser-dom", until: str | None = None,
+                          resume: dict | None = None) -> Outcome:
+    """`until`: "analysis", "definition" (with its examples) or "design" --
+    stop once that stage has passed its gate, to try one stage without the
+    rest. The run is a run like any other (ledger, kept files), so the
+    dashboard shows it.
+
+    `resume`: {"from": run id, "concepts": ..., "definition": ...} -- start at
+    the design, from a concept file and a definition (with its examples) that
+    an earlier run wrote. They are held at their gates again before the
+    designer sees them: what passed then must still pass now."""
     log = ledger or Ledger(None)
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
+    if resume is not None:
+        return _from_definition(requirements, workdir, window, ws, solver, max_attempts, gate_rounds, redesigns,
+                                log, output, build, should_stop, platform, until, resume)
 
     # 0. The concept file, by the analyst, held at its gate (DESIGN 4): what
     #    the request's words mean and what the person needs. The request is put
@@ -344,26 +370,80 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
         return Outcome(UNTIL, "stopped after the analysis, as asked")
 
     # 1. The definition, by the definer: what to make, decided against the
-    #    concept file. Held at the definition gate and the coverage gate.
-    definition, findings = _write_by_role(
+    #    concept file -- the summary, the state, item by item what must hold
+    #    (DECISIONS 44). The platform's types and functions are the machine's.
+    draft, findings = _write_by_role(
         window, f"{ws}-def", "definer", "definition.json",
         lambda f: upstream_briefs.define(concepts, platform=platform, findings=f),
-        lambda doc: _on_platform(doc, platform) + (artifacts.check_coverage(concepts, doc)
-                                                   if isinstance(doc, dict) else []),
-        gate_rounds, log)
+        lambda doc: artifacts.check_draft(doc, platform, concepts), gate_rounds, log)
     if findings:
         return Outcome(artifacts.DEFINITION, "the definition did not pass its gate",
                        detail={"findings": findings})
+    definition = artifacts.complete(draft, platform)
+
+    # 1b. Its examples, by the tester, from the items alone: what each is
+    #     checked by. A condition is read in the box (parsed, never run here
+    #     on the host); whether it is strong enough is the loop's to see.
+    def examples_gate(doc):
+        found = [str(f) for f in artifacts.check_examples(concepts, definition, doc)]
+        conditions = artifacts.conditions(artifacts.with_examples(definition, doc)) if not found else {}
+        if conditions:
+            read = window.call("check-conditions", f"{ws}-tst", "typescript", {"conditions": conditions})
+            if "engine" in read or "error" in read:
+                raise RuntimeError(f"check-conditions: {read.get('engine') or read.get('error')}")
+            found += [f"[{artifacts.EXAMPLES}] examples[{eid}].holds: {why}"
+                      for eid, why in sorted(read.get("findings", {}).items())]
+        return found
+
+    examples, findings = _write_by_role(
+        window, f"{ws}-tst", "tester", "examples.json",
+        lambda f: upstream_briefs.examples(definition, concepts, findings=f), examples_gate, gate_rounds, log)
+    if findings:
+        return Outcome(artifacts.EXAMPLES, "the examples did not pass their gate", detail={"findings": findings})
+    definition = artifacts.with_examples(definition, examples)
     (workdir / "definition.json").write_text(json.dumps(definition, ensure_ascii=False, indent=1),
                                              encoding="utf-8")
     if until == "definition":
         log("UNTIL", stage="definition")
         return Outcome(UNTIL, "stopped after the definition, as asked")
+    return _design_and_build(concepts, definition, workdir, window, ws, solver, max_attempts, gate_rounds,
+                             redesigns, log, output, build, should_stop, until)
 
+
+def _from_definition(requirements, workdir, window, ws, solver, max_attempts, gate_rounds, redesigns, log,
+                     output, build, should_stop, platform, until, resume) -> Outcome:
+    """The design onwards, from what an earlier run left (`resume`)."""
+    concepts, definition = resume["concepts"], resume["definition"]
+    found = [str(f) for f in artifacts.check_concepts(concepts)]
+    found += [str(f) for f in artifacts.check_definition(definition)]
+    got = definition.get("shell", {}).get("platform") if isinstance(definition, dict) else None
+    if got != platform:
+        found.append(f"the definition is for {got!r}, the app for {platform!r}")
+    if not found:
+        found = [str(f) for f in artifacts.check_examples(concepts, definition, {
+            "format": "loop/examples@1",
+            "items": {i["id"]: i.get("examples", []) for i in definition.get("items", [])}})]
+    if found:
+        log("FROM", run=resume.get("from"), findings=found[:20])
+        return Outcome(artifacts.DEFINITION, f"what {resume.get('from')} left does not pass its gates",
+                       detail={"findings": found})
+    for name, doc in (("concepts.json", concepts), ("definition.json", definition)):
+        (workdir / name).write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+    log("FROM", run=resume.get("from"), stages=["analysis", "definition", "examples"])
+    if until in ("analysis", "definition"):
+        log("UNTIL", stage=until)
+        return Outcome(UNTIL, f"stopped after the {until}, as asked")
+    return _design_and_build(concepts, definition, workdir, window, ws, solver, max_attempts, gate_rounds,
+                             redesigns, log, output, build, should_stop, until)
+
+
+def _design_and_build(concepts, definition, workdir, window, ws, solver, max_attempts, gate_rounds, redesigns,
+                      log, output, build, should_stop, until) -> Outcome:
     # 2-4. The design, by the designer; then the modules; back to the designer
     #      when the loop says the design is at fault.
     previous, verdict = None, None
     out = Outcome("none", "")
+    greens: dict = {}                    # what went green, by fingerprint, for the next design
     for round_ in range(redesigns + 1):
         if should_stop():
             log("STOPPED")
@@ -388,7 +468,8 @@ def run_from_requirements(requirements: str, workdir: Path | str, window, ws: st
             return Outcome(UNTIL, "stopped after the design, as asked")
 
         out = run(workdir / "design.json", solver, window, f"{ws}-r{round_}", max_attempts=max_attempts,
-                  ledger=log, output=output, build=build, should_stop=should_stop, tag=f"r{round_}")
+                  ledger=log, output=output, build=build, should_stop=should_stop, tag=f"r{round_}",
+                  greens=greens)
         if out.stage != diagnose.DESIGN:
             return out
         module = out.reason.split(":", 1)[0]

@@ -23,15 +23,17 @@ case "$LIMIT" in ""|*[!0-9]*) echo "$ROLE-run: bad time limit: $LIMIT" >&2; exit
 IN="/srv/loop/roles/$ROLE/in"
 OUT="/srv/loop/roles/$ROLE/out"
 
-# The tools come from the role table, and only a Claude role has any.
-TOOLS="$(python3 - "$ROLE" <<'EOF'
+# The tools, the model, and whether it has the run tool come from the role
+# table, and only a Claude role has any.
+SPEC="$(python3 - "$ROLE" <<'EOF'
 import json, sys
 role = json.load(open("/etc/loop/roles.json"))["roles"].get(sys.argv[1], {})
 if role.get("model") != "claude" or not role.get("invoked"):
     sys.exit(1)
-print(role["tools"])
+print(role.get("claude_model") or "default", "yes" if role.get("code") else "no", role["tools"])
 EOF
 )" || { echo "$ROLE-run: $ROLE is not an invoked Claude role in /etc/loop/roles.json" >&2; exit 2; }
+read -r MODEL CODE TOOLS <<<"$SPEC"
 
 # The brief has to be one the window put in this role's own in/. A path
 # anywhere else would be a second input channel beside the brief.
@@ -81,15 +83,26 @@ cd "$OUT"
 # --safe-mode / --setting-sources "" / --no-session-persistence
 #     the brief is the only input.
 # --tools
-#     from the table: the ONLY tools the agent has. Read, Write, Edit at most:
-#     no Bash and no WebFetch, which is why the Claude roles need no egress
-#     list (SYSTEM 8-3). Add either here and that line has to be revisited.
+#     from the table: the ONLY built-in tools the agent has. Ones whose reach
+#     the box bounds -- files, by the uid's rights (Read, Write, Edit, Glob,
+#     Grep, TodoWrite) -- and never Bash or WebFetch: this uid reaches the
+#     internet and reads its own credentials, so a command run as it could
+#     too. That is why the Claude roles need no egress list (SYSTEM 8-3,
+#     DECISIONS 45). Add either here and that line has to be revisited.
 #     --allowedTools alone is not this: it only pre-approves tools, and every
 #     other one -- Bash, WebFetch, WebSearch, Task, ... -- stays available,
 #     read-only shell commands running without asking. So it was until
 #     2026-10-13, when a definer was seen running `ls` (SYSTEM 8-3).
 # --allowedTools
 #     the same list, pre-approved: nothing is asked in a non-interactive run.
+# --strict-mcp-config --mcp-config (roles with "code": true; the others keep
+#     --safe-mode, which turns every MCP server off)
+#     the run tool and no other server: code-mcp, which hands the code to
+#     calc through calc-run -- no network, no workspace, nothing left running.
+#     The role computes with it instead of in its head (DECISIONS 45).
+# --model
+#     from the table (claude_model). Left to the account's default, the roles
+#     ran on an older model than anyone had chosen (2026-10-15).
 # --output-format stream-json --verbose
 #     the agent's progress, one event per line: how much it has thought, the
 #     tools it called and what came back, errors, the account's rate limit,
@@ -100,13 +113,32 @@ cd "$OUT"
 #     before.
 TRACE="$OUT/trace/progress.jsonl"
 [ -d "$OUT/trace" ] || TRACE="$HOME/progress.jsonl"
+
+# CLAUDE_CODE_MAX_RETRIES=0: no retrying inside the agent. Retrying is the
+#     flow's (the gate's rounds, a refused file given back to fix): it is on
+#     the ledger and counted. A second retry hidden in here, up to ten times,
+#     each regenerating a whole long answer, cost the quota and the time with
+#     nothing to show for it (2026-10-15: a definer retried after half an hour).
+#     What made that answer so long was the definer's job, not a setting: it
+#     was split so that one role's answer fits (DECISIONS 44).
+export CLAUDE_CODE_MAX_RETRIES=0
+EXTRA=()
+ALLOWED="$TOOLS"
+if [ "$CODE" = yes ]; then
+  EXTRA+=(--strict-mcp-config --mcp-config
+          '{"mcpServers": {"code": {"type": "stdio", "command": "/srv/loop/bin/code-mcp", "args": []}}}')
+  ALLOWED="$TOOLS mcp__code__run"
+else
+  EXTRA+=(--safe-mode)
+fi
+[ "$MODEL" = default ] || EXTRA+=(--model "$MODEL")
 set +e
 timeout --kill-after=30 "$LIMIT" claude -p \
-  --safe-mode \
+  "${EXTRA[@]}" \
   --setting-sources "" \
   --no-session-persistence \
   --tools "$TOOLS" \
-  --allowedTools "$TOOLS" \
+  --allowedTools "$ALLOWED" \
   --output-format stream-json --verbose \
   < "$BRIEF" > "$TRACE"
 rc=$?

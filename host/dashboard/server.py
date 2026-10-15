@@ -48,7 +48,7 @@ APP_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'
 DIAGRAM_CSP = ("sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
                "img-src data:; font-src data:")
 MERMAID = "vendor/mermaid-11.17.2.min.js"
-LIVE_ROLES = {"analyst", "definer", "designer"}
+LIVE_ROLES = {"analyst", "definer", "tester", "designer"}
 STATIC_FILES = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css",
                 "/diagram.html": "diagram.html", "/diagram.js": "diagram.js", f"/{MERMAID}": MERMAID}
 
@@ -104,7 +104,7 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                     # The page is told what it may do rather than finding out by
                     # being refused: a button that cannot work should not be there.
                     self._json({"token": token, "scope": scope, "user": user,
-                                "can_start": scope == LOCAL, "can_approve": scope == LOCAL,
+                                "can_start": True, "can_approve": scope == LOCAL,
                                 "platforms": apps.PLATFORMS})
                     return
                 if path == "/api/apps":
@@ -179,20 +179,16 @@ def handler_for(store: "apps.Store", reach: Reach, token: str, box: "runs_mod.Bo
                 body = self._body()
                 path = urlparse(self.path).path
                 if path == "/api/apps":
-                    # A new app from requirements. Local, like starting a run:
-                    # its first run is what the person creating it will play.
-                    if scope != LOCAL:
-                        raise PermissionError("an app is created at this machine")
+                    # A new app from a request. From anywhere the caller was
+                    # let in (decision 43): the name list has one person on it.
                     app = store.create_from_requirements(str(body.get("name", "")), str(body.get("title", "")),
                                                          str(body.get("requirements", "")),
                                                          platform=str(body.get("platform", "browser-dom")))
                     self._json({"name": app.name}, HTTPStatus.CREATED)
                     return
                 if path == "/api/runs/start":
-                    # Starting is a local act: it spends the machine, and the
-                    # person who starts a run is the one who will play its app.
-                    if scope != LOCAL:
-                        raise PermissionError("a run is started at this machine")
+                    # Starting spends the machine and the account's quota; the
+                    # name list in config.json is who may do that (decision 43).
                     self._json(runs_mod.start(store, str(body.get("app", ""))), HTTPStatus.ACCEPTED)
                     return
                 if path == "/api/runs/stop":

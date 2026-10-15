@@ -1,9 +1,12 @@
 """The exit gates for the concept file, the definition and the design (DESIGN 5, FORMATS 7, 11).
 
-    check_concepts(concepts)             -> [Finding]   back to requirements analysis
-    check_coverage(concepts, definition) -> [Finding]   back to the definer
-    check_definition(definition)         -> [Finding]
-    check_design(design, definition)     -> [Finding]
+    check_concepts(concepts)                    -> [Finding]   back to requirements analysis
+    check_draft(draft, platform, concepts)      -> [Finding]   back to the definer
+    complete(draft, platform)                   -> definition  the machine's part added
+    with_examples(definition, examples)         -> definition  the tester's examples put in
+    check_examples(concepts, definition, ex)    -> [Finding]   back to the tester
+    check_definition(definition)                -> [Finding]
+    check_design(design, definition)            -> [Finding]
 
 A part, not a flow: it reads two JSON documents and says what is wrong with
 them, and where. Each finding names the stage that is at fault, which is what
@@ -29,6 +32,7 @@ from design import PRIMITIVES, is_ref, parse_type  # noqa: E402
 
 ANALYSIS = "要求分析"
 DEFINITION = "要件定義"
+EXAMPLES = "定義の例"
 DESIGN = "モジュール設計"
 
 PLATFORM_DIR = Path(__file__).resolve().parents[1] / "adapters" / "platforms"
@@ -158,7 +162,8 @@ class _Gate:
 
     # ---- values -----------------------------------------------------------
 
-    def value_ok(self, v: Any, t: str, types: dict, where: str) -> None:
+    def value_ok(self, v: Any, t: str, types: dict, where: str, part: bool = False) -> None:
+        """part: a value for "matches" -- a record may leave fields out."""
         def fits(v: Any, kind: tuple) -> bool:
             k = kind[0]
             if k == "prim":
@@ -177,16 +182,21 @@ class _Gate:
             if "enum" in decl:
                 return v in decl["enum"]
             fields = decl.get("record", [])
-            return (isinstance(v, dict) and set(v) == {f["name"] for f in fields}
-                    and all(fits(v[f["name"]], parse_type(f["type"])) for f in fields))
+            names = {f["name"] for f in fields}
+            if not isinstance(v, dict) or not (set(v) <= names if part else set(v) == names):
+                return False
+            return all(fits(v[f["name"]], parse_type(f["type"])) for f in fields if f["name"] in v)
         if not fits(v, parse_type(t)):
-            self.bad(where, f"{json.dumps(v, ensure_ascii=False)[:80]} is not a {t}")
+            what = f"a part of a {t}" if part else f"a {t}"
+            self.bad(where, f"{json.dumps(v, ensure_ascii=False)[:80]} is not {what}")
 
     # ---- examples ---------------------------------------------------------
 
     def examples_ok(self, examples: list, reachable: dict, types: dict, errors: dict,
-                    fixtures: dict, where: str) -> set[str]:
-        """reachable: callable name -> contract. Returns the bare names called."""
+                    fixtures: dict, where: str, conditions: bool = False) -> set[str]:
+        """reachable: callable name -> contract. Returns the bare names called.
+        conditions: whether "holds" may be used -- a condition is JavaScript,
+        so only where the tests are TypeScript."""
         called = set()
         seen_inputs: dict[str, tuple[str, str]] = {}
         for ex in examples:
@@ -239,21 +249,34 @@ class _Gate:
                 elif then["raises"] not in last_sig.get("raises", []):
                     self.bad(w, f"expects {then['raises']!r}, which the last call does not declare")
                 outcome = ("raises", then["raises"])
-            elif isinstance(then.get("observe"), list) and isinstance(then.get("equals"), list):
-                if len(then["observe"]) != len(then["equals"]) or not then["observe"]:
-                    self.bad(w, "observe and equals must be the same, non-zero length")
-                for ref, val in zip(then["observe"], then["equals"]):
+            elif isinstance(then.get("observe"), list) and len(set(then) & {"equals", "matches", "holds"}) == 1:
+                key = next(k for k in ("equals", "matches", "holds") if k in then)
+                if not then["observe"]:
+                    self.bad(w, "observe names at least one result")
+                for ref in then["observe"]:
                     if ref not in scope:
                         self.bad(w, f"observes {ref!r}, which is not bound")
-                    elif not is_ref(val):
-                        self.value_ok(val, scope[ref], types, f"{w}.equals")
-                outcome = ("equals", json.dumps(then["equals"], sort_keys=True))
+                if key == "holds":
+                    if not conditions:
+                        self.bad(w, "a condition (holds) is JavaScript: only for an app built in TypeScript")
+                    elif not (isinstance(then["holds"], str) and then["holds"].strip()):
+                        self.bad(w, "holds is the source of a JavaScript function, as a string")
+                    outcome = None
+                elif not isinstance(then[key], list) or len(then["observe"]) != len(then[key]):
+                    self.bad(w, f"observe and {key} must be lists of the same length")
+                    outcome = None
+                else:
+                    for ref, val in zip(then["observe"], then[key]):
+                        if ref in scope and not is_ref(val):
+                            self.value_ok(val, scope[ref], types, f"{w}.{key}", part=key == "matches")
+                    outcome = ("equals", json.dumps(then[key], sort_keys=True)) if key == "equals" else None
             else:
-                self.bad(w, "then is {observe, equals} or {raises}")
+                self.bad(w, "then is {observe, equals}, {observe, matches}, {observe, holds} or {raises}")
                 continue
             # The same call on the same input cannot have two answers. Checked
-            # for one-step examples, the only case the machine can decide.
-            if len(ex["steps"]) == 1 and "call" in ex["steps"][0]:
+            # for one-step examples that give the whole answer, the only case
+            # the machine can decide.
+            if outcome and len(ex["steps"]) == 1 and "call" in ex["steps"][0]:
                 st = ex["steps"][0]
                 key = f"{st['call']}({json.dumps(st.get('args', {}), sort_keys=True)})"
                 prev = seen_inputs.get(key)
@@ -303,18 +326,20 @@ def check_definition(d: Any) -> list[Finding]:
     items = d.get("items", [])
     ids = []
     examples = []
+    # Which items need examples is the coverage gate's to say (check_examples):
+    # an item about how the app looks or feels is checked by using it.
     for item in items:
         iid = item.get("id", "?")
         ids.append(iid)
-        if not item.get("examples"):
-            g.bad(f"items[{iid}]", "a definition item without examples cannot be checked")
         for ex in item.get("examples", []):
             ids.append(ex.get("id", "?"))
             if not str(ex.get("id", "")).startswith(iid + "."):
                 g.bad(f"items[{iid}]", f"example {ex.get('id')!r} is outside its item")
             examples.append(ex)
     _ids_ok(g, ids, "items")
-    called = g.examples_ok(examples, interface, types, errors, {}, "examples")
+    plat = platform(str(d.get("shell", {}).get("platform")))
+    called = g.examples_ok(examples, interface, types, errors, {}, "examples",
+                           conditions=bool(plat) and plat["language"] == "typescript")
     for name in interface:
         if name not in called:
             g.bad(f"interface.{name}", "no example calls it")
@@ -457,7 +482,8 @@ def check_design(ds: Any, definition: dict) -> list[Finding]:
             if not str(ex.get("id", "")).startswith(m["id"] + "."):
                 g.bad(w, f"example {ex.get('id')!r} is outside its module")
         exs = m.get("examples", []) + (definition_examples if m is asm else [])
-        called = g.examples_ok(exs, reachable, types, errors, fixtures, f"{w}.examples")
+        called = g.examples_ok(exs, reachable, types, errors, fixtures, f"{w}.examples",
+                               conditions=target.get("language") == "typescript")
         for fn in m.get("functions", {}):
             if fn not in called:
                 g.bad(f"{w}.functions.{fn}", "no example calls it")
@@ -584,14 +610,8 @@ def check_concepts(c: Any) -> list[Finding]:
     return g.findings
 
 
-def check_coverage(concepts: dict, definition: dict) -> list[Finding]:
-    """The coverage gate, at the definition's exit (DESIGN 4): every property
-    and requirement the concept file says is checked by an example is
-    referenced by a definition item -- and items have examples, or the
-    definition's own gate refuses them. Being able to read the concept file is
-    not enough; the maze's definer could read 「迷路」 and still wrote a
-    corridor. A definition that does not cover goes back to the definer."""
-    g = _Gate(DEFINITION)
+def _refs(concepts: dict) -> tuple[dict, dict]:
+    """(every property and requirement by id, the active ones by id)."""
     active, by_id = {}, {}
     for k in concepts.get("concepts", []):
         for p in k.get("properties", []):
@@ -602,26 +622,166 @@ def check_coverage(concepts: dict, definition: dict) -> list[Finding]:
         by_id[r["id"]] = r
         if r.get("status") == "active":
             active[r["id"]] = r
-    if not isinstance(definition.get("summary"), str) or not definition["summary"].strip():
-        g.bad("summary", "say in a sentence or two what is made, and for what")
-    covered = set()
-    for item in definition.get("items", []):
-        refs = item.get("concepts", [])
-        if not isinstance(refs, list):
-            g.bad(f"items[{item.get('id')}].concepts", "a list of property and requirement ids")
+    return by_id, active
+
+
+# ---- what the definer writes: what to make (DECISIONS 44) ------------------
+#
+# The definer decides what to make and nothing else: the summary, the app's
+# state, its errors, and item by item what must hold, each answering to the
+# concept file. The platform's types and functions are the machine's to put in
+# (complete), and the examples the tester's (check_examples). Copied out by a
+# model, the platform's part cost it nothing to decide and could only go wrong;
+# written by the definer, the examples were two thirds of a definition and most
+# of its thinking (2026-10-15: half an hour, a whole screen worked out by hand
+# for each).
+
+ITEM_ID = re.compile(r"^D[1-9][0-9]*$")
+ITEM_KEYS = {"id", "title", "statement", "concepts"}
+DRAFT_KEYS = {"format", "title", "summary", "state", "types", "errors", "raises", "items"}
+
+
+def complete(draft: dict, platform_name: str) -> dict:
+    """The definition, from what the definer wrote: the platform's types beside
+    the app's own, the platform's functions with $State made the app's state,
+    each raising what the definer said it raises. No examples yet."""
+    plat = platform(platform_name) or {"types": {}, "interface": {}}
+    state = str(draft.get("state"))
+    raises = draft.get("raises") if isinstance(draft.get("raises"), dict) else {}
+    interface = {}
+    for fn, sig in plat["interface"].items():
+        interface[fn] = {"params": [{"name": p["name"], "type": p["type"].replace("$State", state)}
+                                    for p in sig["params"]],
+                         "returns": sig["returns"].replace("$State", state),
+                         **({"raises": list(raises[fn])} if isinstance(raises.get(fn), list) and raises[fn] else {})}
+    items = [{k: v for k, v in item.items() if k != "examples"} if isinstance(item, dict) else item
+             for item in draft.get("items", []) or []]
+    own = draft.get("types") if isinstance(draft.get("types"), dict) else {}
+    return {"format": "loop/definition@1", "title": draft.get("title"), "summary": draft.get("summary"),
+            "types": {**plat["types"], **own}, "errors": draft.get("errors") or {},
+            "interface": interface, "items": items, "shell": {"platform": platform_name}}
+
+
+def check_draft(draft: Any, platform_name: str, concepts: dict) -> list[Finding]:
+    """The definer's gate: what it wrote, and the definition the machine makes
+    of it. Every property and requirement the concept file checks by example
+    is answered to by an item -- the tester then writes examples that show it."""
+    g = _Gate(DEFINITION)
+    if not isinstance(draft, dict) or draft.get("format") != "loop/definition@1":
+        g.bad("format", "not a loop/definition@1 document")
+        return g.findings
+    extra = set(draft) - DRAFT_KEYS
+    if extra:
+        g.bad("definition", f"has {sorted(extra)}: the platform's functions and the examples are added "
+                            "by others -- write only " + ", ".join(sorted(DRAFT_KEYS - {"format"})))
+    for f in ("title", "summary"):
+        if not isinstance(draft.get(f), str) or not draft[f].strip():
+            g.bad(f, "must be text")
+    plat = platform(platform_name) or {"types": {}, "interface": {}}
+    own = draft.get("types") if isinstance(draft.get("types"), dict) else {}
+    for name in plat["types"]:
+        if name in own:
+            g.bad(f"types.{name}", f"{name} is the platform's type and is added by the machine: leave it out")
+    state = draft.get("state")
+    if not (isinstance(state, str) and isinstance(own.get(state), dict) and "record" in own[state]):
+        g.bad("state", "name the app's state: a record type declared under types")
+    raises = draft.get("raises", {})
+    if not isinstance(raises, dict):
+        g.bad("raises", "raises is {function: [ErrorName, ...]}")
+        raises = {}
+    for fn, errs in raises.items():
+        if fn not in plat["interface"]:
+            g.bad(f"raises.{fn}", f"{fn} is not one of the functions the platform's shell calls")
+        elif not isinstance(errs, list):
+            g.bad(f"raises.{fn}", "a list of error names")
+    by_id, active = _refs(concepts)
+    listed = set()
+    items = draft.get("items")
+    if not isinstance(items, list) or not items:
+        g.bad("items", "there are no items")
+        items = []
+    for item in items:
+        iid = item.get("id", "?") if isinstance(item, dict) else "?"
+        w = f"items[{iid}]"
+        if not isinstance(item, dict):
+            g.bad(w, "an item is an object")
+            continue
+        if not ITEM_ID.match(str(iid)):
+            g.bad(w, "an item's id is D<n>")
+        if set(item) - ITEM_KEYS:
+            g.bad(w, f"an item is {{id, title, statement, concepts}}, without {sorted(set(item) - ITEM_KEYS)}")
+        if not isinstance(item.get("title"), str) or not item["title"].strip():
+            g.bad(f"{w}.title", "must be text")
+        _prose_ok(g, item.get("statement"), f"{w}.statement")
+        refs = item.get("concepts")
+        if not isinstance(refs, list) or not refs:
+            g.bad(f"{w}.concepts", "list the properties and requirements this item answers to")
             continue
         for ref in refs:
             if ref not in by_id:
-                g.bad(f"items[{item.get('id')}].concepts", f"{ref!r} is not a property or requirement of the concept file")
+                g.bad(f"{w}.concepts", f"{ref!r} is not a property or requirement of the concept file")
             elif ref not in active:
-                g.bad(f"items[{item.get('id')}].concepts", f"{ref!r} is retired")
-            elif item.get("examples"):
-                covered.add(ref)
+                g.bad(f"{w}.concepts", f"{ref!r} is retired")
+            else:
+                listed.add(ref)
     for ref, x in active.items():
-        if x.get("check") == "example" and ref not in covered:
-            g.bad(f"concepts.{ref}", f"「{x.get('text', '')}」 is to be checked by examples, and no item's "
-                                     "examples check it: add or extend an item that does, and list it there")
+        if x.get("check") == "example" and ref not in listed:
+            g.bad(f"concepts.{ref}", f"「{x.get('text', '')}」 is to be checked by examples, and no item answers "
+                                     "to it: add or extend an item that does, and list it there")
+    if not g.findings:
+        # What the machine makes of it: a type that refers to nothing, an
+        # error raised and never declared. Calling every function is the
+        # examples' business, after this.
+        g.findings += [f for f in check_definition(complete(draft, platform_name))
+                       if f.message != "no example calls it"]
     return g.findings
+
+
+def with_examples(definition: dict, examples: Any) -> dict:
+    """The definition with the tester's examples in its items."""
+    by_item = examples.get("items") if isinstance(examples, dict) else None
+    by_item = by_item if isinstance(by_item, dict) else {}
+    items = [{**item, "examples": list(by_item.get(item.get("id")) or [])}
+             for item in definition.get("items", [])]
+    return {**definition, "items": items}
+
+
+def check_examples(concepts: dict, definition: dict, examples: Any) -> list[Finding]:
+    """The tester's gate: the examples it wrote, in the definition they belong
+    to. Every item that answers to something checked by example has examples;
+    an item only about how the app looks or feels may have none. Whether a
+    condition is strong enough is not decided here: the loop's evaluation sees
+    what a weak one let through (DECISIONS 44)."""
+    g = _Gate(EXAMPLES)
+    if not isinstance(examples, dict) or examples.get("format") != "loop/examples@1" \
+            or not isinstance(examples.get("items"), dict):
+        g.bad("format", "not a loop/examples@1 document: {format, items: {item id: [example, ...]}}")
+        return g.findings
+    ids = {item.get("id") for item in definition.get("items", [])}
+    for iid, exs in examples["items"].items():
+        if iid not in ids:
+            g.bad(f"items.{iid}", "is not an item of the definition")
+        elif not isinstance(exs, list):
+            g.bad(f"items.{iid}", "a list of examples")
+    if g.findings:
+        return g.findings
+    merged = with_examples(definition, examples)
+    g.findings += [Finding(EXAMPLES, f.where, f.message) for f in check_definition(merged)]
+    _, active = _refs(concepts)
+    for item in merged["items"]:
+        need = [r for r in item.get("concepts", []) if active.get(r, {}).get("check") == "example"]
+        if need and not item["examples"]:
+            g.bad(f"items.{item['id']}", f"answers to {', '.join(need)}, which examples must show: give it examples")
+    return g.findings
+
+
+def conditions(definition: dict) -> dict:
+    """Every condition in a definition, for the window to read (check-conditions):
+    {example id: {"source": ..., "arity": how many values it is given}}."""
+    return {ex["id"]: {"source": ex["then"]["holds"], "arity": len(ex["then"].get("observe") or [])}
+            for item in definition.get("items", []) for ex in item.get("examples", [])
+            if isinstance(ex, dict) and isinstance(ex.get("then"), dict)
+            and isinstance(ex["then"].get("holds"), str)}
 
 
 def check_files(design_path: Path | str) -> list[Finding]:

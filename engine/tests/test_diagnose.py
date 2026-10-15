@@ -60,6 +60,22 @@ def test_an_example_passing_against_the_stub_is_the_engines_fault(tmp_path):
     assert v.stage == diagnose.ENGINE and "passes against the stub" in v.reason
 
 
+def test_a_condition_met_by_the_stub_is_no_ones_fault(tmp_path):
+    # A condition relating two results holds for a stub too, whose results are
+    # all the same sentinels (FORMATS 4): the red gate does not ask it to fail.
+    r = run(tmp_path, {"economy": CORRECT["economy"]}, ["economy"])
+
+    class AsConditions:
+        def __getattr__(self, name):
+            return getattr(DESIGN, name)
+
+        def examples(self, module):
+            return [{**ex, "then": {"observe": ex["then"].get("observe", []), "holds": "() => true"}}
+                    for ex in DESIGN.examples(module)]
+
+    assert diagnose.red_gate(AsConditions(), M["economy"], r).stage == diagnose.RED
+
+
 # ---- one attempt -------------------------------------------------------------
 
 def test_a_correct_attempt_is_green(tmp_path):

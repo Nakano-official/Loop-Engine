@@ -26,6 +26,7 @@ they all append to one record.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -222,6 +223,47 @@ def references_command(tools: dict, path: Path) -> list[str]:
     return [tools["node"], str(HERE / "refs.mjs"), str(path), str(parser)]
 
 
+def condition_command(tools: dict, path: Path) -> list[str]:
+    """How the window reads one condition (FORMATS 4, "holds"): refs.mjs on a
+    file that is `export default (<source>);`, parsed, never run."""
+    return references_command(tools, path) + ["condition"]
+
+
+def condition_file(source: str) -> str:
+    return f"export default (\n{source}\n);\n"
+
+
+def check_condition(facts: dict, arity: int) -> str | None:
+    """refs.mjs's report on one condition: what is wrong with it, or None."""
+    if "error" in facts:
+        return f"does not parse: {facts['error']}"
+    if facts.get("function") is None:
+        return "is not one JavaScript function (write `(a, b) => ...`, and nothing around it)"
+    if facts["function"]["params"] != arity:
+        return f"takes {facts['function']['params']} parameters; the example observes {arity} values"
+    if facts.get("imports") or facts.get("forbidden"):
+        used = sorted(set(facts.get("forbidden", [])) | {f"import {i}" for i in facts.get("imports", [])})
+        return (f"uses {', '.join(used)}: a condition may use only the language's tools for computing "
+                "(Math, JSON, Number, String, Array, Object, Map, Set, ...)")
+    return None
+
+
+def strip_imports(text: str, specifiers: list[str]) -> str | None:
+    """The file without its import lines of `specifiers` -- each a whole line
+    of its own, `import ... from "<spec>";`. None when one of them is not a
+    line like that: then nothing is taken out, and the file is refused as it
+    stands."""
+    lines = text.split("\n")
+    out, left = [], set(specifiers)
+    for line in lines:
+        m = re.fullmatch(r"\s*import\s[^;'\"]*from\s*(['\"])([^'\"]+)\1\s*;?\s*", line)
+        if m and m.group(2) in left:
+            left.discard(m.group(2))
+            continue
+        out.append(line)
+    return None if left else "\n".join(out)
+
+
 def check_references(d: Design, module: dict, facts: dict) -> dict:
     """refs.mjs's report against the design: a module may import the types and
     the modules it depends on, through the paths the brief gives it."""
@@ -234,7 +276,8 @@ def check_references(d: Design, module: dict, facts: dict) -> dict:
         return spec
 
     return {"undeclared": sorted({s for s in facts.get("imports", []) if bare(s) not in allowed}),
-            "forbidden": sorted(facts.get("forbidden", []))}
+            "forbidden": sorted(facts.get("forbidden", [])),
+            "unused": sorted(facts.get("unused", []))}
 
 
 def build_workspace(d: Design, ws: Path, impls: dict[str, str] | None = None) -> None:

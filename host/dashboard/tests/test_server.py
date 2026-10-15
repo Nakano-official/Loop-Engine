@@ -80,7 +80,8 @@ class DashboardTest(unittest.TestCase):
         local = json.loads(self.request("GET", "/api/session")[2])
         remote = json.loads(self.remote("GET", "/api/session")[2])
         self.assertTrue(local["can_start"] and local["can_approve"])
-        self.assertFalse(remote["can_start"] or remote["can_approve"])
+        self.assertTrue(remote["can_start"])
+        self.assertFalse(remote["can_approve"])
 
     def test_a_change_without_the_token_is_refused(self):
         s, _, _ = self.request("POST", "/api/decision", body={"app": "idle", "run": self.run_id,
@@ -102,8 +103,15 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(s, 201)
         self.assertEqual(self.store.app("idle").decision(self.run_id)["verdict"], "approve")
 
-    def test_a_run_cannot_be_started_from_afar(self):
-        self.assertEqual(self.remote("POST", "/api/runs/start", {"app": "idle"})[0], 403)
+    def test_from_afar_an_app_can_be_made_and_a_run_asked_for(self):
+        # Decision 43: the one person on the name list may do both from anywhere.
+        s, _, body = self.remote("POST", "/api/apps", {"name": "away", "title": "遠くから",
+                                                       "requirements": "何か作りたい", "platform": "browser-dom"})
+        self.assertEqual((s, json.loads(body)["name"]), (201, "away"))
+        self.assertEqual(self.remote("POST", "/api/runs/start", {"app": "no-such-app"})[0], 404)   # not 403
+        # Someone not on the list still cannot.
+        self.assertEqual(self.request("POST", "/api/runs/start", host=PUBLISHED, body={"app": "idle"},
+                                      user="stranger@x")[0], 403)
 
     def test_a_second_run_waits_for_the_first(self):
         p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
@@ -163,7 +171,9 @@ class DashboardTest(unittest.TestCase):
         run = json.loads(self.request("GET", f"/api/apps/idle/runs/{self.run_id}")[2])
         self.assertEqual(run["products"], {
             "analysis": {"concepts": 3, "properties": 5, "by_example": 4, "requirements": 2},
-            "definition": {"items": 7, "examples": 25}, "design": {"modules": 8}})
+            "definition": {"items": 7, "examples": 25,
+                           "judged": {"equals": 19, "matches": 0, "holds": 0, "raises": 6}},
+            "design": {"modules": 8}})
         self.assertTrue(run["has_concepts"])
 
     def test_a_kept_file_can_be_read_and_nothing_else(self):
@@ -202,9 +212,8 @@ if __name__ == "__main__":
 
 
 class CreateAppTest(DashboardTest):
-    def test_an_app_is_created_from_requirements_at_this_machine_only(self):
+    def test_an_app_is_created_from_requirements(self):
         body = {"name": "todo", "title": "やること", "requirements": "- 追加できる\n- 消せる\n"}
-        self.assertEqual(self.remote("POST", "/api/apps", body)[0], 403)
         s, _, _ = self.request("POST", "/api/apps", body=body)
         self.assertEqual(s, 201)
         self.assertEqual(self.store.app("todo").requirements(), body["requirements"])

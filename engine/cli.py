@@ -74,6 +74,14 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
         requirements = app.requirements()
         if args.from_design and not app.design_path.exists():
             raise FileNotFoundError(f"{app.name} has no design yet: run it from its requirements first")
+        resume = None
+        if args.from_definition:
+            # The design onwards, from the concept file and the definition an
+            # earlier run of this app left in its directory.
+            earlier = app.run(args.from_definition).dir
+            resume = {"from": args.from_definition,
+                      **{k: json.loads((earlier / f"{k}.json").read_text(encoding="utf-8"))
+                         for k in ("concepts", "definition")}}
         if requirements is not None and not args.from_design:
             # From what a person asked for: the definer and the designer first.
             # This run's definition and design are kept in its directory, and
@@ -81,7 +89,7 @@ def _run(store: apps.Store, app: "apps.App", args) -> int:
             out = pipeline.run_from_requirements(requirements, run.dir, pipeline.RemoteWindow(), run.workspace,
                                                  max_attempts=args.attempts, ledger=ledger,
                                                  output=run.dir / "app.html", should_stop=stop_file.exists,
-                                                 platform=app.platform(), until=args.until)
+                                                 platform=app.platform(), until=args.until, resume=resume)
             for name in ("concepts.json", "definition.json", "design.json"):
                 if (run.dir / name).exists():
                     (app.dir / name).write_bytes((run.dir / name).read_bytes())
@@ -133,6 +141,8 @@ def main(argv=None) -> int:
                    help="stop once this stage has passed its gate (from requirements only)")
     r.add_argument("--from-design", action="store_true",
                    help="start from the app's latest definition and design, not its requirements")
+    r.add_argument("--from-definition", metavar="RUN",
+                   help="start at the design, from the concept file and definition an earlier run left")
     s = sub.add_parser("stop")
     s.add_argument("name")
     s.add_argument("run")

@@ -4,7 +4,8 @@
     "drawn by a generic shell. A definition that declares this platform must declare",
     "these types exactly and offer these five functions; $State is the record type",
     "start returns, the same throughout. step is called every animation frame with",
-    "what the player is pressing; act on a click (\"click\") or a HUD button."
+    "what the player is pressing; act on a click (\"click\") or a HUD button.",
+    "brief: how the shell calls the app, for whoever decides what to make; examples: how to pin it, for the tester."
   ],
   "name": "browser-3d",
   "language": "typescript",
@@ -236,7 +237,10 @@
     "act(state, \"click\", now) is called on a click on the scene (the click also locks the pointer); HUD buttons call act with their action. If act throws, the shell keeps the old state.",
     "screen is called every frame and returns a Scene: the camera, the objects, and the HUD -- a list of nodes (heading, text, button with its action and whether it is enabled; non-button nodes have action \"\" and enabled true) drawn over the scene, top left.",
     "Objects are boxes, spheres, planes and cylinders, each a single colour; light, shadow and sky are the shell's. That is the whole vocabulary.",
-    "save is called once a second and after every act.",
-    "Pin the scene: give examples of screen, and of step with inputs, for a few states, with every object and node written out. Keep the numbers exact: pick speeds, times and positions whose results are exact in binary (halves, quarters), and keep yaw 0 in examples that move."
+    "save is called once a second and after every act."
+  ],
+  "examples": [
+    "Pin the scene where an item is about it: examples of screen, and of step with inputs, for a few states, judged by `matches` or `holds` on the objects and nodes the item is about -- not every one of them.",
+    "Where a number is compared (equals, matches), keep it exact: pick speeds, times and positions whose results are exact in binary (halves, quarters), and keep yaw 0 in examples that move."
   ]
 }

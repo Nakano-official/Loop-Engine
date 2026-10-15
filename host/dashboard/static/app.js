@@ -50,7 +50,7 @@ const STATUS = {
   interrupted: ["中断", "warn"],
 };
 const MODULE = {
-  green: ["緑", "ok"], trying: ["試行中", "info"], red: ["赤の関門", "info"],
+  green: ["緑", "ok"], reused: ["使い回し（緑）", "ok"], trying: ["試行中", "info"], red: ["赤の関門", "info"],
   exhausted: ["使い切り", "bad"], engine: ["エンジン", "bad"],
 };
 function doing(now) {
@@ -59,9 +59,11 @@ function doing(now) {
     case "start": return "通しを始めたところです";
     case "analyst": return `analyst が要求を分析して概念ファイルを書いています（${n} 回目）`;
     case "definer": return `definer が概念ファイルから、何を作るかを決めて定義を書いています（${n} 回目）`;
+    case "tester": return `tester が定義の項目ごとに、確かめる例を書いています（${n} 回目）`;
     case "designer": return `designer が定義から設計を書いています（${n} 回目）`;
     case "red_gate": return `${m} のテストを用意して、スタブで赤になることを確かめています`;
     case "attempt": return `モデルが ${m} を実装しています（${n} 回目）`;
+    case "reuse": return `${m} は前の設計で緑になった実装が使えるか、テストで確かめています`;
     case "build": return "アプリを1つの HTML にまとめて、起動を確かめています";
     default: return `${now.after || ""}${m ? `（${m}）` : ""} のあと、次の段へ進むところです`;
   }
@@ -225,6 +227,7 @@ const STAGES = [
   { id: "req", name: "要求", who: "人が書く" },
   { id: "ana", name: "分析", who: "analyst（Claude・箱）", step: "analyst", fault: "要求分析" },
   { id: "def", name: "定義", who: "definer（Claude・箱）", step: "definer", fault: "要件定義" },
+  { id: "ex", name: "例", who: "tester（Claude・箱）", step: "tester", fault: "定義の例" },
   { id: "des", name: "設計", who: "designer（Claude・箱）", step: "designer", fault: "モジュール設計" },
   { id: "imp", name: "実装", who: "solver（9B）と exec・箱", fault: "実装" },
   { id: "out", name: "出力", who: "build-app と起動確認・箱" },
@@ -232,10 +235,28 @@ const STAGES = [
 const STAGE_STATE = {
   done: "済み", now: "いま", wait: "待ち", skip: "使わない", bad: "ここで止まった", held: "指定で止めた",
 };
-const JUMP = { ana: "sec-upstream", def: "sec-upstream", des: "sec-upstream", imp: "sec-modules", out: "sec-out" };
+const JUMP = { ana: "sec-upstream", def: "sec-upstream", ex: "sec-upstream", des: "sec-upstream", imp: "sec-modules", out: "sec-out" };
 
 const sum = (xs) => xs.reduce((a, b) => a + (b || 0), 0);
 const kTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
+// Tokens a set of Claude rounds used, from the usage each round put on the
+// ledger. "in" counts everything the model read: new input, and the cache it
+// read from or wrote. The local 9B spends no quota and is not in it.
+function usageOf(steps) {
+  const u = { out: 0, in: 0, cached: 0, usd: 0, rounds: 0 };
+  for (const s of steps) {
+    if (!s.usage) continue;
+    u.rounds += 1;
+    u.out += s.usage.output_tokens || 0;
+    u.cached += s.usage.cache_read_input_tokens || 0;
+    u.in += (s.usage.input_tokens || 0) + (s.usage.cache_read_input_tokens || 0) + (s.usage.cache_creation_input_tokens || 0);
+    u.usd += s.usage.total_cost_usd || 0;
+  }
+  return u;
+}
+const usageText = (u) => `出力 ${kTokens(u.out)}・入力 ${kTokens(u.in)}（うちキャッシュ読み ${kTokens(u.cached)}）`
+  + (u.usd ? `・API 換算 $${u.usd.toFixed(2)}` : "");
+
 const QUIET_WARN = 90;           // seconds without a word from the agent before it is called quiet
 
 // A Claude role at work, from its trace (the window's progress): thinking,
@@ -252,19 +273,35 @@ function liveLines(live) {
   const quiet = Math.round(live.quiet_seconds || 0);
   if (quiet >= QUIET_WARN) badges.push(`応答なし ${quiet} 秒 ⚠`);
   else lines.push(`最後の経過 ${quiet} 秒前`);
-  if (live.errors) badges.push(`エラー ${live.errors} 件`);
+  // A failed tool call (a Read of a file that is not there yet) is the agent's
+  // own business and it carries on: a quiet note. An API retry or error can
+  // stop a role: a warning.
+  if (live.tool_errors) lines.push(`道具の失敗 ${live.tool_errors} 件（ファイルが無い、など。役はそのまま続ける）`);
+  if (live.api_errors) badges.push(`API のエラー・再試行 ${live.api_errors} 件 ⚠`);
   if (live.rate_limit && live.rate_limit !== "allowed") badges.push(`利用枠: ${live.rate_limit}`);
   return { lines, badges };
+}
+
+// How much of its file a role has written so far (the window's progress reads
+// the file as it grows; the roles write in parts).
+function draftText(step, d) {
+  const t = {
+    analyst: () => `書きかけ: 概念 ${d.concepts}・性質 ${d.properties}・必要なこと ${d.requirements}`,
+    definer: () => `書きかけ: 項目 ${d.written} / ${d.items} を記入`,
+    tester: () => `書きかけ: 例 ${d.examples}（項目 ${d.with_examples} / ${d.items}）`,
+    designer: () => `書きかけ: モジュール ${d.written} / ${d.modules} を記入・例 ${d.examples}`,
+  }[step];
+  return t ? t() + (d.stale ? "（書き換えの途中）" : "") : null;
 }
 
 function stageFacts(run) {
   const step = run.now ? run.now.step : null;
   const ended = run.status !== "running";
   const fromRequirements = Boolean(run.has_concepts)
-    || run.steps.some((s) => s.step === "analyst" || s.step === "definer")
-    || ["analyst", "definer"].includes(step);
+    || run.steps.some((s) => ["analyst", "definer", "tester"].includes(s.step))
+    || ["analyst", "definer", "tester"].includes(step);
   const until = run.ledger.find((e) => e.event === "UNTIL");
-  const heldAfter = until ? { analysis: "ana", definition: "def", design: "des" }[until.stage] : null;
+  const heldAfter = until ? { analysis: "ana", definition: "ex", design: "des" }[until.stage] : null;
   const order = STAGES.map((s) => s.id);
   const p = run.products || {};
   const facts = { req: { state: "done", lines: [] } };
@@ -281,18 +318,27 @@ function stageFacts(run) {
       const live = liveLines(run.live);
       f.lines.push(...live.lines);
       f.badges.push(...live.badges);
+      const draft = run.live && run.live.draft ? draftText(st.step, run.live.draft) : null;
+      if (draft) f.lines.push(draft);
     } else if (last && !(last.findings || []).length) f.state = "done";
     else if (last && ended) f.state = "bad";
     else if (last) f.state = "now";
-    const used = sum(rounds.map((r) => (r.usage || {}).output_tokens));
-    if (used) f.lines.push(`出力 約 ${kTokens(used)} トークン`);
+    const used = usageOf(rounds);
+    if (used.rounds) f.lines.push(`トークン: 出力 ${kTokens(used.out)}・入力 ${kTokens(used.in)}`);
     const refused = rounds.filter((r) => (r.findings || []).length).length;
     if (refused) f.badges.push(`関門の指摘で書き直し ${refused} 回`);
     if (st.id === "ana" && p.analysis) {
       f.lines.push(`概念 ${p.analysis.concepts}・性質 ${p.analysis.properties}（例で確かめる ${p.analysis.by_example}）`,
         `必要なこと ${p.analysis.requirements}`);
     }
-    if (st.id === "def" && p.definition) f.lines.push(`項目 ${p.definition.items}・例 ${p.definition.examples}`);
+    if (st.id === "def" && p.definition) f.lines.push(`項目 ${p.definition.items}`);
+    if (st.id === "ex" && p.definition) {
+      const j = p.definition.judged || {};
+      f.lines.push(`例 ${p.definition.examples}`);
+      if (p.definition.examples) {
+        f.lines.push(`値 ${j.equals || 0}・一部 ${j.matches || 0}・条件 ${j.holds || 0}・エラー ${j.raises || 0}`);
+      }
+    }
     if (st.id === "des") {
       if (p.design) f.lines.push(`モジュール ${p.design.modules}`);
       const back = (run.upstream || []).filter((e) => e.event === "BACK_TO_DESIGN").length;
@@ -303,7 +349,7 @@ function stageFacts(run) {
 
   // The modules: green out of all, the one being worked on, the retries.
   const total = p.design ? p.design.modules : null;
-  const green = run.modules.filter((m) => m.state === "green").length;
+  const green = run.modules.filter((m) => m.state === "green" || m.state === "reused").length;
   const work = run.steps.filter((s) => s.step === "attempt" || s.step === "red_gate");
   const imp = { state: "wait", lines: [], badges: [], seconds: sum(work.map((s) => s.seconds)) };
   if (step === "attempt" || step === "red_gate") {
@@ -331,6 +377,17 @@ function stageFacts(run) {
     out.lines.push("起動確認で落ちた");
   }
   facts.out = out;
+
+  // A run that started at the design, from what an earlier run left: those
+  // stages are done, by that run.
+  const from = run.ledger.find((e) => e.event === "FROM" && e.stages);
+  if (from) {
+    const ids = { analysis: "ana", definition: "def", examples: "ex" };
+    for (const stage of from.stages) {
+      const f = facts[ids[stage]];
+      if (f && f.state !== "now") { f.state = "done"; f.lines.unshift(`前の通し ${from.run} のものを使う`); }
+    }
+  }
 
   // A run told to stop after a stage: what comes after it was never meant to run.
   if (heldAfter) for (const id of order.slice(order.indexOf(heldAfter) + 1)) facts[id].state = "held";
@@ -465,13 +522,22 @@ function plannedStages(r) {
 }
 
 const MODULE_TEXT = {
-  green: (m) => `緑（${m.attempts} 回目）`, trying: (m) => `試行中（${m.attempts} 回目）`, red: () => "赤の関門",
+  green: (m) => `緑（${m.attempts} 回目）`, reused: () => "使い回し（緑）", trying: (m) => `試行中（${m.attempts} 回目）`, red: () => "赤の関門",
   exhausted: () => "使い切り", engine: () => "エンジン",
 };
 
 // 2. The design: its modules, what each needs, and how far each has got.
-function mapSource(run) {
-  const mods = run.design.modules;
+// The design being written, before its gate: the designer's file as far as
+// it has got. Shown while the designer writes -- the first design, or the
+// next one after the implementation sent the loop back.
+function draftDesign(run) {
+  const d = run.now && run.now.step === "designer" && run.live && run.live.draft;
+  return d && d.design && d.design.modules.length ? d.design : null;
+}
+
+function mapSource(run, design = run.design) {
+  const mods = design.modules;
+  const drafting = design !== run.design;
   const ids = new Map(mods.map((m, i) => [m.name, `m${i}`]));
   const state = new Map(run.modules.map((m) => [m.module, m]));
   const lines = ["flowchart TD"];
@@ -479,22 +545,26 @@ function mapSource(run) {
   for (const m of mods) {
     const id = ids.get(m.name);
     nodes[id] = m.name;
-    const s = state.get(m.name);
-    const text = s ? (MODULE_TEXT[s.state] || (() => s.state))(s) : "待ち";
+    const s = drafting ? null : state.get(m.name);
+    const text = drafting ? (m.functions.length ? `書いた（例 ${m.examples}）` : "まだ")
+      : s ? (MODULE_TEXT[s.state] || (() => s.state))(s) : "待ち";
     const label = `${esc(m.name)}${m.assembly ? "（組み立て）" : ""}<br/>${text}`;
     lines.push(m.assembly ? `  ${id}[["${label}"]]` : `  ${id}["${label}"]`);
-    lines.push(`  class ${id} ${s ? s.state : "wait"}`);
+    lines.push(`  class ${id} ${s ? s.state : drafting && m.functions.length ? "drafted" : "wait"}`);
   }
+  if (drafting) lines.push('  note["書きかけの設計（関門の前）"]', "  class note wait");
   for (const m of mods) {
     for (const dep of m.depends_on) if (ids.has(dep)) lines.push(`  ${ids.get(dep)} --> ${ids.get(m.name)}`);
   }
   lines.push(
     "  classDef green fill:#e3f3e6,stroke:#1a7f37,color:#14532d",
+    "  classDef reused fill:#e3f3e6,stroke:#1a7f37,color:#14532d,stroke-dasharray:4 3",
     "  classDef trying fill:#2457c5,stroke:#2457c5,color:#fff",
     "  classDef red fill:#e8eefc,stroke:#2457c5,color:#1e3a8a",
     "  classDef exhausted fill:#fde7e7,stroke:#c62828,color:#7f1d1d",
     "  classDef engine fill:#fde7e7,stroke:#c62828,color:#7f1d1d",
-    "  classDef wait fill:none,stroke:#999,color:#777");
+    "  classDef wait fill:none,stroke:#999,color:#777",
+    "  classDef drafted fill:none,stroke:#2457c5,color:#1e3a8a,stroke-dasharray:4 3");
   return { source: lines.join("\n"), nodes };
 }
 
@@ -613,7 +683,7 @@ function fileViews(app, run, step, previous) {
       views.push(lazy(FILE_LABEL[f], async () => recordsTable(await get1(rel))));
     } else {
       // output.txt is what a Claude role printed, or what the test framework did.
-      const label = f === "output.txt" ? (["analyst", "definer", "designer"].includes(step.step) ? "役の出力" : "テストの出力")
+      const label = f === "output.txt" ? (["analyst", "definer", "tester", "designer"].includes(step.step) ? "役の出力" : "テストの出力")
         : FILE_LABEL[f] || f;
       views.push(lazy(label, async () => text(await get1(rel))));
     }
@@ -665,7 +735,10 @@ function headParts(app, run) {
     h("div", { class: "row note" },
       "この段の経過 ", elapsed(run.now.since), " ・ 通しの開始から ", elapsed(run.started),
       " ・ プロセスは動いています（止まれば「中断」と出ます）")) : null;
-  return [h("h3", {}, `通し ${run.id}`), now,
+  const total = usageOf(run.steps);
+  const spent = total.rounds ? h("p", { class: "note" }, `この通しで Claude の役が使ったトークン（${total.rounds} 回分）: `,
+    usageText(total), run.status === "running" && run.live && run.live.running ? " ＋ いま動いている役の分" : "") : null;
+  return [h("h3", {}, `通し ${run.id}`), now, spent,
     h("div", { class: "row" }, chip(STATUS[run.status] || [run.status, "info"]),
       run.stage ? h("span", {}, `戻り先・結果: ${run.stage}`) : null,
       run.status === "running" ? h("button", {
@@ -700,7 +773,7 @@ function drawInspector(app, run, name) {
       fileViews(app, run, s, attempts[i - 1])))) : h("p", { class: "note" }, "まだ試行していません。"));
 }
 
-const UPSTREAM = { ANALYST: "概念ファイル（analyst）", DEFINER: "定義（definer）", DESIGNER: "設計（designer）" };
+const UPSTREAM = { ANALYST: "概念ファイル（analyst）", DEFINER: "定義（definer）", TESTER: "例（tester）", DESIGNER: "設計（designer）" };
 
 function drawUpstream(app, run) {
   if (!run.upstream || !run.upstream.length) return null;
@@ -835,16 +908,17 @@ async function drawApp(running) {
   }
   view.names = run.design ? run.design.modules.map((m) => m.name) : [];
 
-  if (changed("head", [run.status, run.now, run.reason, run.stage, run.started, run.live])) {
+  if (changed("head", [run.status, run.now, run.reason, run.stage, run.started, run.live, usageOf(run.steps)])) {
     put(p.head, headParts(app, run));
   }
   if (changed("flow", [run.status, run.stage, run.now, run.steps, run.modules, run.products, run.output, run.live,
     run.upstream, run.has_concepts, run.ledger.filter((e) => ["UNTIL", "OUTPUT_FAILED"].includes(e.event))])) {
     put(p.flow, [h("h3", {}, "ループ", h("span", { class: "note" }, "  周を押すと、その中の流れが開きます")), roundTrack(run)]);
   }
-  if (run.design) {
-    const { source, nodes } = mapSource(run);
-    drawIn(view.frames.map, source, nodes);
+  const draft = draftDesign(run);
+  if (run.design || draft) {
+    const { source, nodes } = mapSource(run, draft || run.design);
+    drawIn(view.frames.map, source, draft ? {} : nodes);
   } else {
     drawIn(view.frames.map, 'flowchart TD\n  w["設計はまだありません"]');
   }

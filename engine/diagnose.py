@@ -76,6 +76,8 @@ def red_gate(design, module: dict, run: dict) -> Verdict:
                        facts={"output": _tail(run.get("output", ""))})
     for ex in design.examples(module):
         ok = checks[ex["id"]]["ok"]
+        if design.is_condition(ex):
+            continue
         if design.observes_a_result(ex) and ok:
             return Verdict(ENGINE, f"{ex['id']} passes against the stub -- a sentinel collides")
         if not design.observes_a_result(ex) and not ok:

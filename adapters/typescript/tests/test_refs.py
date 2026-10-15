@@ -46,7 +46,7 @@ def check(tmp_path, design, module, source):
 def test_the_correct_apps_pass(tmp_path, design, folder):
     for p in sorted((HERE / folder).glob("*.ts")):
         found = check(tmp_path, design, p.stem, p.read_text(encoding="utf-8"))
-        assert found == {"undeclared": [], "forbidden": []}, (p.name, found)
+        assert (found["undeclared"], found["forbidden"]) == ([], []), (p.name, found)
 
 
 @pytest.mark.parametrize("source, refused", [
@@ -99,8 +99,52 @@ export function f(xs: ReadonlyArray<number>, now: number): T.GameState {
            last_update: now } as unknown as T.GameState;
 }
 """
-    assert check(tmp_path, IDLE, "save", source) == {"undeclared": [], "forbidden": []}
+    found = check(tmp_path, IDLE, "save", source)
+    assert (found["undeclared"], found["forbidden"]) == ([], [])
 
 
 def test_a_file_that_does_not_parse_is_left_to_its_tests(tmp_path):
     assert "error" in facts(tmp_path, "export function f( {")
+
+
+# ---- a condition (FORMATS 4, "holds"): one function, read like a module ------
+
+def condition(tmp_path: Path, source: str, arity: int):
+    f = tmp_path / "c.ts"
+    f.write_text(emit.condition_file(source), encoding="utf-8")
+    proc = subprocess.run(emit.condition_command(TOOLS, f), capture_output=True, text=True, encoding="utf-8")
+    return emit.check_condition(json.loads(proc.stdout.strip().splitlines()[-1]), arity)
+
+
+def test_a_condition_is_one_function_that_uses_only_the_tools_for_computing(tmp_path):
+    assert condition(tmp_path, "(s, a) => a.player.x === s.player.x", 2) is None
+    assert condition(tmp_path, "function (m) { return m.cells.every((c) => Math.abs(c.x) <= 4); }", 1) is None
+    assert "does not parse" in condition(tmp_path, "(a) => a.x ===", 1)
+    assert "not one JavaScript function" in condition(tmp_path, "a.x === 1", 1)
+    assert "not one JavaScript function" in condition(tmp_path, "(a) => true); export const x = (1", 1)
+    assert "takes 1 parameters" in condition(tmp_path, "(a) => true", 2)
+    assert "Math.random" in condition(tmp_path, "(a) => Math.random() < 2", 1)
+    assert "Date" in condition(tmp_path, "(a) => Date.now() > 0", 1)
+    assert "fetch" in condition(tmp_path, "(a) => { fetch('x'); return true; }", 1)
+
+
+
+# ---- an import it never uses (DECISIONS 46) ----------------------------------
+
+def test_an_import_whose_names_are_never_used_is_reported_unused(tmp_path):
+    source = ('import * as T from "../loop_types";\n'
+              'import * as m_economy from "./economy";\n'
+              'import { a, b } from "./catalog";\n'
+              'export function f(x: T.GameState): number { return b(x); }\n')
+    found = check(tmp_path, IDLE, "format", source)
+    assert found["unused"] == ["./economy"]
+    assert set(found["undeclared"]) == {"./economy", "./catalog"}
+
+
+def test_an_unused_import_line_can_be_taken_out_and_nothing_else():
+    source = ('import * as T from "../loop_types";\n'
+              'import * as m_economy from "./economy";\n'
+              'export const f = 1;\n')
+    assert emit.strip_imports(source, ["./economy"]) == 'import * as T from "../loop_types";\nexport const f = 1;\n'
+    # Not a line of its own: left as it is, and refused as it stands.
+    assert emit.strip_imports('import {\n  a } from "./economy";\n', ["./economy"]) is None

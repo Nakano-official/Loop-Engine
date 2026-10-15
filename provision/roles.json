@@ -11,17 +11,23 @@
     "work      read: may read the workspaces under /srv/loop/work. Nobody but",
     "          runner writes there -- every role writes to its own out/ only,",
     "          and the window copies what passes into the workspace",
-    "login     ssh-window: may log in over SSH, into loop-window and nothing else"
+    "login     ssh-window: may log in over SSH, into loop-window and nothing else",
+    "code      claude roles: true -- may hand code to calc through code-mcp (the run",
+    "          tool), and nothing else sideways (DECISIONS 45)",
+    "claude_model  claude roles: the model the launcher starts it with",
+    "calc      the one role code-mcp may run code as: no network, no workspace,",
+    "          started by the roles with code, never by runner"
   ],
   "roles": {
-    "runner":   {"uid": 1001, "model": null,     "invoked": false, "egress": "none", "login": "ssh-window"},
-    "solver":   {"uid": 1002, "model": "local",  "invoked": true,  "egress": {"loopback_tcp": [8080]}},
-    "critic":   {"uid": 1004, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write"},
-    "tester":   {"uid": 1005, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
-    "exec":     {"uid": 1006, "model": null,     "invoked": true,  "egress": "none", "work": "read"},
-    "definer":  {"uid": 1007, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
-    "designer": {"uid": 1008, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
-    "analyst":  {"uid": 1009, "model": "claude", "invoked": true,  "egress": "open", "tools": "Read Write Edit"},
+    "runner":   {"uid": 1001, "model": null, "invoked": false, "egress": "none", "login": "ssh-window"},
+    "solver":   {"uid": 1002, "model": "local", "invoked": true, "egress": {"loopback_tcp": [8080]}},
+    "critic":   {"uid": 1004, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write", "claude_model": "claude-sonnet-5-5"},
+    "tester":   {"uid": 1005, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "exec":     {"uid": 1006, "model": null, "invoked": true, "egress": "none", "work": "read"},
+    "definer":  {"uid": 1007, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "designer": {"uid": 1008, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "analyst":  {"uid": 1009, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "calc":     {"uid": 1010, "model": null, "invoked": false, "egress": "none", "calc": true},
     "llm":      {"uid": null, "system": true, "model": null, "invoked": false, "egress": "none"}
   }
 }

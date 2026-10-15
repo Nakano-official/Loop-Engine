@@ -140,9 +140,15 @@ class Run:
         return "interrupted"
 
     def modules(self) -> list[dict]:
-        """Per module, in the order the ledger met them: attempts and where it ended."""
+        """Per module, in the order the ledger met them: attempts and where it
+        ended -- under the latest design. A design written again after the
+        implementation sent the loop back starts its modules afresh, with
+        attempts of their own; what the one before it did is not this one's."""
         mods: dict[str, dict] = {}
         for e in self.ledger():
+            if e.get("event") == "DESIGN_ROUND":
+                mods = {}
+                continue
             name = e.get("module")
             if not name:
                 continue
@@ -154,8 +160,10 @@ class Run:
                 m["attempts"] = e.get("n", m["attempts"])
                 m["reason"] = e.get("reason", "")
                 m["state"] = "trying"
+            elif e["event"] == "REUSED":
+                m["reason"] = "前の設計で緑になった実装を、そのまま使った"
             elif e["event"] == "GREEN":
-                m["state"] = "green"
+                m["state"] = "reused" if e.get("reused") else "green"
             elif e["event"] == "EXHAUSTED":
                 m["state"] = "exhausted"
                 m["reason"] = e.get("reason", "")
@@ -165,8 +173,8 @@ class Run:
         return list(mods.values())
 
     def upstream(self) -> list[dict]:
-        """The definer's and designer's rounds and every return to the design."""
-        keep = {"ANALYST", "DEFINER", "DESIGNER", "DESIGN_ROUND", "BACK_TO_DESIGN"}
+        """The upstream roles' rounds and every return to the design."""
+        keep = {"ANALYST", "DEFINER", "TESTER", "DESIGNER", "DESIGN_ROUND", "BACK_TO_DESIGN"}
         return [{k: v for k, v in e.items() if k != "t"} for e in self.ledger() if e.get("event") in keep]
 
     def now(self) -> dict | None:
@@ -215,7 +223,7 @@ class Run:
                 began[(e.get("step"), e.get("module"), e.get("n"))] = e.get("t")
                 continue
             step = {"ATTEMPT": "attempt", "RED_GATE": "red_gate", "ANALYST": "analyst", "DEFINER": "definer",
-                    "DESIGNER": "designer"}.get(e.get("event"))
+                    "TESTER": "tester", "DESIGNER": "designer"}.get(e.get("event"))
             if not step:
                 continue
             start = began.get((step, e.get("module"), e.get("n")))
@@ -244,7 +252,11 @@ class Run:
         d = load("definition.json")
         if d:
             items = d.get("items", [])
-            out["definition"] = {"items": len(items), "examples": sum(len(i.get("examples", [])) for i in items)}
+            exs = [e for i in items for e in i.get("examples", []) if isinstance(e, dict)]
+            out["definition"] = {"items": len(items), "examples": len(exs),
+                                 # how each example is judged (FORMATS 4): equals, matches, holds, raises
+                                 "judged": {k: sum(1 for e in exs if k in (e.get("then") or {}))
+                                            for k in ("equals", "matches", "holds", "raises")}}
         ds = load("design.json")
         if ds:
             out["design"] = {"modules": len(ds.get("modules", []))}
@@ -257,12 +269,7 @@ class Run:
             d = json.loads((self.dir / "design.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        mods = d.get("modules", [])
-        by_id = {m.get("id"): m.get("name") for m in mods}
-        return {"target": d.get("target", {}), "modules": [
-            {"id": m.get("id"), "name": m.get("name"), "assembly": m.get("kind") == "assembly",
-             "depends_on": [by_id.get(x, x) for x in m.get("depends_on", [])],
-             "functions": sorted((m.get("functions") or {}).keys())} for m in mods]}
+        return design_picture(d)
 
     def summary(self) -> dict:
         out = self.outcome() or {}
@@ -271,6 +278,47 @@ class Run:
                 "output": bool(self.output()), "modules": self.modules(), "upstream": self.upstream(),
                 "now": self.now(), "started": self.started(),
                 "decision": self.app.decision(self.id)}
+
+
+def design_picture(d: dict) -> dict:
+    mods = [m for m in d.get("modules", []) if isinstance(m, dict)]
+    by_id = {m.get("id"): m.get("name") for m in mods}
+    return {"target": d.get("target", {}), "modules": [
+        {"id": m.get("id"), "name": m.get("name"), "assembly": m.get("kind") == "assembly",
+         "depends_on": [by_id.get(x, x) for x in m.get("depends_on", []) or []],
+         "functions": sorted((m.get("functions") or {}).keys()),
+         "examples": len(m.get("examples") or [])} for m in mods]}
+
+
+def draft_summary(role: str, text: str | None) -> dict | None:
+    """What an upstream role has written so far (the window's progress), counted
+    for a person: how much of the file is there. None when it is not there or
+    not JSON at this moment (an Edit half-way)."""
+    try:
+        d = json.loads(text) if text else None
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    def lst(x):
+        return x if isinstance(x, list) else []
+    if role == "analyst":
+        cs = [c for c in lst(d.get("concepts")) if isinstance(c, dict)]
+        return {"concepts": len(cs), "properties": sum(len(lst(c.get("properties"))) for c in cs),
+                "requirements": len(lst(d.get("requirements")))}
+    if role == "definer":
+        items = [i for i in lst(d.get("items")) if isinstance(i, dict)]
+        return {"items": len(items), "written": sum(1 for i in items if str(i.get("statement") or "").strip())}
+    if role == "tester":
+        by_item = d.get("items") if isinstance(d.get("items"), dict) else {}
+        return {"items": len(by_item), "with_examples": sum(1 for v in by_item.values() if lst(v)),
+                "examples": sum(len(lst(v)) for v in by_item.values())}
+    if role == "designer":
+        pic = design_picture(d)
+        mods = pic["modules"]
+        return {"modules": len(mods), "written": sum(1 for m in mods if m["functions"]),
+                "examples": sum(m["examples"] for m in mods), "design": pic}
+    return None
 
 
 @dataclass(frozen=True)

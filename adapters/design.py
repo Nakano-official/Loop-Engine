@@ -18,6 +18,7 @@ them again; it fails loudly where a gate should have.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -145,7 +146,7 @@ class Design:
 
         for module in self.data["modules"]:
             for ex in self.examples(module):
-                for v in ex["then"].get("equals", []):
+                for v in ex["then"].get("equals", []) + ex["then"].get("matches", []):
                     walk(v)
         return found
 
@@ -168,6 +169,23 @@ class Design:
                 "unused_enum": {name: [v for v in decl["enum"] if v not in leaves["string"]]
                                 for name, decl in self.types.items() if "enum" in decl}}
 
+    def fingerprint(self, module: dict) -> str:
+        """What an implementation of `module` was made against: its contract
+        and docs, its examples, the contracts of what it depends on, and the
+        types, errors and fixtures, in this language. Two designs that agree
+        on all of it can share the implementation -- one that went green
+        under the first is green under the second, and the loop need not
+        write it again (DECISIONS 46). Anything else that changed (another
+        module's docs or examples) does not reach this module's tests."""
+        deps = {self.modules[m]["name"]: {fn: {k: v for k, v in sig.items() if k != "doc"}
+                                          for fn, sig in self.modules[m]["functions"].items()}
+                for m in module["depends_on"]}
+        blob = {"language": self.data["target"]["language"], "name": module["name"], "kind": module["kind"],
+                "functions": module["functions"], "deps": deps,
+                "examples": [{k: v for k, v in ex.items() if k != "id"} for ex in self.examples(module)],
+                "types": self.types, "errors": self.errors, "fixtures": self.fixtures}
+        return hashlib.sha256(json.dumps(blob, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
     def observes_a_result(self, ex: dict) -> bool:
         """Whether an example looks at something a call returned. Only those
         must fail against a stub; one that observes an input it passed in
@@ -177,3 +195,12 @@ class Design:
         if "raises" in ex["then"]:
             return True
         return any(name in called for name in ex["then"]["observe"])
+
+    @staticmethod
+    def is_condition(ex: dict) -> bool:
+        """Whether an example is judged by a condition ("holds", FORMATS 4).
+        The red gate cannot ask it to fail against a stub: a condition that
+        relates two results -- the position after a step into a wall is the
+        position before it -- holds for a stub too, whose results are all the
+        same sentinels. It is right to; the stub is not the comparison."""
+        return "holds" in ex["then"]
