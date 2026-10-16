@@ -1,6 +1,6 @@
 """Briefs: what a role is told (SYSTEM 5). A part, not a flow.
 
-    implement(design, module, feedback) -> str     the solver's brief for one module
+    implement(design, module, feedback, start) -> str   the solver's brief for one module
 
 A brief is the only input a role has, so what goes into it is decided here,
 in code, and fixed by tests -- DESIGN 5's rule in particular: the
@@ -69,7 +69,21 @@ def what_it_does(doc: str | None) -> str:
     return text[: min(cut) + 1] if cut else text
 
 
-def implement(d, module: dict, feedback: tuple = ()) -> str:
+# What the file the solver is given is (DECISIONS 46). Not the stub every
+# time: an attempt that failed is fixed where it failed, and a module whose
+# design changed starts from what was green under the design before.
+START = {
+    None: ["The functions, their parameters and their return types are fixed by the contract: the file",
+           "you are given already has them, returning placeholder values. Replace the bodies."],
+    "previous": ["The file you are given is YOUR PREVIOUS ATTEMPT. Do not start again: fix it where it",
+                 "failed (below, under \"Your previous attempt failed\") and keep everything that works."],
+    "earlier": ["The file you are given was green under an EARLIER DESIGN of this module. The design has",
+                "changed since: change the file where the contract, the docs or the examples below now ask",
+                "for something else, and keep everything that still fits."],
+}
+
+
+def implement(d, module: dict, feedback: tuple = (), start: str | None = None) -> str:
     language = d.data["target"]["language"]
     emit = _adapter(language)
     path = f"app/{module['name']}{emit.EXTENSION}"
@@ -83,8 +97,7 @@ def implement(d, module: dict, feedback: tuple = ()) -> str:
     parts = [
         f"# Task",
         f"Implement the module `{module['name']}` ({module['id']}) so that every example below holds.",
-        "The functions, their parameters and their return types are fixed by the contract: the file",
-        "you are given already has them, returning placeholder values. Replace the bodies.",
+        *START[start],
         "",
         "# What each function must do",
     ]

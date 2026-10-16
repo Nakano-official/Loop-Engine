@@ -3,8 +3,7 @@
     check_concepts(concepts)                    -> [Finding]   back to requirements analysis
     check_draft(draft, platform, concepts)      -> [Finding]   back to the definer
     complete(draft, platform)                   -> definition  the machine's part added
-    with_examples(definition, examples)         -> definition  the tester's examples put in
-    check_examples(concepts, definition, ex)    -> [Finding]   back to the tester
+    check_design_coverage(concepts, examples)   -> [Finding]   back to the designer (the assembly)
     check_definition(definition)                -> [Finding]
     check_design(design, definition)            -> [Finding]
 
@@ -32,7 +31,6 @@ from design import PRIMITIVES, is_ref, parse_type  # noqa: E402
 
 ANALYSIS = "要求分析"
 DEFINITION = "要件定義"
-EXAMPLES = "定義の例"
 DESIGN = "モジュール設計"
 
 PLATFORM_DIR = Path(__file__).resolve().parents[1] / "adapters" / "platforms"
@@ -326,8 +324,8 @@ def check_definition(d: Any) -> list[Finding]:
     items = d.get("items", [])
     ids = []
     examples = []
-    # Which items need examples is the coverage gate's to say (check_examples):
-    # an item about how the app looks or feels is checked by using it.
+    # A definition from requirements has no examples of its own: the
+    # assembly's examples check its items (check_design_coverage).
     for item in items:
         iid = item.get("id", "?")
         ids.append(iid)
@@ -338,11 +336,12 @@ def check_definition(d: Any) -> list[Finding]:
             examples.append(ex)
     _ids_ok(g, ids, "items")
     plat = platform(str(d.get("shell", {}).get("platform")))
-    called = g.examples_ok(examples, interface, types, errors, {}, "examples",
-                           conditions=bool(plat) and plat["language"] == "typescript")
-    for name in interface:
-        if name not in called:
-            g.bad(f"interface.{name}", "no example calls it")
+    # A definition's own examples, where it has any (one written by hand). From
+    # requirements it has none: the assembly's examples check the items, and
+    # the design gate asks that every function of the interface is called
+    # (DECISIONS 48).
+    g.examples_ok(examples, interface, types, errors, {}, "examples",
+                  conditions=bool(plat) and plat["language"] == "typescript")
     shell = d.get("shell", {})
     if shell.get("platform") not in PLATFORMS:
         g.bad("shell.platform", f"{shell.get('platform')!r} is not one of {sorted(PLATFORMS)}")
@@ -630,7 +629,8 @@ def _refs(concepts: dict) -> tuple[dict, dict]:
 # The definer decides what to make and nothing else: the summary, the app's
 # state, its errors, and item by item what must hold, each answering to the
 # concept file. The platform's types and functions are the machine's to put in
-# (complete), and the examples the tester's (check_examples). Copied out by a
+# (complete), and the examples the designer's, with the assembly (DECISIONS 48,
+# check_design_coverage). Copied out by a
 # model, the platform's part cost it nothing to decide and could only go wrong;
 # written by the definer, the examples were two thirds of a definition and most
 # of its thinking (2026-10-15: half an hour, a whole screen worked out by hand
@@ -665,7 +665,7 @@ def complete(draft: dict, platform_name: str) -> dict:
 def check_draft(draft: Any, platform_name: str, concepts: dict) -> list[Finding]:
     """The definer's gate: what it wrote, and the definition the machine makes
     of it. Every property and requirement the concept file checks by example
-    is answered to by an item -- the tester then writes examples that show it."""
+    is answered to by an item -- the designer then writes examples that show it."""
     g = _Gate(DEFINITION)
     if not isinstance(draft, dict) or draft.get("format") != "loop/definition@1":
         g.bad("format", "not a loop/definition@1 document")
@@ -737,8 +737,36 @@ def check_draft(draft: Any, platform_name: str, concepts: dict) -> list[Finding]
     return g.findings
 
 
+def check_design_coverage(concepts: dict, examples: list) -> list[Finding]:
+    """The coverage gate, on the design (DECISIONS 48): every property and
+    requirement the concept file checks by example is named in the
+    "concepts" field of one of the assembly's examples -- the tests the
+    finished app is held to -- and nothing else is named there."""
+    g = _Gate(DESIGN)
+    by_id, active = _refs(concepts)
+    shown = set()
+    for ex in examples:
+        refs = ex.get("concepts", []) if isinstance(ex, dict) else []
+        if not isinstance(refs, list):
+            g.bad(f"examples[{ex.get('id')}].concepts", "a list of property and requirement ids")
+            continue
+        for ref in refs:
+            if ref not in by_id:
+                g.bad(f"examples[{ex.get('id')}].concepts", f"{ref!r} is not a property or requirement of the concept file")
+            elif ref not in active:
+                g.bad(f"examples[{ex.get('id')}].concepts", f"{ref!r} is retired")
+            else:
+                shown.add(ref)
+    for ref, x in active.items():
+        if x.get("check") == "example" and ref not in shown:
+            g.bad(f"concepts.{ref}", f"「{x.get('text', '')}」 is to be checked by examples, and no example of the "
+                                     "assembly shows it: add one that does, and name it in its concepts")
+    return g.findings
+
+
 def with_examples(definition: dict, examples: Any) -> dict:
-    """The definition with the tester's examples in its items."""
+    """The definition with examples put in its items (a definition written
+    with its examples, as before DECISIONS 48)."""
     by_item = examples.get("items") if isinstance(examples, dict) else None
     by_item = by_item if isinstance(by_item, dict) else {}
     items = [{**item, "examples": list(by_item.get(item.get("id")) or [])}
@@ -746,42 +774,93 @@ def with_examples(definition: dict, examples: Any) -> dict:
     return {**definition, "items": items}
 
 
-def check_examples(concepts: dict, definition: dict, examples: Any) -> list[Finding]:
-    """The tester's gate: the examples it wrote, in the definition they belong
-    to. Every item that answers to something checked by example has examples;
-    an item only about how the app looks or feels may have none. Whether a
-    condition is strong enough is not decided here: the loop's evaluation sees
-    what a weak one let through (DECISIONS 44)."""
-    g = _Gate(EXAMPLES)
-    if not isinstance(examples, dict) or examples.get("format") != "loop/examples@1" \
-            or not isinstance(examples.get("items"), dict):
-        g.bad("format", "not a loop/examples@1 document: {format, items: {item id: [example, ...]}}")
-        return g.findings
-    ids = {item.get("id") for item in definition.get("items", [])}
-    for iid, exs in examples["items"].items():
-        if iid not in ids:
-            g.bad(f"items.{iid}", "is not an item of the definition")
-        elif not isinstance(exs, list):
-            g.bad(f"items.{iid}", "a list of examples")
-    if g.findings:
-        return g.findings
-    merged = with_examples(definition, examples)
-    g.findings += [Finding(EXAMPLES, f.where, f.message) for f in check_definition(merged)]
-    _, active = _refs(concepts)
-    for item in merged["items"]:
-        need = [r for r in item.get("concepts", []) if active.get(r, {}).get("check") == "example"]
-        if need and not item["examples"]:
-            g.bad(f"items.{item['id']}", f"answers to {', '.join(need)}, which examples must show: give it examples")
-    return g.findings
+def conditions_in(examples: list) -> dict:
+    """Every condition among some examples, for the window to read
+    (check-conditions): {example id: {"source": ..., "arity": how many values it is given}}."""
+    return {ex["id"]: {"source": ex["then"]["holds"], "arity": len(ex["then"].get("observe") or [])}
+            for ex in examples
+            if isinstance(ex, dict) and isinstance(ex.get("then"), dict)
+            and isinstance(ex["then"].get("holds"), str)}
 
 
 def conditions(definition: dict) -> dict:
-    """Every condition in a definition, for the window to read (check-conditions):
-    {example id: {"source": ..., "arity": how many values it is given}}."""
-    return {ex["id"]: {"source": ex["then"]["holds"], "arity": len(ex["then"].get("observe") or [])}
-            for item in definition.get("items", []) for ex in item.get("examples", [])
-            if isinstance(ex, dict) and isinstance(ex.get("then"), dict)
-            and isinstance(ex["then"].get("holds"), str)}
+    """Every condition among a definition's examples."""
+    return conditions_in([ex for item in definition.get("items", []) for ex in item.get("examples", [])])
+
+
+# ---- written in parts (DECISIONS 47) ------------------------------------------
+#
+# A role's context grows with every turn it takes: each one reads the brief and
+# everything said since. A designer writing a whole design read 8.3 million
+# cached tokens in 39 turns -- most of it the same text again. So it writes a
+# plan (the modules and their contracts) and then one module per call, each
+# from a brief with what that part needs. The machine puts the parts together,
+# and the gates below hold each part on its own.
+
+def plan_of(design: dict) -> dict:
+    """A design as its plan: every module with its contract and what each
+    function does (the first sentence of its doc), no examples, no fixtures."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from briefs import what_it_does
+    plan = {k: v for k, v in design.items() if k not in ("modules", "fixtures")}
+    plan["modules"] = [{**m, "examples": [],
+                        "functions": {fn: {**sig, "doc": what_it_does(sig.get("doc"))}
+                                      for fn, sig in m.get("functions", {}).items()}}
+                       for m in design.get("modules", [])]
+    return plan
+
+
+def check_plan(plan: Any, definition: dict) -> list[Finding]:
+    """The design's plan: everything the design gate asks of modules,
+    contracts, dependencies and the assembly -- the definition's examples
+    already run against the assembly's contract -- except the modules'
+    own examples, which come with each module."""
+    if isinstance(plan, dict):
+        extra = [m.get("id") for m in plan.get("modules", []) if isinstance(m, dict) and m.get("examples")]
+        if extra or plan.get("fixtures"):
+            return [Finding(DESIGN, "modules", "a plan has no examples or fixtures yet: they are written with each "
+                                               "module, after the plan")]
+    return [f for f in check_design(plan, definition) if f.message != "no example calls it"]
+
+
+MODULE_KEYS = {"functions", "examples", "fixtures"}
+
+
+def with_module(design: dict, name: str, part: Any) -> dict:
+    """The design with one module's docs, examples and fixtures put in."""
+    out = json.loads(json.dumps(design))
+    m = next(x for x in out["modules"] if x.get("name") == name)
+    for fn, sig in (part.get("functions") or {}).items():
+        if fn in m["functions"] and isinstance(sig, dict):
+            m["functions"][fn]["doc"] = sig.get("doc")
+    m["examples"] = list(part.get("examples") or [])
+    out["fixtures"] = {**(out.get("fixtures") or {}), **(part.get("fixtures") or {})}
+    return out
+
+
+def check_module(design: dict, definition: dict, name: str, part: Any) -> list[Finding]:
+    """One module, from one designer call: its docs (how) for exactly its
+    functions, its examples, its fixtures -- held by the design gate, on this
+    module and what it adds."""
+    g = _Gate(DESIGN)
+    if not isinstance(part, dict) or set(part) - MODULE_KEYS:
+        g.bad(name, "a module part is {functions: {name: {doc}}, examples: [...], fixtures?: {...}}")
+        return g.findings
+    m = next(x for x in design["modules"] if x.get("name") == name)
+    fns = part.get("functions") if isinstance(part.get("functions"), dict) else {}
+    if set(fns) != set(m["functions"]):
+        g.bad(f"modules[{m['id']}].functions", f"write the doc of exactly {sorted(m['functions'])} -- the plan's")
+    for fn, sig in fns.items():
+        if not (isinstance(sig, dict) and set(sig) == {"doc"}):
+            g.bad(f"modules[{m['id']}].functions.{fn}", "only its doc: the contract is the plan's and stays")
+    for fx, value in (part.get("fixtures") or {}).items():
+        if fx in (design.get("fixtures") or {}) and design["fixtures"][fx] != value:
+            g.bad(f"fixtures.{fx}", "another module already has a fixture by this name: choose another")
+    if g.findings:
+        return g.findings
+    merged = with_module(design, name, part)
+    mine = (f"modules[{m['id']}]",) + tuple(f"fixtures.{fx}" for fx in (part.get("fixtures") or {}))
+    return [f for f in check_design(merged, definition) if f.where.startswith(mine)]
 
 
 def check_files(design_path: Path | str) -> list[Finding]:

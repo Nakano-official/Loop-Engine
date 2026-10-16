@@ -227,7 +227,6 @@ const STAGES = [
   { id: "req", name: "要求", who: "人が書く" },
   { id: "ana", name: "分析", who: "analyst（Claude・箱）", step: "analyst", fault: "要求分析" },
   { id: "def", name: "定義", who: "definer（Claude・箱）", step: "definer", fault: "要件定義" },
-  { id: "ex", name: "例", who: "tester（Claude・箱）", step: "tester", fault: "定義の例" },
   { id: "des", name: "設計", who: "designer（Claude・箱）", step: "designer", fault: "モジュール設計" },
   { id: "imp", name: "実装", who: "solver（9B）と exec・箱", fault: "実装" },
   { id: "out", name: "出力", who: "build-app と起動確認・箱" },
@@ -235,7 +234,7 @@ const STAGES = [
 const STAGE_STATE = {
   done: "済み", now: "いま", wait: "待ち", skip: "使わない", bad: "ここで止まった", held: "指定で止めた",
 };
-const JUMP = { ana: "sec-upstream", def: "sec-upstream", ex: "sec-upstream", des: "sec-upstream", imp: "sec-modules", out: "sec-out" };
+const JUMP = { ana: "sec-upstream", def: "sec-upstream", des: "sec-upstream", imp: "sec-modules", out: "sec-out" };
 
 const sum = (xs) => xs.reduce((a, b) => a + (b || 0), 0);
 const kTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n));
@@ -301,7 +300,7 @@ function stageFacts(run) {
     || run.steps.some((s) => ["analyst", "definer", "tester"].includes(s.step))
     || ["analyst", "definer", "tester"].includes(step);
   const until = run.ledger.find((e) => e.event === "UNTIL");
-  const heldAfter = until ? { analysis: "ana", definition: "ex", design: "des" }[until.stage] : null;
+  const heldAfter = until ? { analysis: "ana", definition: "def", design: "des" }[until.stage] : null;
   const order = STAGES.map((s) => s.id);
   const p = run.products || {};
   const facts = { req: { state: "done", lines: [] } };
@@ -332,15 +331,13 @@ function stageFacts(run) {
         `必要なこと ${p.analysis.requirements}`);
     }
     if (st.id === "def" && p.definition) f.lines.push(`項目 ${p.definition.items}`);
-    if (st.id === "ex" && p.definition) {
-      const j = p.definition.judged || {};
-      f.lines.push(`例 ${p.definition.examples}`);
-      if (p.definition.examples) {
-        f.lines.push(`値 ${j.equals || 0}・一部 ${j.matches || 0}・条件 ${j.holds || 0}・エラー ${j.raises || 0}`);
-      }
-    }
+
     if (st.id === "des") {
-      if (p.design) f.lines.push(`モジュール ${p.design.modules}`);
+      if (p.design) {
+        const j = p.design.judged || {};
+        f.lines.push(`モジュール ${p.design.modules}・例 ${p.design.examples || 0}`);
+        if (p.design.examples) f.lines.push(`値 ${j.equals || 0}・一部 ${j.matches || 0}・条件 ${j.holds || 0}・エラー ${j.raises || 0}`);
+      }
       const back = (run.upstream || []).filter((e) => e.event === "BACK_TO_DESIGN").length;
       if (back) f.badges.push(`実装から設計へ戻った ${back} 回`);
     }
@@ -382,7 +379,7 @@ function stageFacts(run) {
   // stages are done, by that run.
   const from = run.ledger.find((e) => e.event === "FROM" && e.stages);
   if (from) {
-    const ids = { analysis: "ana", definition: "def", examples: "ex" };
+    const ids = { analysis: "ana", definition: "def" };
     for (const stage of from.stages) {
       const f = facts[ids[stage]];
       if (f && f.state !== "now") { f.state = "done"; f.lines.unshift(`前の通し ${from.run} のものを使う`); }
@@ -785,8 +782,10 @@ function drawUpstream(app, run) {
     if (e.event === "DESIGN_ROUND") return h("li", {}, chip(["設計で実装へ", "info"]), ` ${e.round + 1} 回目の設計`);
     const ok = !e.findings || !e.findings.length;
     const step = e.dir ? run.steps.find((s) => s.dir === e.dir) : null;
+    // A role writing in parts (DECISIONS 47): which part this round was.
+    const part = e.part ? ` ${e.part === "plan" ? "計画" : e.part === "calls" ? "未呼び出しの関数" : e.part}` : "";
     return h("li", {}, chip([UPSTREAM[e.event] || e.event, ok ? "ok" : "bad"]),
-      ` ${e.n} 回目: `, ok ? "関門を通った" : `関門の指摘 ${e.findings.length} 件`,
+      `${part} ${e.n} 回目: `, ok ? "関門を通った" : `関門の指摘 ${e.findings.length} 件`,
       step && step.seconds != null ? h("span", { class: "note" }, `（${step.seconds} 秒）`) : null,
       ok ? null : h("ul", {}, ...e.findings.slice(0, 5).map((f) => h("li", { class: "note" }, f))),
       step ? fileViews(app, run, step, null) : null);

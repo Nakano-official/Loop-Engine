@@ -83,7 +83,9 @@ class Design:
             # that copies them in as well (maze3d did, all 16) would double the
             # tests and the solver's brief -- the copy goes, the definition's id
             # stays, since that is where the example was written.
-            defined = [e for item in self.definition["items"] for e in item["examples"]]
+            # A definition from requirements has none (DECISIONS 48): then the
+            # assembly's own examples are all its tests.
+            defined = [e for item in self.definition["items"] for e in item.get("examples", [])]
             seen = {_same(e) for e in defined}
             own = defined + [e for e in own if _same(e) not in seen]
         return own

@@ -188,6 +188,7 @@ def fake_solver_role(correct, broken_first=()):
         path = text.split("# Files you may create or modify", 1)[1].split()[0]
         module = Path(path).stem
         seen[module] = seen.get(module, 0) + 1
+        solve.started.append((module, (solve.out / path).read_text(encoding="utf-8")))
         content = correct[module]
         if module in broken_first and seen[module] == 1:
             content = content.replace("spec.base_cost * spec.cost_scale ** owned", "spec.base_cost")
@@ -196,6 +197,7 @@ def fake_solver_role(correct, broken_first=()):
         return 0, "[fake solver] wrote " + path
 
     solve.briefs = []
+    solve.started = []          # (module, the file it was given to start from)
     return solve
 
 
@@ -215,3 +217,36 @@ def test_the_attempt_operation_stages_solves_and_verifies(setup, tmp_path):
     # A brief never names another module's file as writable.
     for b in solve.briefs:
         assert len(b.split("# Files you may create or modify", 1)[1].split()) == 1
+
+
+def test_a_retry_fixes_the_attempt_before_instead_of_starting_again(setup, tmp_path):
+    path, win, ledger = setup
+    solve = fake_solver_role(CORRECT, broken_first=("economy",))
+    solve.out = tmp_path / "solver_out"
+    win.solve, win.solver_in, win.solver_out = solve, tmp_path / "solver_in", solve.out
+    win.solver_in.mkdir()
+    win.solver_out.mkdir()
+    out = pipeline.run(path, "box", win, "run9", ledger=pipeline.Ledger(ledger), build=False)
+    assert out.stage == "done", (out.reason, out.detail)
+    economy = [text for module, text in solve.started if module == "economy"]
+    assert "STUB" in economy[0]                                       # the first from the stub
+    broken = CORRECT["economy"].replace("spec.base_cost * spec.cost_scale ** owned", "spec.base_cost")
+    assert economy[1] == broken                                       # the second from the first
+    briefs = [b for b in solve.briefs if "app/economy.py" in b]
+    assert "YOUR PREVIOUS ATTEMPT" in briefs[1] and "YOUR PREVIOUS ATTEMPT" not in briefs[0]
+
+
+def test_a_changed_module_starts_from_what_was_green_under_the_earlier_design(setup, tmp_path):
+    path, win, ledger = setup
+    solve = fake_solver_role(CORRECT)
+    solve.out = tmp_path / "solver_out"
+    win.solve, win.solver_in, win.solver_out = solve, tmp_path / "solver_in", solve.out
+    win.solver_in.mkdir()
+    win.solver_out.mkdir()
+    earlier = {"scale": {"app/scale.py": "# the scale as it was\n" + CORRECT["scale"]}}
+    out = pipeline.run(path, "box", win, "run10", ledger=pipeline.Ledger(ledger), build=False, earlier=earlier)
+    assert out.stage == "done", (out.reason, out.detail)
+    started = dict(solve.started)
+    assert started["scale"].startswith("# the scale as it was")
+    assert "EARLIER DESIGN" in next(b for b in solve.briefs if "app/scale.py" in b)
+    assert "STUB" in started["catalog"]

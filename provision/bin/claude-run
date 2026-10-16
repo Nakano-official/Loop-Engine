@@ -132,9 +132,20 @@ else
   EXTRA+=(--safe-mode)
 fi
 [ "$MODEL" = default ] || EXTRA+=(--model "$MODEL")
+# --system-prompt: a role's own, in place of Claude Code's. Claude Code's is
+#     written for a person at a terminal -- git, tests, asking before acting --
+#     and is read again on every turn: about 12,000 tokens a turn, most of what
+#     an analyst read, and nothing a role here uses (DECISIONS 47). The brief
+#     says the rest.
+SYSTEM="You are one role in an automated software loop, started non-interactively on one brief.
+The brief is the user message: it says what to write, in which file, in what format. Do exactly
+that, using only the tools you have, in the current directory. There is no person to ask and
+nothing to report: what you write to the file is all that is read, and a gate checks it.
+Edit and Write work on files in the current directory; Read a file before you Edit it."
 set +e
 timeout --kill-after=30 "$LIMIT" claude -p \
   "${EXTRA[@]}" \
+  --system-prompt "$SYSTEM" \
   --setting-sources "" \
   --no-session-persistence \
   --tools "$TOOLS" \

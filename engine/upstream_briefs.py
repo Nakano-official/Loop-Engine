@@ -2,8 +2,8 @@
 
     analyze(request, findings)                               -> the analyst's brief
     define(concepts, platform, findings)                     -> the definer's brief
-    examples(definition, concepts, findings)                 -> the tester's brief
-    design(definition, findings, previous, verdict, concepts) -> the designer's brief
+    design_plan(definition, concepts, findings, verdict)     -> the designer's plan
+    design_module(design, name, definition, concepts)        -> the designer's brief, one module
 
 A part, not a flow. A brief is all a role sees, so what it says about the
 formats is said here, once, and is the same every time: FORMATS.md, shortened
@@ -15,6 +15,7 @@ reason, which example ids. Never what an implementation returned (DESIGN 5).
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,7 +141,7 @@ def analyze(request: str, findings: list[str] | None = None) -> str:
         "Write every text in Japanese.",
         "",
         *_writing("concepts.json", "format and request, every concept with its id, name and kind, every "
-                  "requirement with its id and text, and the rest empty", "one concept or a few requirements"),
+                  "requirement with its id and text, and the rest empty", "a few concepts or requirements"),
         "",
         "# The request",
         request.strip(),
@@ -192,7 +193,7 @@ def _signatures(plat: dict, state: str = "$State") -> str:
 def define(concepts: dict, platform: str = "browser-dom", findings: list[str] | None = None) -> str:
     """The definer's brief (DECISIONS 44): what to make, item by item, and
     nothing that is not a decision -- the platform's part is the machine's,
-    the examples are the tester's."""
+    the examples are the designer's (DECISIONS 48)."""
     plat = _platform(platform)
     parts = [
         "# Task",
@@ -200,14 +201,14 @@ def define(concepts: dict, platform: str = "browser-dom", findings: list[str] | 
         "words mean, and what they need -- and decide WHAT TO MAKE to meet those needs. Write it as",
         "the DEFINITION of the app: what it is, what it remembers (its state), and item by item what",
         "must hold of it. That is all you write. The machine adds the platform's types and",
-        "functions; a tester writes the examples each item is checked by, from your statements",
+        "functions; the designer writes the examples each item is checked by, from your statements",
         "alone; a designer turns it into modules later. Do not write examples, functions or modules.",
         "",
         "Write exactly one file, `definition.json`, in the current directory. Nothing else.",
         "Write the summary, titles, statements and any text shown to the user in Japanese.",
         "",
         *_writing("definition.json", "title, summary, state, types, errors, raises, and every item with its "
-                  "id and title and an empty statement", "one item or one type"),
+                  "id and title and an empty statement", "a few items or types"),
         "",
         "# The concept file",
         "It binds you. Do not narrow a concept to whatever is easiest to make: its meaning,",
@@ -219,7 +220,7 @@ def define(concepts: dict, platform: str = "browser-dom", findings: list[str] | 
         "- \"summary\": in a sentence or two, what you make and for what",
         "- every property and requirement whose check is \"example\" is listed in the \"concepts\"",
         "  field of at least one item, and that item's statement says what makes it true. The",
-        "  tester can check only what the statement says",
+        "  examples can check only what the statement says",
         "- \"evaluation\" ones are checked later by using the app; list them where they apply",
         "- every item lists at least one property or requirement it answers to",
         "",
@@ -273,142 +274,243 @@ def _answers(concepts: dict) -> dict:
     return out
 
 
-def examples(definition: dict, concepts: dict, findings: list[str] | None = None) -> str:
-    """The tester's brief (DECISIONS 44): the examples each item of the
-    definition is checked by. The tester reads the items -- what the definer
-    wrote -- and what they answer to, and not the concept file as a whole:
-    what a statement leaves unsaid shows up as an example the definer did not
-    mean, where the loop can see it."""
-    platform = definition.get("shell", {}).get("platform", "browser-dom")
-    plat = _platform(platform)
+# When the implementation sends the loop back, the designer changes the plan
+# it has, where the verdict points, instead of writing one again (DECISIONS
+# 46): the modules whose entry it leaves alone keep their docs, examples and
+# implementation.
+REDESIGN = [
+    "# How to write it",
+    "- Your previous plan is in this directory, at edit/design.json. Do not write a new",
+    "  design.json: open edit/design.json and change it with Edit where the verdict at the end",
+    "  of this brief points, and nowhere else. What is in edit/design.json when you finish is",
+    "  what is read. Keep it valid JSON after every Edit",
+    "- You have a `run` tool: it runs a short Python or JavaScript program in a sandbox and",
+    "  returns what it printed. Use it for every number you have to work out -- arithmetic,",
+    "  geometry, a layout -- instead of working it out by hand",
+]
+
+
+def _run_tool() -> list[str]:
+    return ["- You have a `run` tool: it runs a short Python or JavaScript program in a sandbox and",
+            "  returns what it printed. Use it for every number you have to work out -- arithmetic,",
+            "  geometry, a layout -- instead of working it out by hand"]
+
+
+def _one_call(name: str) -> list[str]:
+    """How a part is written (DECISIONS 47): it is small, so in one go."""
+    return ["# How to write it",
+            f"- Write `{name}` with Write, in one go, once you know what goes in it. Everything you",
+            "  need is in this brief: there is nothing to look up in other files",
+            *_run_tool()]
+
+
+def _render(ex: dict) -> str:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from briefs import render_example
+    return render_example(None, None, ex)
+
+
+def _items_text(definition: dict, concepts: dict, only: list[str] | None = None) -> list[str]:
     answers = _answers(concepts)
-    contract = {k: definition[k] for k in ("types", "errors", "interface") if k in definition}
-    items = []
+    out = []
     for item in definition.get("items", []):
-        items += ["", f"## {item['id']} {item.get('title', '')}", item.get("statement", "")]
+        if only is not None and item["id"] not in only:
+            continue
+        out += ["", f"## {item['id']} {item.get('title', '')}", item.get("statement", "")]
         for ref in item.get("concepts", []):
             a = answers.get(ref)
             if not a:
                 continue
             how = "examples must show it" if a["check"] == "example" else "checked later by using the app"
-            items.append(f"- answers to {ref} ({how}): {a['text']}")
+            out.append(f"- answers to {ref} ({how}): {a['text']}")
             if a.get("not"):
-                items.append(f"  not {a['concept']}: " + " / ".join(a["not"]))
-    parts = [
-        "# Task",
-        "You are the tester. The definition below says what an app must do, item by item. Write",
-        "its EXAMPLES: for each item, concrete calls of the app's functions and how their results",
-        "are judged. They become the tests the finished app is held to -- the app is built until",
-        "they pass, so an example that is wrong or too weak lets a wrong app through.",
-        "",
-        "Write exactly one file, `examples.json`, in the current directory. Nothing else.",
-        "",
-        *_writing("examples.json", "the format and every item id with an empty list", "one item's examples"),
-        "",
-        f"# The definition: {definition.get('title', '')}",
-        definition.get("summary", ""),
-        "",
-        "The app's types, errors and functions (the functions are what the examples call):",
-        json.dumps(contract, ensure_ascii=False, indent=1),
-        "",
-        "# The items",
-        "Each statement, and what it answers to. A counter-example (\"not\") must fail your examples:",
-        "if one could pass them, they are too weak.",
-        *items,
-        "",
-        "# What to write",
-        "- every item that answers to something examples must show gets examples that show it --",
-        "  each such property, not just the item as a whole. An item that answers only to what is",
-        "  checked by using the app needs none",
-        "- every function of the interface is called by at least one example",
-        "- call only these functions; a literal value of a record type has every field",
-        "- example ids are <item id>.E<n>",
-        "",
-        f"# The platform: {platform}",
-        *["- " + line for line in plat["brief"]],
-        *["- " + line for line in plat.get("examples", [])],
-        *(["Conventions:"] + plat["conventions"] if plat.get("conventions") else []),
-        "",
-        "# The format of examples.json",
-        """{"format": "loop/examples@1",
- "items": {"D1": [<example>, ...], "D2": [...], ...}}""",
-        "",
-        TYPES,
-        "",
-        EXAMPLES,
-    ]
-    parts += _findings(findings or [], "examples")
-    return "\n".join(parts) + "\n"
+                out.append(f"  not {a['concept']}: " + " / ".join(a["not"]))
+    return out
 
 
-def design(definition: dict, findings: list[str] | None = None, previous: dict | None = None,
-           verdict: dict | None = None, concepts: dict | None = None) -> str:
-    example = json.loads(EXAMPLE_DESIGN.read_text(encoding="utf-8"))
-    sample = next(m for m in example["modules"] if m["name"] == "economy")
+def _contract(definition: dict) -> str:
+    return json.dumps({k: definition[k] for k in ("types", "errors", "interface") if k in definition},
+                      ensure_ascii=False, indent=1)
+
+
+SMALL_VALUES = """\
+- build the state an example needs by calling the app's functions (start, act, step) where you
+  can. Where you must write a state as a literal value, make it as small as the statement
+  allows: a maze of 2 x 2 cells shows a wall as well as one of 10 x 10. Never paste a large value
+  you computed: a condition can compute it instead"""
+
+
+WHO_IMPLEMENTS = [
+    "# Who implements it",
+    "A small local model (9B parameters) implements ONE module at a time, seeing only that",
+    "module's contracts, its docs, its examples, and the contracts of the modules it depends on",
+    "with what each of their functions does. It does not see the definition. Design for that reader:",
+    "- keep modules small: one to three functions, one idea each. A function with a tricky",
+    "  algorithm (a loop, a scale of units, a parser) gets its own module and many examples",
+]
+
+
+def _definition_for_design(definition: dict) -> str:
+    """The definition without its examples' contents: the designer plans
+    against the contract and the statements; the examples are the
+    assembly's tests, run by the machine (DECISIONS 47)."""
+    lean = {k: v for k, v in definition.items() if k != "items"}
+    lean["items"] = [{k: v for k, v in i.items() if k != "examples"} | {"examples": len(i.get("examples", []))}
+                     for i in definition.get("items", [])]
+    return json.dumps(lean, ensure_ascii=False, indent=1)
+
+
+def design_plan(definition: dict, concepts: dict | None = None, findings: list[str] | None = None,
+                verdict: dict | None = None, editing: bool = False) -> str:
+    """The designer's first call (DECISIONS 47): the PLAN -- the modules, what
+    each depends on, their contracts and what each function does in a
+    sentence. How each works and its examples come after, one module per call.
+    `editing`: the implementation sent the loop back; the plan it had is in
+    edit/design.json, to be changed where the verdict points."""
     platform = definition.get("shell", {}).get("platform", "browser-dom")
     parts = [
         "# Task",
-        "You are the designer. Turn the definition below into a DESIGN: modules, each with",
-        "contracts, a description of HOW each function works, and concrete examples.",
+        "You are the designer. Turn the definition below into the PLAN of a design: its modules,",
+        "what each depends on, the contract of each function, and in one sentence what each does.",
+        "How each function works, and its examples, are written next -- one module at a time, from",
+        "this plan. Do not write them here.",
         "",
-        "Write exactly one file, `design.json`, in the current directory. Nothing else.",
+        *(["Change exactly one file, `edit/design.json`. Nothing else.", "", *REDESIGN] if editing else
+          ["Write exactly one file, `design.json`, in the current directory. Nothing else.", "",
+           *_one_call("design.json")]),
         "",
-        *_writing("design.json", "format, definition, target, types, errors, shell, and every module with "
-                  "its id, name, kind and depends_on, empty functions and examples", "one module"),
+        *WHO_IMPLEMENTS,
+        "- a function's \"doc\" in the plan is ONE sentence: what it does, what it returns",
         "",
-        "# Who implements it",
-        "A small local model (9B parameters) implements ONE module at a time, seeing only that",
-        "module's contracts, its docs, its examples, and the contracts and docs of the modules it",
-        "depends on. It does not see the definition. Design for that reader:",
-        "- keep modules small: one to three functions, one idea each. A function with a tricky",
-        "  algorithm (a loop, a scale of units, a parser) gets its own module and many examples",
-        "- every function's \"doc\" says HOW, completely: which dependency functions it calls and in",
-        "  what order, every formula, every branch, what it throws and when. If the doc is followed",
-        "  literally, the examples must come out. Nothing may be left to guess",
-        "- give each function examples of its own: the normal case, the edges, every error",
-        "",
-        "# The definition",
-        json.dumps(definition, ensure_ascii=False, indent=1),
+        "# The definition (its examples are counted, not shown: they are the assembly's tests)",
+        _definition_for_design(definition),
         "",
         *(["# The concept file the definition answers to",
            "What the words mean and what the person needs. A module must not narrow them either.",
            json.dumps(concepts, ensure_ascii=False, indent=1), ""] if concepts else []),
-        "# The format of design.json",
+        "# The format of design.json (the plan)",
         """{"format": "loop/design@1",
  "definition": "definition.json",
  "target": {"language": "typescript", "platform": "%s"},
  "types": {<every type of the definition, identical>, <your own>},
  "errors": {<every error of the definition>, <your own>},
- "fixtures": {"NAME": {"type": ..., "value": ...}},        (optional: named values for examples)
  "modules": [{"id": "M1", "name": "snake_case", "kind": "pure" | "assembly",
               "depends_on": ["M2", ...],
-              "functions": {"<fn>": {"params": [...], "returns": ..., "raises": [...], "doc": "<how>"}},
-              "examples": [<example>, ...]}, ...],
+              "functions": {"<fn>": {"params": [...], "returns": ..., "raises": [...], "doc": "<what, one sentence>"}},
+              "examples": []}, ...],
  "shell": {"calls": "<the assembly's id>"}}""" % platform,
         "- exactly one module has kind \"assembly\". Its functions are the definition's interface",
-        "  EXACTLY (same names, parameters, returns, raises), each with its own doc saying how it",
-        "  composes the other modules. The definition's examples are already its tests: do NOT",
-        "  copy them into its \"examples\" (leave it [] or add only new ones -- a copy is dropped).",
-        "  Every other module must be reachable from it through depends_on; no cycles",
-        "- in examples, call your own functions by name and a dependency's as \"module_name.fn\"",
-        "- example ids are <module id>.E<n>; fixtures are referenced as {\"$\": \"NAME\"}",
+        "  EXACTLY (same names, parameters, returns, raises). Every other module must be reachable",
+        "  from it through depends_on; no cycles",
         "",
         TYPES,
-        "",
-        EXAMPLES,
-        "",
-        "# A module in this format (from another app, for the shape only)",
-        json.dumps(sample, ensure_ascii=False, indent=1),
     ]
-    if previous is not None:
-        parts += ["", "# Your previous design", json.dumps(previous, ensure_ascii=False, indent=1)]
     if verdict:
         parts += ["", "# The previous design did not work",
                   f"Module `{verdict.get('module')}` could not be implemented in the attempts allowed.",
                   f"Reason: {verdict.get('reason')}",
                   f"Its examples that stayed red: {', '.join(verdict.get('examples', [])) or '(none listed)'}",
-                  "Change the design where that points: split the module (granularity), add a",
-                  "missing dependency or move a function (boundary), or change how the assembly",
-                  "composes the parts (decomposition). Make the docs more literal. Keep what worked."]
-    parts += _findings(findings or [], "design")
+                  "Change the plan where that points: split the module (granularity), add a missing",
+                  "dependency or move a function (boundary), or change how the assembly composes the",
+                  "parts (decomposition). That module is written again in any case, more literally.",
+                  "Leave every other module exactly as it is: one whose entry in the plan is unchanged",
+                  "keeps its docs, its examples and its implementation. One you touch is written again."]
+    parts += _findings(findings or [], "plan")
+    return "\n".join(parts) + "\n"
+
+
+def design_module(design: dict, name: str, definition: dict, concepts: dict | None = None,
+                  findings: list[str] | None = None) -> str:
+    """The designer's call for ONE module (DECISIONS 47): the plan, this
+    module's contract, and what its dependencies do -- and for the assembly,
+    the definition's examples it will be tested by, one line each."""
+    example = json.loads(EXAMPLE_DESIGN.read_text(encoding="utf-8"))
+    sample = next(m for m in example["modules"] if m["name"] == "economy")
+    sample = {k: sample[k] for k in ("functions", "examples")}
+    by_id = {m["id"]: m for m in design["modules"]}
+    module = next(m for m in design["modules"] if m["name"] == name)
+    plan = [f"- {m['id']} {m['name']}{' (assembly)' if m['kind'] == 'assembly' else ''}"
+            f" -> {', '.join(by_id[d]['name'] for d in m['depends_on']) or '(nothing)'}: "
+            + "; ".join(f"{fn}: {sig.get('doc', '')}" for fn, sig in m["functions"].items())
+            for m in design["modules"]]
+    deps = [by_id[d] for d in module["depends_on"]]
+    assembly = module["kind"] == "assembly"
+    parts = [
+        "# Task",
+        f"You are the designer. The plan of a design is below. Write module `{name}` ({module['id']}):",
+        "for each of its functions, a doc that says HOW it works, and the module's examples.",
+        "",
+        "Write exactly one file, `module.json`, in the current directory. Nothing else.",
+        "",
+        *_one_call("module.json"),
+        "",
+        *WHO_IMPLEMENTS,
+        "- every function's \"doc\" starts with ONE sentence saying what it does, then says HOW,",
+        "  completely: which dependency functions it calls and in what order, every formula, every",
+        "  branch, what it throws and when. If the doc is followed literally, the examples must come",
+        "  out. Nothing may be left to guess",
+        *(["- give each function examples of its own: the normal case, the edges, every error"] if not assembly else
+          ["- its examples are the tests the FINISHED APP is held to: they check the definition's items",
+           "  (below). Give each example a \"concepts\" field naming the properties and requirements it",
+           "  shows. Every one whose check is \"example\" must be named by at least one example, and a",
+           "  counter-example (\"not\") must fail them. Call every function of this module at least once",
+           "- a property that holds of anything generated (a maze, a layout) is shown best by ONE",
+           "  condition that tries a few inputs and checks each result, not by many examples. One",
+           "  example per property is the aim",
+           SMALL_VALUES]),
+        "",
+        f"# The app: {definition.get('title', '')}",
+        definition.get("summary", ""),
+        *[f"- {i['id']} {i.get('title', '')}: {i.get('statement', '')}" for i in definition.get("items", [])],
+        "",
+        "# The plan",
+        *plan,
+        "",
+        f"# Module {name}: its contract (fixed by the plan)",
+        json.dumps({fn: {k: v for k, v in sig.items() if k != "doc"} for fn, sig in module["functions"].items()},
+                   ensure_ascii=False, indent=1),
+        "",
+        "# The types and errors",
+        json.dumps({"types": design.get("types", {}), "errors": design.get("errors", {})}, ensure_ascii=False,
+                   indent=1),
+    ]
+    if deps:
+        parts += ["", "# What it depends on (call them as module_name.fn)"]
+        for dep in deps:
+            for fn, sig in dep["functions"].items():
+                params = ", ".join(f"{p['name']}: {p['type']}" for p in sig["params"])
+                parts.append(f"- {dep['name']}.{fn}({params}) -> {sig['returns']}"
+                             f"{' raises ' + ', '.join(sig['raises']) if sig.get('raises') else ''}: "
+                             f"{sig.get('doc', '')}")
+    if design.get("fixtures"):
+        parts += ["", "# Fixtures other modules already declared (use them by name, or add your own)",
+                  *[f"- {k}: {fx.get('type')}" for k, fx in design["fixtures"].items()]]
+    if assembly:
+        plat = _platform(definition.get("shell", {}).get("platform", "browser-dom"))
+        parts += ["", "# The items its examples check, and what each answers to", *_items_text(definition, concepts or {}),
+                  "", "# How the platform calls the app, and how to pin it in examples",
+                  *["- " + line for line in plat["brief"] + plat.get("examples", [])],
+                  *(["Conventions:"] + plat["conventions"] if plat.get("conventions") else [])]
+        exs = [e for i in definition.get("items", []) for e in i.get("examples", [])]
+        if exs:
+            parts += ["", f"# Examples the definition already has: tests this module is held to ({len(exs)})",
+                      "Do not copy them into its examples.", *[_render(e) for e in exs]]
+    parts += [
+        "",
+        "# The format of module.json",
+        """{"functions": {"<fn>": {"doc": "<what, in one sentence; then how>"}, ...},
+ "examples": [<example>, ...],                                  (the assembly's: each with "concepts": [...])
+ "fixtures": {"NAME": {"type": ..., "value": ...}}}            (optional: named values for examples)""",
+        f"- every function of {name} gets its doc; the contract stays as the plan has it",
+        "- in examples, call this module's functions by name and a dependency's as \"module_name.fn\"",
+        f"- example ids are {module['id']}.E<n>; fixtures are referenced as {{\"$\": \"NAME\"}}",
+        "",
+        TYPES,
+        "",
+        EXAMPLES,
+        "",
+        "# A module part in this format (from another app, for the shape only)",
+        json.dumps(sample, ensure_ascii=False, indent=1),
+    ]
+    parts += _findings(findings or [], "module")
     return "\n".join(parts) + "\n"

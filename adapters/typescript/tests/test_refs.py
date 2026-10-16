@@ -137,7 +137,9 @@ def test_an_import_whose_names_are_never_used_is_reported_unused(tmp_path):
               'import { a, b } from "./catalog";\n'
               'export function f(x: T.GameState): number { return b(x); }\n')
     found = check(tmp_path, IDLE, "format", source)
-    assert found["unused"] == ["./economy"]
+    # The types count as unused too -- used in annotations only, which are not
+    # run -- but they are declared, and only an undeclared import is taken out.
+    assert found["unused"] == ["../loop_types", "./economy"]
     assert set(found["undeclared"]) == {"./economy", "./catalog"}
 
 

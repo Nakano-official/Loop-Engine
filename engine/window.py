@@ -3,6 +3,9 @@
     prepare-tests <ws> <module>    stdin: {"design": ..., "definition": ...}
                                    (re)build the workspace from the design and
                                    run <module>'s tests against its stub
+    attempt <ws> <module>          stdin: {"brief": ..., "green": [names], "start": text?}
+                                   the solver role on one module, starting from
+                                   the stub or from `start`; then verify
     verify <ws> <module>           stdin: {"files": {path: text}, "green": [names]}
                                    put one candidate implementation in place,
                                    refuse it if it reaches for what it may not
@@ -304,7 +307,13 @@ class Window:
         stage.mkdir(parents=True)
         os.chmod(stage, 0o2770)
         current = self.solver_out / allowed
-        shutil.copyfile(ws / allowed, current)
+        # What it starts from: the stub, unless the host hands a file to fix --
+        # the last candidate, or what was green under an earlier design
+        # (DECISIONS 46). Text only; it goes where the stub would have gone.
+        if isinstance(payload.get("start"), str):
+            current.write_text(payload["start"], encoding="utf-8")
+        else:
+            shutil.copyfile(ws / allowed, current)
         os.chmod(current, 0o664)
 
         brief = self.solver_in / f"{ws_name}-{module}.md"

@@ -259,7 +259,11 @@ class Run:
                                             for k in ("equals", "matches", "holds", "raises")}}
         ds = load("design.json")
         if ds:
-            out["design"] = {"modules": len(ds.get("modules", []))}
+            exs = [e for m in ds.get("modules", []) for e in m.get("examples", []) if isinstance(e, dict)]
+            out["design"] = {"modules": len(ds.get("modules", [])), "examples": len(exs),
+                             # how each example is judged (FORMATS 4): equals, matches, holds, raises
+                             "judged": {k: sum(1 for e in exs if k in (e.get("then") or {}))
+                                        for k in ("equals", "matches", "holds", "raises")}}
         return out
 
     def design_summary(self) -> dict | None:

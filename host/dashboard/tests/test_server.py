@@ -159,7 +159,7 @@ class DashboardTest(unittest.TestCase):
         run = json.loads(self.request("GET", f"/api/apps/idle/runs/{self.run_id}")[2])
         [step] = [s for s in run["steps"] if s["step"] == "attempt"]
         self.assertEqual((step["seconds"], step["files"]), (2.5, ["brief.md", "rules.ts"]))
-        self.assertEqual(run["products"], {"design": {"modules": 8}})
+        self.assertEqual(run["products"], {"design": {"modules": 8, "examples": 38, "judged": {"equals": 30, "matches": 0, "holds": 0, "raises": 8}}})
         names = [m["name"] for m in run["design"]["modules"]]
         self.assertIn("rules", names)
         self.assertEqual([m["name"] for m in run["design"]["modules"] if m["assembly"]], ["game"])
@@ -173,7 +173,7 @@ class DashboardTest(unittest.TestCase):
             "analysis": {"concepts": 3, "properties": 5, "by_example": 4, "requirements": 2},
             "definition": {"items": 7, "examples": 25,
                            "judged": {"equals": 19, "matches": 0, "holds": 0, "raises": 6}},
-            "design": {"modules": 8}})
+            "design": {"modules": 8, "examples": 38, "judged": {"equals": 30, "matches": 0, "holds": 0, "raises": 8}}})
         self.assertTrue(run["has_concepts"])
 
     def test_a_kept_file_can_be_read_and_nothing_else(self):

@@ -57,9 +57,6 @@ def d_contradiction(d):
     clone["then"]["equals"][0]["resource"] = 1.0
     item(d, "D3")["examples"].append(clone)
 
-def d_function_without_example(d):
-    d["interface"]["pause"] = {"params": [], "returns": "bool"}
-
 def d_unknown_platform(d):
     d["shell"]["platform"] = "android"
 
@@ -77,7 +74,6 @@ def d_map_with_dollar_key(d):
     (d_unbound_reference, "examples[D2.E1]"),
     (d_undeclared_error, "examples[D3.E3]"),
     (d_contradiction, "examples[D3.E9]"),
-    (d_function_without_example, "interface.pause"),
     (d_unknown_platform, "shell.platform"),
     (d_duplicate_id, "items"),
     (d_map_with_dollar_key, "examples[D1.E1]"),
@@ -202,8 +198,10 @@ def test_the_idle_game_concepts_pass_and_its_definition_covers_them():
     draft = draft_of(DEFINITION)
     assert artifacts.check_draft(draft, "browser-dom", CONCEPTS) == []
     d = artifacts.complete(draft, "browser-dom")
-    assert artifacts.check_examples(CONCEPTS, d, examples_of(DEFINITION)) == []
-    assert artifacts.check_design(platform_design(DESIGN), artifacts.with_examples(d, examples_of(DEFINITION))) == []
+    ds = platform_design(DESIGN, DEFINITION)
+    assert artifacts.check_design(ds, d) == []
+    asm = next(m for m in ds["modules"] if m["kind"] == "assembly")
+    assert artifacts.check_design_coverage(CONCEPTS, asm["examples"]) == []
 
 
 def broken_concepts():
@@ -301,29 +299,32 @@ def test_a_broken_draft_goes_back_to_the_definer(breaks, where):
     assert any(f.where == where for f in found), [str(f) for f in found]
 
 
-# ---- what the tester writes ------------------------------------------------
+# ---- the coverage gate, on the design (DECISIONS 48) ------------------------
 
-DRAFT2 = {**draft_of(DEFINITION), "items": draft_of(DEFINITION)["items"] + [
-    {"id": "D8", "title": "見て分かる", "statement": "最初の画面で何を押せばよいかが分かる", "concepts": ["C3.P1"]}]}
-
-
-def test_an_item_checked_only_by_use_needs_no_examples():
-    d = artifacts.complete(DRAFT2, "browser-dom")
-    assert artifacts.check_examples(CONCEPTS, d, examples_of(DEFINITION)) == []
+def assembly_examples():
+    ds = platform_design(DESIGN, DEFINITION)
+    return copy.deepcopy(next(m for m in ds["modules"] if m["kind"] == "assembly")["examples"])
 
 
-def test_an_item_checked_by_example_without_examples_goes_back_to_the_tester():
-    d = artifacts.complete(DRAFT2, "browser-dom")
-    found = artifacts.check_examples(CONCEPTS, d, {"format": "loop/examples@1", "items": {}})
-    assert [f.where for f in found if f.where.startswith("items.")] == ["items.D7"]
-    assert all(f.stage == artifacts.EXAMPLES for f in found)
-    # Its examples call what the definition offers, nothing else.
-    ex = examples_of(DEFINITION)
-    ex["items"]["D7"][0]["steps"][0]["call"] = "new_game"
-    found = artifacts.check_examples(CONCEPTS, d, ex)
-    assert any("cannot reach" in f.message for f in found) and all(f.stage == artifacts.EXAMPLES for f in found)
-    found = artifacts.check_examples(CONCEPTS, d, {"format": "loop/examples@1", "items": {"D9": []}})
-    assert [f.where for f in found] == ["items.D9"]
+def test_a_property_no_assembly_example_shows_goes_back_to_the_designer():
+    exs = assembly_examples()
+    exs[0]["concepts"] = [r for r in exs[0]["concepts"] if r != "C2.P2"]
+    found = artifacts.check_design_coverage(CONCEPTS, exs)
+    assert [f.where for f in found] == ["concepts.C2.P2"] and found[0].stage == artifacts.DESIGN
+
+
+def test_an_assembly_example_names_only_what_the_concept_file_has():
+    exs = assembly_examples()
+    exs[1]["concepts"] = ["C9.P1"]
+    found = artifacts.check_design_coverage(CONCEPTS, exs)
+    assert [f.where for f in found] == [f"examples[{exs[1]['id']}].concepts"]
+    # What is checked by using the app need not be shown by an example.
+    assert all("C3.P1" not in f.where for f in artifacts.check_design_coverage(CONCEPTS, assembly_examples()))
+
+
+def test_a_definition_from_requirements_has_no_examples_and_passes_its_gate():
+    d = artifacts.complete(draft_of(DEFINITION), "browser-dom")
+    assert artifacts.check_definition(d) == []
 
 
 def judged(then):

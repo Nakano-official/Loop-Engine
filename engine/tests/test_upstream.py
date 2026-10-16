@@ -1,4 +1,4 @@
-"""From requirements: the analyst, the definer, the tester and the designer in
+"""From requirements: the analyst, the definer and the designer in
 front of the modules.
 
 The roles are stand-ins that write the idle game -- in the shapes of
@@ -8,6 +8,7 @@ reference implementation. Python is the target here (as in test_pipeline), so
 the platform's language rule is read as Python and no output is built.
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -15,18 +16,19 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "engine"))
+import artifacts  # noqa: E402
 import pipeline  # noqa: E402
 import window as window_mod  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shapes import draft_of, examples_of, platform_design  # noqa: E402
+from shapes import draft_of, platform_design  # noqa: E402
 
 EX = ROOT / "docs" / "formats" / "examples"
 CONCEPTS = (EX / "idlegame.concepts.json").read_text(encoding="utf-8")
 FULL = json.loads((EX / "idlegame.definition.json").read_text(encoding="utf-8"))
 DEFINITION = json.dumps(draft_of(FULL))                  # what the definer writes
-EXAMPLES = json.dumps(examples_of(FULL))                 # what the tester writes
-DESIGN = platform_design(json.loads((EX / "idlegame.design.json").read_text(encoding="utf-8")))
+# The design, its assembly carrying the examples that check the items (DECISIONS 48).
+DESIGN = platform_design(json.loads((EX / "idlegame.design.json").read_text(encoding="utf-8")), FULL)
 DESIGN["target"]["language"] = "python"
 CORRECT = {p.stem: p.read_text(encoding="utf-8")
            for p in (ROOT / "adapters" / "python" / "tests" / "idlegame").glob("*.py")}
@@ -39,28 +41,52 @@ def win(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline.artifacts, "platform",
                         lambda name: {**real(name), "language": "python"} if real(name) else None)
     roles = tmp_path / "roles"
-    for role in ("analyst", "definer", "tester", "designer"):
+    for role in ("analyst", "definer", "designer"):
         (roles / role / "in").mkdir(parents=True)
         (roles / role / "out").mkdir(parents=True)
     w = window_mod.Window(tmp_path / "work", window_mod.local_runner, roles=roles)
-    w.briefs = {"analyst": [], "definer": [], "tester": [], "designer": []}
+    w.briefs = {"analyst": [], "definer": [], "designer": []}
     w.staged = {}
     return w
 
 
-def roles(win, definitions, designs, concepts=(CONCEPTS,), examples=(EXAMPLES,)):
-    """Stand-ins: each call writes the next of the given files."""
-    queue = {"analyst": list(concepts), "definer": list(definitions), "tester": list(examples),
-             "designer": list(designs)}
+def roles(win, definitions, designs, concepts=(CONCEPTS,), modules=None):
+    """Stand-ins: each call writes the next of the given files. The designer
+    writes in parts (DECISIONS 47): asked for the plan, it takes the next
+    design and writes its plan; asked for a module, that design's module.
+    Its plan briefs are kept under "designer", its module briefs under
+    "designer_module". `modules`: {name: [part, ...]} -- what it writes for
+    that module, call after call, in place of the design's."""
+    queue = {"analyst": list(concepts), "definer": list(definitions), "designer": list(designs)}
+    overrides = {k: list(v) for k, v in (modules or {}).items()}
+    current = {}
 
     def run_role(role, brief):
-        win.briefs[role].append(Path(brief).read_text(encoding="utf-8"))
-        name = {"analyst": "concepts.json", "definer": "definition.json", "tester": "examples.json",
-                "designer": "design.json"}[role]
-        text = queue[role].pop(0) if len(queue[role]) > 1 else queue[role][0]
+        text_in = Path(brief).read_text(encoding="utf-8")
+        name = {"analyst": "concepts.json", "definer": "definition.json", "designer": "design.json"}[role]
+        key = role
+        if role == "designer":
+            m = re.search(r"Write module `([a-z0-9_]+)`", text_in)
+            if m:
+                key, name = "designer_module", "module.json"
+                mod = next(x for x in current["design"]["modules"] if x["name"] == m.group(1))
+                if overrides.get(mod["name"]):
+                    text = overrides[mod["name"]].pop(0) if len(overrides[mod["name"]]) > 1 \
+                        else overrides[mod["name"]][0]
+                else:
+                    text = json.dumps({"functions": {fn: {"doc": sig["doc"]} for fn, sig in mod["functions"].items()},
+                                       "examples": mod["examples"],
+                                       "fixtures": {k: v for k, v in current["design"].get("fixtures", {}).items()
+                                                    if k in json.dumps(mod["examples"])}})
+            else:
+                current["design"] = json.loads(queue[role].pop(0) if len(queue[role]) > 1 else queue[role][0])
+                text = json.dumps(artifacts.plan_of(current["design"]))
+        else:
+            text = queue[role].pop(0) if len(queue[role]) > 1 else queue[role][0]
+        win.briefs.setdefault(key, []).append(text_in)
         # Given back what it wrote (out/edit/), a role fixes it there, as the Edit tool would.
         edit = win.roles / role / "out" / "edit"
-        win.staged.setdefault(role, []).append((edit / name).read_text(encoding="utf-8") if edit.is_dir() else None)
+        win.staged.setdefault(key, []).append((edit / name).read_text(encoding="utf-8") if edit.is_dir() else None)
         (edit if edit.is_dir() else win.roles / role / "out").joinpath(name).write_text(text, encoding="utf-8")
         return 0, f"[{role}] wrote {name}"
 
@@ -88,18 +114,27 @@ def test_requirements_to_green_through_both_gates(win, tmp_path):
     assert win.staged["definer"][0] is None and "Screen" in json.loads(win.staged["definer"][1])["types"]
     entries = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()]
     events = [e["event"] for e in entries if e["event"] != "BEGIN"]
-    assert events[:6] == ["ANALYST", "DEFINER", "DEFINER", "TESTER", "DESIGNER", "DESIGN_ROUND"]
+    # The designer in parts (DECISIONS 47): the plan, then one call per module.
+    n_modules = len(DESIGN["modules"])
+    assert events[:4 + n_modules + 1] == ["ANALYST", "DEFINER", "DEFINER"] + ["DESIGNER"] * (1 + n_modules) \
+        + ["DESIGN_ROUND"]
+    parts = [e.get("part") for e in entries if e["event"] == "DESIGNER"]
+    assert parts == ["plan"] + [m["name"] for m in DESIGN["modules"]]
     # Every long step says when it starts, so a dashboard can show it while it runs.
-    begun = [(e["step"], e.get("n")) for e in entries if e["event"] == "BEGIN"][:5]
-    assert begun == [("analyst", 1), ("definer", 1), ("definer", 2), ("tester", 1), ("designer", 1)]
-    # The definer is not asked for examples or the platform's functions; the
-    # tester is given the items and what they answer to, not the concept file.
+    begun = [(e["step"], e.get("n")) for e in entries if e["event"] == "BEGIN"][:4]
+    assert begun == [("analyst", 1), ("definer", 1), ("definer", 2), ("designer", 1)]
+    # Each part reads what it needs: the plan has no examples in it, and the
+    # assembly's brief has the items and what they answer to -- the examples
+    # it writes check them (DECISIONS 48).
+    assert all('"steps"' not in b for b in win.briefs["designer"])
+    [game] = [b for b in win.briefs["designer_module"] if "Write module `game`" in b]
+    assert "## D7" in game and "C2.P1" in game and '"concepts" field' in game
+    assert all("## D7" not in b for b in win.briefs["designer_module"] if b is not game)
+    # The definer is not asked for examples or the platform's functions.
     assert "Do not write examples" in win.briefs["definer"][0] and '"steps"' not in win.briefs["definer"][0]
-    tester = win.briefs["tester"][0]
-    assert "## D7" in tester and "C2.P1" in tester and "生産設備" in tester and '"background"' not in tester
     kept_def = json.loads((tmp_path / "app" / "definition.json").read_text(encoding="utf-8"))
     assert list(kept_def["interface"]) == ["start", "step", "act", "screen", "save"]
-    assert [e["id"] for e in kept_def["items"][0]["examples"]] == [e["id"] for e in FULL["items"][6]["examples"]]
+    assert "examples" not in kept_def["items"][0]
     # The concept file is kept with the request put in verbatim by the machine,
     # and the definer was given it -- not the request alone.
     kept = json.loads((tmp_path / "app" / "concepts.json").read_text(encoding="utf-8"))
@@ -138,27 +173,30 @@ def test_used_up_attempts_send_the_designer_ids_and_reasons_only(win, tmp_path):
 def test_the_platform_chosen_is_the_one_the_definition_gets(win, tmp_path):
     # The person chose browser-3d. The definer is told that platform's
     # functions and conventions; the machine gives the definition its
-    # functions -- step takes input there, so examples written for the idle
-    # game's browser-dom step do not fit, and go back to the tester.
+    # functions -- step takes input there, so a design made for the idle
+    # game's browser-dom does not fit, and goes back to the designer.
     roles(win, [DEFINITION], [json.dumps(DESIGN)])
     out = pipeline.run_from_requirements("3Dで歩く", tmp_path / "app", win, "up4", solver=reference,
                                          gate_rounds=2, build=False, platform="browser-3d")
-    assert out.stage == "定義の例"
+    assert out.stage == "モジュール設計"
     first = win.briefs["definer"][0]
     assert "step(state: $State, now: float, input: Input) -> $State" in first
     assert "Conventions:" in first and "vertical field of view in degrees" in first
     assert "step(state: GameState, now: float, input: Input)" not in first
-    assert len(win.briefs["tester"]) == 2 and "Input" in win.briefs["tester"][0]
-    assert "edit/examples.json" in win.briefs["tester"][1]
+    assert len(win.briefs["designer"]) == 2 and "edit/design.json" in win.briefs["designer"][1]
 
 
-def test_examples_that_leave_an_item_unchecked_go_back_to_the_tester(win, tmp_path):
-    roles(win, [DEFINITION], [json.dumps(DESIGN)],
-          examples=[json.dumps({"format": "loop/examples@1", "items": {}}), EXAMPLES])
+def test_an_assembly_that_shows_no_example_of_a_property_goes_back_to_the_designer(win, tmp_path):
+    asm = next(m for m in DESIGN["modules"] if m["kind"] == "assembly")
+    part = {"functions": {fn: {"doc": sig["doc"]} for fn, sig in asm["functions"].items()},
+            "examples": asm["examples"]}
+    short = json.loads(json.dumps(part))
+    short["examples"][0]["concepts"] = [r for r in short["examples"][0]["concepts"] if r != "C2.P2"]
+    roles(win, [DEFINITION], [json.dumps(DESIGN)], modules={asm["name"]: [json.dumps(short), json.dumps(part)]})
     out = pipeline.run_from_requirements("x", tmp_path / "app", win, "up8", solver=reference, build=False)
     assert out.stage == "done", (out.stage, out.reason)
-    assert len(win.briefs["tester"]) == 2 and "items.D7" in win.briefs["tester"][1]
-    assert len(win.briefs["definer"]) == 1
+    tries = [b for b in win.briefs["designer_module"] if f"Write module `{asm['name']}`" in b]
+    assert len(tries) == 2 and "concepts.C2.P2" in tries[1] and "edit/module.json" in tries[1]
 
 
 def test_a_concept_file_that_never_passes_stops_at_the_analysis(win, tmp_path):
@@ -198,8 +236,7 @@ def kept_definition():
     import sys as _sys
     _sys.path.insert(0, str(ROOT / "engine"))
     import artifacts
-    d = artifacts.complete(json.loads(DEFINITION), "browser-dom")
-    return artifacts.with_examples(d, json.loads(EXAMPLES))
+    return artifacts.complete(json.loads(DEFINITION), "browser-dom")
 
 
 def test_a_run_can_start_at_the_design_from_what_an_earlier_run_left(win, tmp_path):
@@ -210,31 +247,33 @@ def test_a_run_can_start_at_the_design_from_what_an_earlier_run_left(win, tmp_pa
                                          resume={"from": "r1", "concepts": json.loads(CONCEPTS),
                                                  "definition": kept_definition()})
     assert out.stage == "done", (out.stage, out.reason)
-    assert win.briefs["analyst"] == win.briefs["definer"] == win.briefs["tester"] == []
+    assert win.briefs["analyst"] == win.briefs["definer"] == []
     assert len(win.briefs["designer"]) == 1
     first = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
-    assert first == {**first, "event": "FROM", "run": "r1", "stages": ["analysis", "definition", "examples"]}
+    assert first == {**first, "event": "FROM", "run": "r1", "stages": ["analysis", "definition"]}
     assert (tmp_path / "app" / "definition.json").exists() and (tmp_path / "app" / "concepts.json").exists()
 
 
 def test_what_an_earlier_run_left_is_held_at_its_gates_again(win, tmp_path):
     roles(win, [DEFINITION], [json.dumps(DESIGN)])
     broken = kept_definition()
-    broken["items"][0]["examples"] = []                       # D7 answers to properties examples must show
+    broken["types"]["GameState"]["record"][0]["type"] = "Money"           # a type that is nowhere
     out = pipeline.run_from_requirements("x", tmp_path / "app", win, "up10", solver=reference, build=False,
                                          resume={"from": "r1", "concepts": json.loads(CONCEPTS),
                                                  "definition": broken})
-    assert out.stage == "要件定義" and out.detail["findings"]          # no example calls the platform functions now
+    assert out.stage == "要件定義" and any("Money" in f for f in out.detail["findings"])
     assert win.briefs["designer"] == []
 
 
-def test_every_upstream_brief_says_write_in_parts_and_compute_with_the_run_tool(win, tmp_path):
+def test_every_upstream_brief_says_how_to_write_and_to_compute_with_the_run_tool(win, tmp_path):
     roles(win, [DEFINITION], [json.dumps(DESIGN)])
     pipeline.run_from_requirements("x", tmp_path / "app", win, "up11", solver=reference, build=False,
                                    until="design")
-    for role in ("analyst", "definer", "tester", "designer"):
-        brief = win.briefs[role][0]
-        assert "First Write a skeleton" in brief and "`run` tool" in brief, role
+    # Whole files, written in parts; parts, written in one go (DECISIONS 47).
+    for role in ("analyst", "definer"):
+        assert "First Write a skeleton" in win.briefs[role][0] and "`run` tool" in win.briefs[role][0], role
+    for role in ("designer", "designer_module"):
+        assert "in one go" in win.briefs[role][0] and "`run` tool" in win.briefs[role][0], role
 
 
 # ---- what went green is not written again (DECISIONS 46) ---------------------
@@ -288,3 +327,26 @@ def test_the_solver_is_told_what_a_dependency_does_not_how():
     assert briefs.what_it_does("壁の箱を返す。手順: scene_shapes.wall_box で作る") == "壁の箱を返す。"
     assert briefs.what_it_does("Returns the cost. Calls rules.price first.") == "Returns the cost."
     assert briefs.what_it_does("") == "(no description)"
+
+
+def test_a_design_sent_back_is_changed_in_place_not_written_again(win, tmp_path):
+    roles(win, [DEFINITION], [json.dumps(DESIGN)])
+
+    def stuck(d, module, feedback):
+        if module["name"] == "format":
+            return {"app/format.py": CORRECT["format"].replace(":.2f", ":.3f")}
+        return reference(d, module, feedback)
+
+    pipeline.run_from_requirements("x", tmp_path / "app", win, "up13", solver=stuck, max_attempts=1,
+                                   redesigns=1, build=False)
+    first, second = win.briefs["designer"]
+    # The first is written from a skeleton; the second is the first, changed.
+    assert "in one go" in first and "edit/design.json" not in first
+    assert "Do not write a new" in second and "edit/design.json" in second
+    assert "in one go" not in second and "# Your previous design" not in second
+    assert win.staged["designer"][0] is None
+    assert json.loads(win.staged["designer"][1])["modules"] == artifacts.plan_of(DESIGN)["modules"]
+    # Only the module the verdict named is written again; the rest are kept.
+    modules_second = win.briefs["designer_module"][len(DESIGN["modules"]):]
+    assert len(modules_second) == 1 and "Write module `format`" in modules_second[0]
+

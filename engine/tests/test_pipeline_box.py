@@ -48,3 +48,21 @@ def test_the_box_sends_a_stuck_module_back_to_the_design(tmp_path):
                        ledger=pipeline.Ledger(tmp_path / "ledger.jsonl"))
     assert out.stage == "モジュール設計" and "granularity" in out.reason
     assert out.detail["examples"] == ["M4.E1"]
+
+
+def test_an_import_a_module_never_uses_is_taken_out_not_held_against_it(tmp_path):
+    # format depends on scale only. The 9B solver imported what a dependency's
+    # doc named, and used none of it (2026-10-15): taken out, and green.
+    def extra(d, module, feedback):
+        files = reference(d, module, feedback)
+        if module["name"] == "format":
+            files["app/format.ts"] = 'import * as m_economy from "./economy";\n' + files["app/format.ts"]
+        return files
+
+    ledger = tmp_path / "ledger.jsonl"
+    out = pipeline.run(DESIGN, extra, pipeline.RemoteWindow(), "box-test", ledger=pipeline.Ledger(ledger),
+                       build=False)
+    assert out.stage == "done", (out.reason, out.detail)
+    attempts = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()]
+    [only] = [e for e in attempts if e["event"] == "ATTEMPT" and e["module"] == "format"]
+    assert only["n"] == 1 and only["stripped"] == ["./economy"]

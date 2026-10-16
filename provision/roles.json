@@ -22,11 +22,11 @@
     "runner":   {"uid": 1001, "model": null, "invoked": false, "egress": "none", "login": "ssh-window"},
     "solver":   {"uid": 1002, "model": "local", "invoked": true, "egress": {"loopback_tcp": [8080]}},
     "critic":   {"uid": 1004, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write", "claude_model": "claude-sonnet-5-5"},
-    "tester":   {"uid": 1005, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "tester":   {"uid": 1005, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit", "code": true, "claude_model": "claude-sonnet-5-5"},
     "exec":     {"uid": 1006, "model": null, "invoked": true, "egress": "none", "work": "read"},
-    "definer":  {"uid": 1007, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
-    "designer": {"uid": 1008, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
-    "analyst":  {"uid": 1009, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit Glob Grep TodoWrite", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "definer":  {"uid": 1007, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "designer": {"uid": 1008, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit", "code": true, "claude_model": "claude-sonnet-5-5"},
+    "analyst":  {"uid": 1009, "model": "claude", "invoked": true, "egress": "open", "tools": "Read Write Edit", "code": true, "claude_model": "claude-sonnet-5-5"},
     "calc":     {"uid": 1010, "model": null, "invoked": false, "egress": "none", "calc": true},
     "llm":      {"uid": null, "system": true, "model": null, "invoked": false, "egress": "none"}
   }
